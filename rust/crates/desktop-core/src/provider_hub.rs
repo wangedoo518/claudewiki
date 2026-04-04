@@ -10,7 +10,7 @@ use reqwest::StatusCode;
 use runtime::ConfigLoader;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
-use toml_edit::{value as toml_value, DocumentMut, InlineTable, Item};
+use toml_edit::{value as toml_value, DocumentMut, Item};
 
 const PROVIDER_HUB_FILE: &str = "warwolf-provider-hub.json";
 const DEFAULT_OPENCLAW_CONFIG_FILE: &str = "openclaw.json";
@@ -465,6 +465,72 @@ pub fn provider_presets() -> Vec<DesktopProviderPreset> {
             )],
         ),
         preset(
+            "anthropic-official",
+            "Anthropic",
+            DesktopProviderRuntimeTarget::OpenClaw,
+            "official",
+            "anthropic",
+            "official",
+            "anthropic-messages",
+            "https://api.anthropic.com",
+            true,
+            Some("https://console.anthropic.com"),
+            Some("Anthropic 官方 Messages API，适合 Claude Code。"),
+            Some("anthropic"),
+            Some("#D97757"),
+            vec![
+                model(
+                    "claude-opus-4-1-20250805",
+                    "Claude Opus 4.1",
+                    Some(200000),
+                    Some(16384),
+                    Some("paid"),
+                    &["coding", "reasoning"],
+                ),
+                model(
+                    "claude-sonnet-4-20250514",
+                    "Claude Sonnet 4",
+                    Some(200000),
+                    Some(16384),
+                    Some("paid"),
+                    &["coding", "general"],
+                ),
+            ],
+        ),
+        preset(
+            "gemini-official",
+            "Gemini",
+            DesktopProviderRuntimeTarget::OpenClaw,
+            "official",
+            "gemini",
+            "official",
+            "gemini",
+            "https://generativelanguage.googleapis.com",
+            true,
+            Some("https://aistudio.google.com"),
+            Some("Google Gemini 官方接口，适合 Gemini CLI。"),
+            Some("gemini"),
+            Some("#4285F4"),
+            vec![
+                model(
+                    "gemini-2.5-pro",
+                    "Gemini 2.5 Pro",
+                    Some(1048576),
+                    Some(8192),
+                    Some("paid"),
+                    &["coding", "reasoning"],
+                ),
+                model(
+                    "gemini-2.5-flash",
+                    "Gemini 2.5 Flash",
+                    Some(1048576),
+                    Some(8192),
+                    Some("paid"),
+                    &["fast", "general"],
+                ),
+            ],
+        ),
+        preset(
             "codex-openai",
             "OpenAI",
             DesktopProviderRuntimeTarget::Codex,
@@ -536,98 +602,6 @@ pub fn provider_presets() -> Vec<DesktopProviderPreset> {
                     &["image"],
                 ),
             ],
-        ),
-        preset(
-            "codex-azure-openai",
-            "Codex Azure OpenAI",
-            DesktopProviderRuntimeTarget::Codex,
-            "official",
-            "azure_openai_codex",
-            "official",
-            "openai-responses",
-            "https://YOUR_RESOURCE_NAME.openai.azure.com/openai",
-            true,
-            Some("https://learn.microsoft.com/en-us/azure/ai-foundry/openai/how-to/codex"),
-            Some("Azure OpenAI Codex 兼容配置，会保留并写入 Codex 所需的 query params。"),
-            Some("azure"),
-            Some("#0078D4"),
-            vec![model(
-                "gpt-5.4",
-                "GPT-5.4",
-                Some(200000),
-                Some(16384),
-                Some("paid"),
-                &["coding", "reasoning"],
-            )],
-        ),
-        preset(
-            "codex-aihubmix",
-            "Codex AiHubMix",
-            DesktopProviderRuntimeTarget::Codex,
-            "aggregator",
-            "codex_aihubmix",
-            "mixed",
-            "openai-responses",
-            "https://aihubmix.com/v1",
-            false,
-            Some("https://aihubmix.com"),
-            Some("从 clawhub123 迁移的 Codex 聚合通道预设。"),
-            Some("generic"),
-            Some("#2563EB"),
-            vec![model(
-                "gpt-5.4",
-                "GPT-5.4",
-                Some(200000),
-                Some(16384),
-                Some("paid"),
-                &["coding", "reasoning"],
-            )],
-        ),
-        preset(
-            "codex-dmxapi",
-            "Codex DMXAPI",
-            DesktopProviderRuntimeTarget::Codex,
-            "third_party",
-            "codex_dmxapi",
-            "mixed",
-            "openai-responses",
-            "https://www.dmxapi.cn/v1",
-            false,
-            Some("https://www.dmxapi.cn"),
-            Some("从 clawhub123 迁移的 DMXAPI Codex 预设。"),
-            Some("generic"),
-            Some("#7C3AED"),
-            vec![model(
-                "gpt-5.4",
-                "GPT-5.4",
-                Some(200000),
-                Some(16384),
-                Some("paid"),
-                &["coding", "reasoning"],
-            )],
-        ),
-        preset(
-            "codex-openrouter",
-            "Codex OpenRouter",
-            DesktopProviderRuntimeTarget::Codex,
-            "aggregator",
-            "codex_openrouter",
-            "mixed",
-            "openai-responses",
-            "https://openrouter.ai/api/v1",
-            true,
-            Some("https://openrouter.ai"),
-            Some("OpenRouter 的 Codex Responses 兼容入口。"),
-            Some("openrouter"),
-            Some("#6566F1"),
-            vec![model(
-                "openai/gpt-5.4",
-                "GPT-5.4",
-                Some(200000),
-                Some(16384),
-                Some("paid"),
-                &["coding", "reasoning"],
-            )],
         ),
         preset(
             "custom-openai",
@@ -1572,16 +1546,8 @@ fn build_codex_config_text(
     provider_table["base_url"] = toml_value(codex_base_url.as_str());
     provider_table["wire_api"] = toml_value("responses");
     provider_table["requires_openai_auth"] = toml_value(true);
-
-    if is_azure_codex_provider(provider) {
-        provider_table["env_key"] = toml_value("OPENAI_API_KEY");
-        let mut inline_table = InlineTable::default();
-        inline_table.insert("api-version", toml_edit::Value::from("2025-04-01-preview"));
-        provider_table["query_params"] = toml_value(inline_table);
-    } else {
-        provider_table.remove("env_key");
-        provider_table.remove("query_params");
-    }
+    provider_table.remove("env_key");
+    provider_table.remove("query_params");
 
     Ok(document.to_string())
 }
@@ -1844,11 +1810,6 @@ fn normalize_codex_base_url(input: &str) -> String {
         },
         None => trimmed.to_string(),
     }
-}
-
-fn is_azure_codex_provider(provider: &StoredManagedProvider) -> bool {
-    provider.provider_type == "azure_openai_codex"
-        || provider.preset_id.as_deref() == Some("codex-azure-openai")
 }
 
 fn connection_probe_candidates(base_url: &str, protocol: &str) -> Vec<String> {

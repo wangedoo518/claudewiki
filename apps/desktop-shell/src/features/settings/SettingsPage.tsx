@@ -106,7 +106,12 @@ export function SettingsPage() {
       </div>
 
       <ScrollArea className="flex-1">
-        <div className="mx-auto max-w-3xl px-8 py-6">
+        <div
+          className={cn(
+            "px-8 py-6",
+            active === "provider" ? "max-w-none px-6" : "mx-auto max-w-3xl"
+          )}
+        >
           <h2 className="mb-4 text-lg font-semibold text-foreground">
             {MENU_ITEMS.find((m) => m.id === active)?.label}
           </h2>
@@ -152,7 +157,6 @@ function SettingsContent({
     case "provider":
       return (
         <ProviderSettings
-          settings={settings}
           customize={customize}
           error={error}
         />

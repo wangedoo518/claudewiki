@@ -154,6 +154,109 @@ export interface DesktopProviderSetting {
   auth_status: string;
 }
 
+export interface DesktopProviderModel {
+  model_id: string;
+  display_name: string;
+  context_window: number | null;
+  max_output_tokens: number | null;
+  billing_kind: string | null;
+  capability_tags: string[];
+}
+
+export interface DesktopProviderPreset {
+  id: string;
+  name: string;
+  category: string;
+  provider_type: string;
+  billing_category: string;
+  protocol: string;
+  base_url: string;
+  official_verified: boolean;
+  website_url: string | null;
+  description: string | null;
+  icon: string | null;
+  icon_color: string | null;
+  models: DesktopProviderModel[];
+}
+
+export interface DesktopManagedProvider {
+  id: string;
+  name: string;
+  category: string;
+  provider_type: string;
+  billing_category: string;
+  protocol: string;
+  base_url: string;
+  api_key_masked: string | null;
+  has_api_key: boolean;
+  enabled: boolean;
+  official_verified: boolean;
+  preset_id: string | null;
+  website_url: string | null;
+  description: string | null;
+  models: DesktopProviderModel[];
+  created_at_epoch: number;
+  updated_at_epoch: number;
+}
+
+export interface DesktopOpenclawDefaultModel {
+  primary: string | null;
+  fallbacks: string[];
+}
+
+export interface DesktopOpenclawLiveProvider {
+  id: string;
+  base_url: string;
+  protocol: string;
+  model_count: number;
+  has_api_key: boolean;
+}
+
+export interface DesktopOpenclawRuntimeState {
+  config_path: string;
+  live_provider_ids: string[];
+  live_providers: DesktopOpenclawLiveProvider[];
+  default_model: DesktopOpenclawDefaultModel;
+  model_catalog_count: number;
+  env: Record<string, string>;
+  env_keys: string[];
+  tools: Record<string, unknown>;
+  tool_keys: string[];
+  health_warnings: string[];
+}
+
+export interface DesktopProviderSyncResult {
+  provider_id: string;
+  config_path: string;
+  model_count: number;
+  primary_applied: string | null;
+}
+
+export interface DesktopProviderDeleteResult {
+  deleted: boolean;
+  provider_id: string;
+}
+
+export type DesktopProviderConnectionStatus =
+  | "success"
+  | "warning"
+  | "auth_error"
+  | "error";
+
+export interface DesktopProviderConnectionTestResult {
+  status: DesktopProviderConnectionStatus;
+  checked_url: string;
+  http_status: number | null;
+  message: string;
+  response_excerpt: string | null;
+  used_stored_api_key: boolean;
+}
+
+export interface DesktopOpenclawConfigWriteResult {
+  config_path: string;
+  changed: boolean;
+}
+
 export interface DesktopStorageLocation {
   label: string;
   path: string;
@@ -239,6 +342,42 @@ export interface DesktopCustomizeResponse {
 
 export interface DesktopSettingsResponse {
   settings: DesktopSettingsState;
+}
+
+export interface DesktopProviderPresetsResponse {
+  presets: DesktopProviderPreset[];
+}
+
+export interface DesktopManagedProvidersResponse {
+  providers: DesktopManagedProvider[];
+}
+
+export interface DesktopManagedProviderResponse {
+  provider: DesktopManagedProvider;
+}
+
+export interface DesktopProviderImportResponse {
+  providers: DesktopManagedProvider[];
+}
+
+export interface DesktopProviderSyncResponse {
+  result: DesktopProviderSyncResult;
+}
+
+export interface DesktopProviderDeleteResponse {
+  result: DesktopProviderDeleteResult;
+}
+
+export interface DesktopProviderConnectionTestResponse {
+  result: DesktopProviderConnectionTestResult;
+}
+
+export interface DesktopOpenclawRuntimeResponse {
+  runtime: DesktopOpenclawRuntimeState;
+}
+
+export interface DesktopOpenclawConfigWriteResponse {
+  result: DesktopOpenclawConfigWriteResult;
 }
 
 export interface DesktopSearchHit {
@@ -504,6 +643,109 @@ export async function getCustomize(): Promise<DesktopCustomizeResponse> {
 
 export async function getSettings(): Promise<DesktopSettingsResponse> {
   return fetchJson<DesktopSettingsResponse>("/api/desktop/settings");
+}
+
+export async function getProviderPresets(): Promise<DesktopProviderPresetsResponse> {
+  return fetchJson<DesktopProviderPresetsResponse>("/api/desktop/providers/presets");
+}
+
+export async function getManagedProviders(): Promise<DesktopManagedProvidersResponse> {
+  return fetchJson<DesktopManagedProvidersResponse>("/api/desktop/providers");
+}
+
+export async function upsertManagedProvider(payload: {
+  id?: string | null;
+  name: string;
+  category: string;
+  provider_type: string;
+  billing_category: string;
+  protocol: string;
+  base_url: string;
+  api_key?: string | null;
+  enabled: boolean;
+  official_verified: boolean;
+  preset_id?: string | null;
+  website_url?: string | null;
+  description?: string | null;
+  models: DesktopProviderModel[];
+}): Promise<DesktopManagedProviderResponse> {
+  return fetchJson<DesktopManagedProviderResponse>("/api/desktop/providers", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function testManagedProviderConnection(payload: {
+  id?: string | null;
+  protocol: string;
+  base_url: string;
+  api_key?: string | null;
+}): Promise<DesktopProviderConnectionTestResponse> {
+  return fetchJson<DesktopProviderConnectionTestResponse>("/api/desktop/providers/test", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function deleteManagedProvider(
+  providerId: string
+): Promise<DesktopProviderDeleteResponse> {
+  return fetchJson<DesktopProviderDeleteResponse>(
+    `/api/desktop/providers/${providerId}`,
+    {
+      method: "DELETE",
+    }
+  );
+}
+
+export async function importLiveProviders(payload?: {
+  provider_ids?: string[];
+}): Promise<DesktopProviderImportResponse> {
+  return fetchJson<DesktopProviderImportResponse>("/api/desktop/providers/import-live", {
+    method: "POST",
+    body: JSON.stringify({
+      provider_ids: payload?.provider_ids ?? null,
+    }),
+  });
+}
+
+export async function syncManagedProvider(
+  providerId: string,
+  payload?: {
+    set_primary?: boolean;
+  }
+): Promise<DesktopProviderSyncResponse> {
+  return fetchJson<DesktopProviderSyncResponse>(
+    `/api/desktop/providers/${providerId}/sync`,
+    {
+      method: "POST",
+      body: JSON.stringify({
+        set_primary: payload?.set_primary ?? false,
+      }),
+    }
+  );
+}
+
+export async function getOpenclawRuntime(): Promise<DesktopOpenclawRuntimeResponse> {
+  return fetchJson<DesktopOpenclawRuntimeResponse>("/api/desktop/openclaw/runtime");
+}
+
+export async function updateOpenclawEnv(payload: {
+  env: Record<string, string>;
+}): Promise<DesktopOpenclawConfigWriteResponse> {
+  return fetchJson<DesktopOpenclawConfigWriteResponse>("/api/desktop/openclaw/env", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function updateOpenclawTools(payload: {
+  tools: Record<string, unknown>;
+}): Promise<DesktopOpenclawConfigWriteResponse> {
+  return fetchJson<DesktopOpenclawConfigWriteResponse>("/api/desktop/openclaw/tools", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
 }
 
 export async function searchSessions(

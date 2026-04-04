@@ -11,7 +11,10 @@ use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use runtime::{ConversationMessage, Session as RuntimeSession};
+use runtime::{
+    ContentBlock, ConversationMessage, MessageRole, Session as RuntimeSession,
+    SessionCompaction as RuntimeSessionCompaction, SessionFork as RuntimeSessionFork, TokenUsage,
+};
 use serde::{Deserialize, Serialize};
 use tokio::sync::{broadcast, RwLock};
 
@@ -72,15 +75,175 @@ impl Session {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ApiMessageRole {
+    System,
+    User,
+    Assistant,
+    Tool,
+}
+
+impl From<MessageRole> for ApiMessageRole {
+    fn from(value: MessageRole) -> Self {
+        match value {
+            MessageRole::System => Self::System,
+            MessageRole::User => Self::User,
+            MessageRole::Assistant => Self::Assistant,
+            MessageRole::Tool => Self::Tool,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ApiContentBlock {
+    Text {
+        text: String,
+    },
+    ToolUse {
+        id: String,
+        name: String,
+        input: String,
+    },
+    ToolResult {
+        tool_use_id: String,
+        tool_name: String,
+        output: String,
+        is_error: bool,
+    },
+}
+
+impl From<&ContentBlock> for ApiContentBlock {
+    fn from(value: &ContentBlock) -> Self {
+        match value {
+            ContentBlock::Text { text } => Self::Text { text: text.clone() },
+            ContentBlock::ToolUse { id, name, input } => Self::ToolUse {
+                id: id.clone(),
+                name: name.clone(),
+                input: input.clone(),
+            },
+            ContentBlock::ToolResult {
+                tool_use_id,
+                tool_name,
+                output,
+                is_error,
+            } => Self::ToolResult {
+                tool_use_id: tool_use_id.clone(),
+                tool_name: tool_name.clone(),
+                output: output.clone(),
+                is_error: *is_error,
+            },
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ApiTokenUsage {
+    pub input_tokens: u32,
+    pub output_tokens: u32,
+    pub cache_creation_input_tokens: u32,
+    pub cache_read_input_tokens: u32,
+}
+
+impl From<TokenUsage> for ApiTokenUsage {
+    fn from(value: TokenUsage) -> Self {
+        Self {
+            input_tokens: value.input_tokens,
+            output_tokens: value.output_tokens,
+            cache_creation_input_tokens: value.cache_creation_input_tokens,
+            cache_read_input_tokens: value.cache_read_input_tokens,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ApiConversationMessage {
+    pub role: ApiMessageRole,
+    pub blocks: Vec<ApiContentBlock>,
+    pub usage: Option<ApiTokenUsage>,
+}
+
+impl From<&ConversationMessage> for ApiConversationMessage {
+    fn from(value: &ConversationMessage) -> Self {
+        Self {
+            role: value.role.into(),
+            blocks: value.blocks.iter().map(ApiContentBlock::from).collect(),
+            usage: value.usage.map(ApiTokenUsage::from),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ApiSessionCompaction {
+    pub count: u32,
+    pub removed_message_count: usize,
+    pub summary: String,
+}
+
+impl From<&RuntimeSessionCompaction> for ApiSessionCompaction {
+    fn from(value: &RuntimeSessionCompaction) -> Self {
+        Self {
+            count: value.count,
+            removed_message_count: value.removed_message_count,
+            summary: value.summary.clone(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ApiSessionFork {
+    pub parent_session_id: String,
+    pub branch_name: Option<String>,
+}
+
+impl From<&RuntimeSessionFork> for ApiSessionFork {
+    fn from(value: &RuntimeSessionFork) -> Self {
+        Self {
+            parent_session_id: value.parent_session_id.clone(),
+            branch_name: value.branch_name.clone(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ApiSession {
+    pub version: u32,
+    pub session_id: String,
+    pub created_at_ms: u64,
+    pub updated_at_ms: u64,
+    pub messages: Vec<ApiConversationMessage>,
+    pub compaction: Option<ApiSessionCompaction>,
+    pub fork: Option<ApiSessionFork>,
+}
+
+impl From<&RuntimeSession> for ApiSession {
+    fn from(value: &RuntimeSession) -> Self {
+        Self {
+            version: value.version,
+            session_id: value.session_id.clone(),
+            created_at_ms: value.created_at_ms,
+            updated_at_ms: value.updated_at_ms,
+            messages: value
+                .messages
+                .iter()
+                .map(ApiConversationMessage::from)
+                .collect(),
+            compaction: value.compaction.as_ref().map(ApiSessionCompaction::from),
+            fork: value.fork.as_ref().map(ApiSessionFork::from),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum SessionEvent {
     Snapshot {
         session_id: SessionId,
-        session: RuntimeSession,
+        session: ApiSession,
     },
     Message {
         session_id: SessionId,
-        message: ConversationMessage,
+        message: ApiConversationMessage,
     },
 }
 
@@ -128,7 +291,7 @@ pub struct ListSessionsResponse {
 pub struct SessionDetailsResponse {
     pub id: SessionId,
     pub created_at: u64,
-    pub session: RuntimeSession,
+    pub session: ApiSession,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -193,7 +356,7 @@ async fn get_session(
     Ok(Json(SessionDetailsResponse {
         id: session.id.clone(),
         created_at: session.created_at,
-        session: session.conversation.clone(),
+        session: ApiSession::from(&session.conversation),
     }))
 }
 
@@ -214,7 +377,7 @@ async fn send_message(
 
     let _ = broadcaster.send(SessionEvent::Message {
         session_id: id,
-        message,
+        message: ApiConversationMessage::from(&message),
     });
 
     Ok(StatusCode::NO_CONTENT)
@@ -232,7 +395,7 @@ async fn stream_session_events(
         (
             SessionEvent::Snapshot {
                 session_id: session.id.clone(),
-                session: session.conversation.clone(),
+                session: ApiSession::from(&session.conversation),
             },
             session.subscribe(),
         )
@@ -276,7 +439,8 @@ fn not_found(message: String) -> ApiError {
 #[cfg(test)]
 mod tests {
     use super::{
-        app, AppState, CreateSessionResponse, ListSessionsResponse, SessionDetailsResponse,
+        app, ApiContentBlock, ApiConversationMessage, ApiMessageRole, AppState,
+        CreateSessionResponse, ListSessionsResponse, SessionDetailsResponse,
     };
     use reqwest::Client;
     use std::net::SocketAddr;
@@ -436,7 +600,13 @@ mod tests {
         assert_eq!(details.session.messages.len(), 1);
         assert_eq!(
             details.session.messages[0],
-            runtime::ConversationMessage::user_text("hello from test")
+            ApiConversationMessage {
+                role: ApiMessageRole::User,
+                blocks: vec![ApiContentBlock::Text {
+                    text: "hello from test".to_string(),
+                }],
+                usage: None,
+            }
         );
     }
 }

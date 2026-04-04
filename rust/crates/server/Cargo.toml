@@ -8,7 +8,7 @@ publish.workspace = true
 [dependencies]
 async-stream = "0.3"
 axum = "0.8"
-runtime = { path = "../runtime" }
+runtime.workspace = true
 serde = { version = "1", features = ["derive"] }
 serde_json.workspace = true
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "net", "time"] }

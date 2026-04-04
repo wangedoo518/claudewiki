@@ -22,7 +22,8 @@ use runtime::{
     AssistantEvent, ConfigLoader, ConfigSource, ContentBlock, ConversationMessage,
     ConversationRuntime, McpServerConfig, MessageRole, PermissionMode, PermissionPolicy,
     ResolvedPermissionMode, RuntimeConfig, RuntimeError, RuntimeFeatureConfig,
-    Session as RuntimeSession, TokenUsage, ToolError, ToolExecutor as RuntimeToolExecutor,
+    Session as RuntimeSession, SessionCompaction as RuntimeSessionCompaction,
+    SessionFork as RuntimeSessionFork, TokenUsage, ToolError, ToolExecutor as RuntimeToolExecutor,
 };
 use serde::{Deserialize, Serialize};
 use time::{
@@ -211,7 +212,286 @@ pub struct DesktopSessionDetail {
     pub environment_label: String,
     pub model_label: String,
     pub turn_state: DesktopTurnState,
-    pub session: RuntimeSession,
+    pub session: DesktopSessionData,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DesktopMessageRole {
+    System,
+    User,
+    Assistant,
+    Tool,
+}
+
+impl From<MessageRole> for DesktopMessageRole {
+    fn from(value: MessageRole) -> Self {
+        match value {
+            MessageRole::System => Self::System,
+            MessageRole::User => Self::User,
+            MessageRole::Assistant => Self::Assistant,
+            MessageRole::Tool => Self::Tool,
+        }
+    }
+}
+
+impl From<DesktopMessageRole> for MessageRole {
+    fn from(value: DesktopMessageRole) -> Self {
+        match value {
+            DesktopMessageRole::System => Self::System,
+            DesktopMessageRole::User => Self::User,
+            DesktopMessageRole::Assistant => Self::Assistant,
+            DesktopMessageRole::Tool => Self::Tool,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum DesktopContentBlock {
+    Text {
+        text: String,
+    },
+    ToolUse {
+        id: String,
+        name: String,
+        input: String,
+    },
+    ToolResult {
+        tool_use_id: String,
+        tool_name: String,
+        output: String,
+        is_error: bool,
+    },
+}
+
+impl From<&ContentBlock> for DesktopContentBlock {
+    fn from(value: &ContentBlock) -> Self {
+        match value {
+            ContentBlock::Text { text } => Self::Text { text: text.clone() },
+            ContentBlock::ToolUse { id, name, input } => Self::ToolUse {
+                id: id.clone(),
+                name: name.clone(),
+                input: input.clone(),
+            },
+            ContentBlock::ToolResult {
+                tool_use_id,
+                tool_name,
+                output,
+                is_error,
+            } => Self::ToolResult {
+                tool_use_id: tool_use_id.clone(),
+                tool_name: tool_name.clone(),
+                output: output.clone(),
+                is_error: *is_error,
+            },
+        }
+    }
+}
+
+impl From<DesktopContentBlock> for ContentBlock {
+    fn from(value: DesktopContentBlock) -> Self {
+        match value {
+            DesktopContentBlock::Text { text } => Self::Text { text },
+            DesktopContentBlock::ToolUse { id, name, input } => Self::ToolUse { id, name, input },
+            DesktopContentBlock::ToolResult {
+                tool_use_id,
+                tool_name,
+                output,
+                is_error,
+            } => Self::ToolResult {
+                tool_use_id,
+                tool_name,
+                output,
+                is_error,
+            },
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DesktopTokenUsageData {
+    pub input_tokens: u32,
+    pub output_tokens: u32,
+    pub cache_creation_input_tokens: u32,
+    pub cache_read_input_tokens: u32,
+}
+
+impl From<TokenUsage> for DesktopTokenUsageData {
+    fn from(value: TokenUsage) -> Self {
+        Self {
+            input_tokens: value.input_tokens,
+            output_tokens: value.output_tokens,
+            cache_creation_input_tokens: value.cache_creation_input_tokens,
+            cache_read_input_tokens: value.cache_read_input_tokens,
+        }
+    }
+}
+
+impl From<DesktopTokenUsageData> for TokenUsage {
+    fn from(value: DesktopTokenUsageData) -> Self {
+        Self {
+            input_tokens: value.input_tokens,
+            output_tokens: value.output_tokens,
+            cache_creation_input_tokens: value.cache_creation_input_tokens,
+            cache_read_input_tokens: value.cache_read_input_tokens,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DesktopConversationMessage {
+    pub role: DesktopMessageRole,
+    pub blocks: Vec<DesktopContentBlock>,
+    pub usage: Option<DesktopTokenUsageData>,
+}
+
+impl From<&ConversationMessage> for DesktopConversationMessage {
+    fn from(value: &ConversationMessage) -> Self {
+        Self {
+            role: value.role.into(),
+            blocks: value.blocks.iter().map(DesktopContentBlock::from).collect(),
+            usage: value.usage.map(DesktopTokenUsageData::from),
+        }
+    }
+}
+
+impl From<DesktopConversationMessage> for ConversationMessage {
+    fn from(value: DesktopConversationMessage) -> Self {
+        Self {
+            role: value.role.into(),
+            blocks: value.blocks.into_iter().map(ContentBlock::from).collect(),
+            usage: value.usage.map(TokenUsage::from),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DesktopSessionCompactionData {
+    pub count: u32,
+    pub removed_message_count: usize,
+    pub summary: String,
+}
+
+impl From<&RuntimeSessionCompaction> for DesktopSessionCompactionData {
+    fn from(value: &RuntimeSessionCompaction) -> Self {
+        Self {
+            count: value.count,
+            removed_message_count: value.removed_message_count,
+            summary: value.summary.clone(),
+        }
+    }
+}
+
+impl From<DesktopSessionCompactionData> for RuntimeSessionCompaction {
+    fn from(value: DesktopSessionCompactionData) -> Self {
+        Self {
+            count: value.count,
+            removed_message_count: value.removed_message_count,
+            summary: value.summary,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DesktopSessionForkData {
+    pub parent_session_id: String,
+    pub branch_name: Option<String>,
+}
+
+impl From<&RuntimeSessionFork> for DesktopSessionForkData {
+    fn from(value: &RuntimeSessionFork) -> Self {
+        Self {
+            parent_session_id: value.parent_session_id.clone(),
+            branch_name: value.branch_name.clone(),
+        }
+    }
+}
+
+impl From<DesktopSessionForkData> for RuntimeSessionFork {
+    fn from(value: DesktopSessionForkData) -> Self {
+        Self {
+            parent_session_id: value.parent_session_id,
+            branch_name: value.branch_name,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DesktopSessionData {
+    #[serde(default = "default_session_version")]
+    pub version: u32,
+    #[serde(default)]
+    pub session_id: String,
+    #[serde(default)]
+    pub created_at_ms: u64,
+    #[serde(default)]
+    pub updated_at_ms: u64,
+    #[serde(default)]
+    pub messages: Vec<DesktopConversationMessage>,
+    #[serde(default)]
+    pub compaction: Option<DesktopSessionCompactionData>,
+    #[serde(default)]
+    pub fork: Option<DesktopSessionForkData>,
+}
+
+impl From<&RuntimeSession> for DesktopSessionData {
+    fn from(value: &RuntimeSession) -> Self {
+        Self {
+            version: value.version,
+            session_id: value.session_id.clone(),
+            created_at_ms: value.created_at_ms,
+            updated_at_ms: value.updated_at_ms,
+            messages: value
+                .messages
+                .iter()
+                .map(DesktopConversationMessage::from)
+                .collect(),
+            compaction: value
+                .compaction
+                .as_ref()
+                .map(DesktopSessionCompactionData::from),
+            fork: value.fork.as_ref().map(DesktopSessionForkData::from),
+        }
+    }
+}
+
+fn default_session_version() -> u32 {
+    1
+}
+
+impl DesktopSessionData {
+    fn into_runtime_session_with_metadata(self, metadata: &SessionMetadata) -> RuntimeSession {
+        let mut session = RuntimeSession::from(self);
+        if session.session_id.is_empty() {
+            session.session_id = metadata.id.clone();
+        }
+        if session.created_at_ms == 0 {
+            session.created_at_ms = metadata.created_at;
+        }
+        if session.updated_at_ms == 0 {
+            session.updated_at_ms = metadata.updated_at;
+        }
+        session
+    }
+}
+
+impl From<DesktopSessionData> for RuntimeSession {
+    fn from(value: DesktopSessionData) -> Self {
+        let mut session = RuntimeSession::new();
+        session.version = value.version;
+        session.session_id = value.session_id;
+        session.created_at_ms = value.created_at_ms;
+        session.updated_at_ms = value.updated_at_ms;
+        session.messages = value
+            .messages
+            .into_iter()
+            .map(ConversationMessage::from)
+            .collect();
+        session.compaction = value.compaction.map(RuntimeSessionCompaction::from);
+        session.fork = value.fork.map(RuntimeSessionFork::from);
+        session
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -576,7 +856,7 @@ pub enum DesktopSessionEvent {
     },
     Message {
         session_id: SessionId,
-        message: ConversationMessage,
+        message: DesktopConversationMessage,
     },
 }
 
@@ -684,7 +964,7 @@ struct PersistedDesktopDispatchState {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 struct PersistedDesktopSession {
     metadata: SessionMetadata,
-    session: RuntimeSession,
+    session: DesktopSessionData,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -2244,7 +2524,7 @@ impl DesktopState {
         for message in new_messages {
             let _ = sender.send(DesktopSessionEvent::Message {
                 session_id: session_id.clone(),
-                message,
+                message: DesktopConversationMessage::from(&message),
             });
         }
         let _ = sender.send(DesktopSessionEvent::Snapshot { session: detail });
@@ -2270,7 +2550,7 @@ impl DesktopSessionRecord {
             environment_label: self.metadata.environment_label.clone(),
             model_label: self.metadata.model_label.clone(),
             turn_state: self.metadata.turn_state,
-            session: self.session.clone(),
+            session: DesktopSessionData::from(&self.session),
         }
     }
 
@@ -2483,7 +2763,7 @@ impl From<DesktopSessionRecord> for PersistedDesktopSession {
     fn from(value: DesktopSessionRecord) -> Self {
         Self {
             metadata: value.metadata,
-            session: value.session,
+            session: DesktopSessionData::from(&value.session),
         }
     }
 }
@@ -2493,9 +2773,10 @@ impl PersistedDesktopSession {
         let (events, _) = broadcast::channel(BROADCAST_CAPACITY);
         let mut metadata = self.metadata;
         metadata.turn_state = DesktopTurnState::Idle;
+        let session = self.session.into_runtime_session_with_metadata(&metadata);
         DesktopSessionRecord {
             metadata,
-            session: self.session,
+            session,
             events,
         }
     }
@@ -2588,7 +2869,7 @@ fn execute_live_turn(session: RuntimeSession, request: DesktopTurnRequest) -> De
             &tool_registry,
         ),
         system_prompt,
-        feature_config,
+        &feature_config,
     );
 
     match with_workspace_cwd(&cwd, || runtime.run_turn(request.message.clone(), None)) {
@@ -2663,7 +2944,7 @@ fn default_auth_source(
     model: &str,
     runtime_config: &RuntimeConfig,
 ) -> Result<Option<AuthSource>, String> {
-    if detect_provider_kind(model) != ProviderKind::ClawApi {
+    if detect_provider_kind(model) != ProviderKind::Anthropic {
         return Ok(None);
     }
 
@@ -2673,12 +2954,18 @@ fn default_auth_source(
 }
 
 fn permission_policy(mode: PermissionMode, tool_registry: &GlobalToolRegistry) -> PermissionPolicy {
-    tool_registry.permission_specs(None).into_iter().fold(
-        PermissionPolicy::new(mode),
-        |policy, (name, required_permission)| {
-            policy.with_tool_requirement(name, required_permission)
-        },
-    )
+    match tool_registry.permission_specs(None) {
+        Ok(specs) => specs.into_iter().fold(
+            PermissionPolicy::new(mode),
+            |policy, (name, required_permission)| {
+                policy.with_tool_requirement(name, required_permission)
+            },
+        ),
+        Err(error) => {
+            eprintln!("desktop permission policy fallback: {error}");
+            PermissionPolicy::new(mode)
+        }
+    }
 }
 
 fn permission_mode_from_config(value: ResolvedPermissionMode) -> PermissionMode {
@@ -2704,7 +2991,7 @@ impl DesktopRuntimeClient {
     ) -> Result<Self, String> {
         Ok(Self {
             runtime: tokio::runtime::Runtime::new().map_err(|error| error.to_string())?,
-            client: ProviderClient::from_model_with_default_auth(&model, default_auth)
+            client: ProviderClient::from_model_with_anthropic_auth(&model, default_auth)
                 .map_err(|error| error.to_string())?,
             model,
             tool_registry,
@@ -3719,9 +4006,11 @@ fn seeded_record(
             model_label: DEFAULT_MODEL_LABEL.to_string(),
             turn_state: DesktopTurnState::Idle,
         },
-        session: RuntimeSession {
-            version: 1,
-            messages,
+        session: {
+            let mut session = RuntimeSession::new();
+            session.version = 1;
+            session.messages = messages;
+            session
         },
         events,
     }
@@ -3777,11 +4066,15 @@ fn unix_timestamp_millis() -> u64 {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+    use std::path::PathBuf;
+    use std::sync::Arc;
+
     use super::{
         AppendDesktopMessageRequest, CreateDesktopDispatchItemRequest,
         CreateDesktopScheduledTaskRequest, CreateDesktopSessionRequest, DesktopDispatchPriority,
-        DesktopDispatchStatus, DesktopScheduledRunStatus, DesktopScheduledSchedule, DesktopState,
-        DesktopTurnState,
+        DesktopDispatchStatus, DesktopPersistence, DesktopScheduledRunStatus,
+        DesktopScheduledSchedule, DesktopState, DesktopTurnState,
     };
     use tokio::time::{sleep, Duration};
 
@@ -3910,5 +4203,77 @@ mod tests {
         assert_eq!(delivered.status, DesktopDispatchStatus::Delivered);
         assert!(delivered.delivered_at.is_some());
         assert_eq!(state.list_sessions().await.len(), 5);
+    }
+
+    #[tokio::test]
+    async fn legacy_persisted_sessions_load_with_metadata_backfill() {
+        let path = legacy_sessions_fixture_path();
+        let payload = r#"{
+  "next_session_id": 15,
+  "sessions": [
+    {
+      "metadata": {
+        "id": "desktop-session-4",
+        "title": "Legacy session",
+        "preview": "Legacy preview",
+        "bucket": "older",
+        "created_at": 1774960754306,
+        "updated_at": 1774967954306,
+        "project_name": "Warwolf",
+        "project_path": "/Users/champion/Documents/develop/Warwolf/open-claude-code",
+        "environment_label": "Local",
+        "model_label": "Opus 4.6",
+        "turn_state": "idle"
+      },
+      "session": {
+        "version": 1,
+        "messages": [
+          {
+            "role": "user",
+            "blocks": [
+              {
+                "type": "text",
+                "text": "Legacy prompt"
+              }
+            ],
+            "usage": null
+          }
+        ]
+      }
+    }
+  ]
+}"#;
+        fs::write(&path, payload).expect("legacy fixture should be written");
+
+        let state = DesktopState::with_executor(
+            Arc::new(super::MockTurnExecutor),
+            Some(Arc::new(DesktopPersistence { path: path.clone() })),
+            None,
+            None,
+        );
+
+        let sessions = state.list_sessions().await;
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].id, "desktop-session-4");
+
+        let detail = state
+            .get_session("desktop-session-4")
+            .await
+            .expect("legacy session should load");
+        assert_eq!(detail.session.session_id, "desktop-session-4");
+        assert_eq!(detail.session.created_at_ms, 1774960754306);
+        assert_eq!(detail.session.updated_at_ms, 1774967954306);
+        assert_eq!(detail.session.messages.len(), 1);
+
+        let _ = fs::remove_file(path);
+    }
+
+    fn legacy_sessions_fixture_path() -> PathBuf {
+        let suffix = format!(
+            "desktop-core-legacy-sessions-{}-{}.json",
+            std::process::id(),
+            super::unix_timestamp_millis()
+        );
+        std::env::temp_dir().join(suffix)
     }
 }

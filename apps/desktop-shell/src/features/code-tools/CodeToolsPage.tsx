@@ -1,8 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Alert, Button, Checkbox, Input, Select, Space, message } from "antd";
-import { Download, FolderOpen, Terminal, X } from "lucide-react";
-import styled from "styled-components";
+import { Select, message } from "antd";
+import { Download, FolderOpen, Loader2, Terminal, X } from "lucide-react";
 import {
   buildCodeToolsProviderCatalog,
   CLI_TOOLS,
@@ -21,6 +20,7 @@ import {
   ModelSelector,
 } from "@/features/code-tools/components/ModelSelector";
 import { useCodeTools } from "@/hooks/useCodeTools";
+import { Button } from "@/components/ui/button";
 import {
   getCodeToolAvailableTerminals,
   getCodexRuntime,
@@ -42,10 +42,10 @@ function getErrorMessage(error: unknown, fallback: string) {
   }
 
   if (error && typeof error === "object" && "message" in error) {
-    const message =
+    const msg =
       typeof error.message === "string" ? error.message : JSON.stringify(error.message);
-    if (message && message !== "null" && message !== "undefined") {
-      return message;
+    if (msg && msg !== "null" && msg !== "undefined") {
+      return msg;
     }
   }
 
@@ -105,7 +105,10 @@ export function CodeToolsPage() {
     [providerCatalog, selectedCliTool]
   );
   const anthropicProviderNames = useMemo(
-    () => filterProvidersForTool(providerCatalog, CLAUDE_CODE).map((provider) => provider.name),
+    () =>
+      filterProvidersForTool(providerCatalog, CLAUDE_CODE).map(
+        (provider) => provider.name
+      ),
     [providerCatalog]
   );
 
@@ -230,52 +233,55 @@ export function CodeToolsPage() {
   const shouldShowTerminalSelector = availableTerminals.length > 0;
 
   return (
-    <Container>
+    <div className="flex flex-1 flex-col bg-background">
       {contextHolder}
-      <ContentContainer>
-        <MainContent>
-          <Title>代码工具</Title>
-          <Description>快速启动多个代码 CLI 工具，提高开发效率</Description>
+      <div className="flex flex-1 overflow-y-auto py-7">
+        <div className="mx-auto min-h-fit w-[600px]">
+          <h1 className="mb-2 text-xl font-semibold text-foreground">
+            代码工具
+          </h1>
+          <p className="mb-8 text-[13px] leading-relaxed text-muted-foreground">
+            快速启动多个代码 CLI 工具，提高开发效率
+          </p>
 
           {!isBunInstalled && (
-            <BunInstallAlert>
-              <Alert
-                type="warning"
-                banner
-                style={{ borderRadius: "var(--radius)" }}
-                message={
-                  <AlertContent>
-                    <span>运行 CLI 工具需要安装 Bun 环境</span>
-                    <Button
-                      type="primary"
-                      size="small"
-                      icon={<Download size={14} />}
-                      onClick={handleInstallBun}
-                      loading={isInstallingBun}
-                    >
-                      {isInstallingBun ? "安装中..." : "安装 Bun"}
-                    </Button>
-                  </AlertContent>
-                }
-              />
-            </BunInstallAlert>
+            <div className="mb-6 flex items-center justify-between gap-3 rounded-lg border border-amber-500/30 bg-amber-500/5 px-4 py-3 text-[13px]">
+              <span className="text-amber-700 dark:text-amber-400">
+                运行 CLI 工具需要安装 Bun 环境
+              </span>
+              <Button
+                size="sm"
+                onClick={() => void handleInstallBun()}
+                disabled={isInstallingBun}
+              >
+                {isInstallingBun ? (
+                  <Loader2 className="mr-1.5 size-3.5 animate-spin" />
+                ) : (
+                  <Download className="mr-1.5 size-3.5" />
+                )}
+                {isInstallingBun ? "安装中..." : "安装 Bun"}
+              </Button>
+            </div>
           )}
 
           {codexNoticeVisible && (
-            <BunInstallAlert>
-              <Alert
-                type="info"
-                showIcon
-                style={{ borderRadius: "var(--radius)" }}
-                message="OpenAI Codex 当前未检测到可用的 Codex 登录态或 API 凭据"
-                description="如果使用 OpenAI Codex，建议先在设置中的 Provider 页面完成 Codex 登录。"
-              />
-            </BunInstallAlert>
+            <div className="mb-6 rounded-lg border border-blue-500/30 bg-blue-500/5 px-4 py-3">
+              <div className="text-[13px] font-medium text-blue-700 dark:text-blue-400">
+                OpenAI Codex 当前未检测到可用的 Codex 登录态或 API 凭据
+              </div>
+              <div className="mt-1 text-[12px] text-blue-600/80 dark:text-blue-400/70">
+                如果使用 OpenAI Codex，建议先在设置中的 Provider 页面完成 Codex
+                登录。
+              </div>
+            </div>
           )}
 
-          <SettingsPanel>
-            <SettingsItem>
-              <div className="settings-label">CLI 工具</div>
+          <div className="mb-8 space-y-6">
+            {/* CLI Tool */}
+            <div>
+              <div className="mb-2 flex items-center gap-2 text-[13px] font-medium text-foreground">
+                CLI 工具
+              </div>
               <Select
                 style={{ width: "100%" }}
                 placeholder="选择要使用的 CLI 工具"
@@ -283,11 +289,12 @@ export function CodeToolsPage() {
                 options={CLI_TOOLS}
                 onChange={(value) => setCliTool(value as CodeToolId)}
               />
-            </SettingsItem>
+            </div>
 
+            {/* Model */}
             {shouldShowModelSelector && (
-              <SettingsItem>
-                <div className="settings-label">
+              <div>
+                <div className="mb-2 flex items-center gap-2 text-[13px] font-medium text-foreground">
                   模型
                   {selectedCliTool === CLAUDE_CODE && (
                     <AnthropicProviderListPopover
@@ -302,7 +309,7 @@ export function CodeToolsPage() {
                   onChange={handleModelChange}
                 />
                 {availableProviders.length === 0 && (
-                  <HelpText>
+                  <p className="mt-1 text-[12px] text-muted-foreground">
                     当前没有可用于
                     {selectedCliTool === CLAUDE_CODE
                       ? " Claude Code"
@@ -310,16 +317,19 @@ export function CodeToolsPage() {
                         ? " Gemini CLI"
                         : " 该工具"}
                     的服务商配置，页面会先显示预设目录。
-                  </HelpText>
+                  </p>
                 )}
-              </SettingsItem>
+              </div>
             )}
 
-            <SettingsItem>
-              <div className="settings-label">工作目录</div>
-              <Space.Compact style={{ width: "100%", display: "flex" }}>
+            {/* Working directory */}
+            <div>
+              <div className="mb-2 flex items-center gap-2 text-[13px] font-medium text-foreground">
+                工作目录
+              </div>
+              <div className="flex w-full items-center gap-2">
                 <Select
-                  style={{ flex: 1, width: 480 }}
+                  style={{ flex: 1 }}
                   placeholder="选择工作目录"
                   value={currentDirectory || undefined}
                   onChange={setCurrentDir}
@@ -337,41 +347,55 @@ export function CodeToolsPage() {
                     label: directory,
                   }))}
                   optionRender={(option) => (
-                    <OptionRow>
-                      <OptionText>{String(option.value)}</OptionText>
+                    <div className="flex items-center justify-between">
+                      <span className="min-w-0 flex-1 truncate">
+                        {String(option.value)}
+                      </span>
                       <X
                         size={14}
-                        style={{ marginLeft: 8, cursor: "pointer", color: "#999" }}
+                        className="ml-2 shrink-0 cursor-pointer text-muted-foreground hover:text-foreground"
                         onClick={(event) => {
                           event.stopPropagation();
                           removeDir(String(option.value));
                         }}
                       />
-                    </OptionRow>
+                    </div>
                   )}
                 />
-                <Button onClick={() => void handleSelectFolder()} style={{ width: 120 }}>
+                <Button
+                  variant="outline"
+                  className="shrink-0"
+                  onClick={() => void handleSelectFolder()}
+                >
                   选择文件夹
                 </Button>
-              </Space.Compact>
-            </SettingsItem>
+              </div>
+            </div>
 
-            <SettingsItem>
-              <div className="settings-label">环境变量</div>
-              <Input.TextArea
+            {/* Environment variables */}
+            <div>
+              <div className="mb-2 flex items-center gap-2 text-[13px] font-medium text-foreground">
+                环境变量
+              </div>
+              <textarea
                 rows={2}
                 value={environmentVariables}
                 placeholder={`KEY1=value1\nKEY2=value2`}
                 onChange={(event) => setEnvVars(event.target.value)}
-                style={{ fontFamily: "monospace" }}
+                className="w-full rounded-md border border-border bg-background px-3 py-2 font-mono text-[13px] text-foreground placeholder:text-muted-foreground focus:border-ring focus:outline-none focus:ring-1 focus:ring-ring"
               />
-              <HelpText>输入自定义环境变量（每行一个，格式：KEY=value）</HelpText>
-            </SettingsItem>
+              <p className="mt-1 text-[12px] text-muted-foreground">
+                输入自定义环境变量（每行一个，格式：KEY=value）
+              </p>
+            </div>
 
+            {/* Terminal */}
             {shouldShowTerminalSelector && (
-              <SettingsItem>
-                <div className="settings-label">终端</div>
-                <Space.Compact style={{ width: "100%", display: "flex" }}>
+              <div>
+                <div className="mb-2 flex items-center gap-2 text-[13px] font-medium text-foreground">
+                  终端
+                </div>
+                <div className="flex w-full items-center gap-2">
                   <Select
                     style={{ flex: 1 }}
                     placeholder="选择终端应用"
@@ -383,120 +407,47 @@ export function CodeToolsPage() {
                       label: terminal.name,
                     }))}
                   />
-                  <Button disabled icon={<FolderOpen size={16} />}>
+                  <Button variant="outline" disabled className="shrink-0">
+                    <FolderOpen className="mr-1.5 size-4" />
                     终端路径
                   </Button>
-                </Space.Compact>
-              </SettingsItem>
+                </div>
+              </div>
             )}
 
-            <SettingsItem>
-              <div className="settings-label">更新选项</div>
-              <Checkbox
-                checked={autoUpdateToLatest}
-                onChange={(event) => setAutoUpdateToLatest(event.target.checked)}
-              >
+            {/* Update option */}
+            <div>
+              <div className="mb-2 flex items-center gap-2 text-[13px] font-medium text-foreground">
+                更新选项
+              </div>
+              <label className="flex cursor-pointer items-center gap-2.5 text-[13px] text-foreground">
+                <input
+                  type="checkbox"
+                  checked={autoUpdateToLatest}
+                  onChange={(event) =>
+                    setAutoUpdateToLatest(event.target.checked)
+                  }
+                  className="size-4 rounded border-border accent-primary"
+                />
                 检查更新并安装最新版本
-              </Checkbox>
-            </SettingsItem>
-          </SettingsPanel>
+              </label>
+            </div>
+          </div>
 
           <Button
-            type="primary"
-            icon={<Terminal size={16} />}
-            size="large"
-            block
-            onClick={handleLaunch}
-            loading={isLaunching}
-            disabled={!canLaunch || !isBunInstalled}
+            className="h-10 w-full"
+            onClick={() => void handleLaunch()}
+            disabled={!canLaunch || !isBunInstalled || isLaunching}
           >
+            {isLaunching ? (
+              <Loader2 className="mr-2 size-4 animate-spin" />
+            ) : (
+              <Terminal className="mr-2 size-4" />
+            )}
             {isLaunching ? "启动中..." : "启动"}
           </Button>
-        </MainContent>
-      </ContentContainer>
-    </Container>
+        </div>
+      </div>
+    </div>
   );
 }
-
-const Container = styled.div`
-  display: flex;
-  flex: 1;
-  flex-direction: column;
-  background: var(--color-background);
-`;
-
-const ContentContainer = styled.div`
-  display: flex;
-  flex: 1;
-  overflow-y: auto;
-  padding: 28px 0;
-`;
-
-const MainContent = styled.div`
-  width: 600px;
-  margin: auto;
-  min-height: fit-content;
-`;
-
-const Title = styled.h1`
-  font-size: 24px;
-  font-weight: 600;
-  margin-bottom: 8px;
-  color: var(--color-foreground);
-`;
-
-const Description = styled.p`
-  font-size: 14px;
-  color: var(--color-muted-foreground);
-  margin-bottom: 32px;
-  line-height: 1.5;
-`;
-
-const SettingsPanel = styled.div`
-  margin-bottom: 32px;
-`;
-
-const SettingsItem = styled.div`
-  margin-bottom: 24px;
-
-  .settings-label {
-    font-size: 14px;
-    margin-bottom: 8px;
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    color: var(--color-foreground);
-    font-weight: 500;
-  }
-`;
-
-const BunInstallAlert = styled.div`
-  margin-bottom: 24px;
-`;
-
-const AlertContent = styled.div`
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 12px;
-`;
-
-const HelpText = styled.div`
-  font-size: 12px;
-  color: var(--color-muted-foreground);
-  margin-top: 4px;
-`;
-
-const OptionRow = styled.div`
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-`;
-
-const OptionText = styled.span`
-  flex: 1;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  min-width: 0;
-`;

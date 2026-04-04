@@ -7,6 +7,7 @@ import {
   Monitor,
   House,
   LayoutGrid,
+  Terminal,
   Settings,
 } from "lucide-react";
 import { useAppDispatch, useAppSelector } from "@/store";
@@ -67,10 +68,12 @@ export function TabBar() {
   // ─── Derived nav state ────────────────────────────────────────
   const isOnHome = pathname === "/home" || pathname === "/";
   const isOnApps = pathname.startsWith("/apps");
+  const isOnCode = pathname === "/code";
   const isSettingsActive =
     isOnHome && viewMode.kind === "nav" && viewMode.section === "settings";
   const isHomeActive = isOnHome && !isSettingsActive;
   const isAppsActive = isOnApps;
+  const isCodeActive = isOnCode;
 
   // Session/minapp tabs only (no system tabs)
   const sessionTabs = tabs.filter(
@@ -124,6 +127,10 @@ export function TabBar() {
 
   const handleNavApps = () => {
     navigate("/apps");
+  };
+
+  const handleNavCode = () => {
+    navigate("/code");
   };
 
   const handleNavSettings = () => {
@@ -214,6 +221,12 @@ export function TabBar() {
             label="应用"
             active={isAppsActive}
             onClick={handleNavApps}
+          />
+          <NavButton
+            icon={Terminal}
+            label="代码"
+            active={isCodeActive}
+            onClick={handleNavCode}
           />
           <NavButton
             icon={Settings}

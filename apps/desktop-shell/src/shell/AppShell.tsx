@@ -3,6 +3,7 @@ import { TabBar } from "./TabBar";
 import { HomePage } from "@/features/workbench/HomePage";
 import { AppsGalleryPage } from "@/features/apps/AppsGalleryPage";
 import { MinAppDetailPage } from "@/features/apps/MinAppDetailPage";
+import { CodeToolsPage } from "@/features/code-tools/CodeToolsPage";
 
 /** Lightweight fade-in wrapper keyed by pathname */
 function PageTransition({ children }: { children: React.ReactNode }) {
@@ -24,6 +25,7 @@ function PageTransition({ children }: { children: React.ReactNode }) {
  *   /home      -> HomePage (workbench with sessions, search, settings, etc.)
  *   /apps      -> AppsGalleryPage (cherry-studio grid of MinApps)
  *   /apps/:id  -> MinAppDetailPage (toolbar + keep-alive content pool)
+ *   /code      -> CodeToolsPage (CLI code tools launcher)
  */
 export function AppShell() {
   return (
@@ -34,6 +36,7 @@ export function AppShell() {
           <Route path="/home" element={<PageTransition><HomePage /></PageTransition>} />
           <Route path="/apps" element={<PageTransition><AppsGalleryPage /></PageTransition>} />
           <Route path="/apps/:appId" element={<PageTransition><MinAppDetailPage /></PageTransition>} />
+          <Route path="/code" element={<PageTransition><CodeToolsPage /></PageTransition>} />
           <Route path="*" element={<Navigate to="/home" replace />} />
         </Routes>
       </main>

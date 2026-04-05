@@ -144,7 +144,7 @@ export function McpSettings({ customize, error }: McpSettingsProps) {
                 <Plug
                   className="size-4 shrink-0"
                   style={{
-                    color: "var(--color-success, rgb(44,122,57))",
+                    color: "var(--color-success)",
                   }}
                 />
                 <div className="min-w-0 flex-1">
@@ -210,7 +210,7 @@ function UserServerCard({
         className="size-4 shrink-0"
         style={{
           color: server.enabled
-            ? "var(--agent-cyan, rgb(8,145,178))"
+            ? "var(--agent-cyan)"
             : "var(--color-muted-foreground)",
         }}
       />
@@ -222,7 +222,7 @@ function UserServerCard({
               className="inline-block size-1.5 rounded-full"
               style={{
                 backgroundColor:
-                  "var(--color-success, rgb(44,122,57))",
+                  "var(--color-success)",
               }}
             />
           )}
@@ -260,7 +260,7 @@ function UserServerCard({
         </button>
         <button
           className="rounded p-1 transition-colors hover:bg-accent"
-          style={{ color: "var(--color-error, rgb(171,43,63))" }}
+          style={{ color: "var(--color-error)" }}
           onClick={onDelete}
           title="Delete"
         >

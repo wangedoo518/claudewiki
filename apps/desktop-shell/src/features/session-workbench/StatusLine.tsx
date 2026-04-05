@@ -53,7 +53,7 @@ export function StatusLine({
         {isRunning && (
           <span
             className="flex items-center gap-1 font-medium"
-            style={{ color: "var(--claude-orange, rgb(215,119,87))" }}
+            style={{ color: "var(--claude-orange)" }}
           >
             <Zap className="size-2.5" />
             Running

@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import {
-  Loader2,
   Terminal,
   FileEdit,
   Search,
@@ -261,12 +260,7 @@ export function SessionWorkbenchTerminal({
                 </div>
               </div>
             )}
-            {isLoadingSession && (
-              <div className="flex items-center gap-2 px-4 py-4 text-[13px] text-muted-foreground">
-                <Loader2 className="size-4 animate-spin" />
-                <span>Loading session...</span>
-              </div>
-            )}
+            {isLoadingSession && <MessageSkeleton />}
             {displayMessages.map((msg) => (
               <MessageItem key={msg.id} message={msg} />
             ))}
@@ -280,14 +274,20 @@ export function SessionWorkbenchTerminal({
             {isRunning && !pendingPermission && <StreamingSpinner />}
             {errorMessage && (
               <div
-                className="mx-4 mt-3 rounded-lg border px-3 py-2 text-[12px]"
+                className="mx-4 mt-3 flex items-start gap-2 rounded-lg border px-3 py-2 text-[12px]"
                 style={{
-                  borderColor: "color-mix(in srgb, var(--color-error, rgb(171,43,63)) 30%, transparent)",
-                  backgroundColor: "color-mix(in srgb, var(--color-error, rgb(171,43,63)) 5%, transparent)",
-                  color: "var(--color-error, rgb(171,43,63))",
+                  borderColor: "color-mix(in srgb, var(--color-error) 30%, transparent)",
+                  backgroundColor: "color-mix(in srgb, var(--color-error) 5%, transparent)",
+                  color: "var(--color-error)",
                 }}
               >
-                {errorMessage}
+                <span className="flex-1">{errorMessage}</span>
+                <button
+                  className="shrink-0 rounded px-1.5 py-0.5 text-[11px] font-medium transition-colors hover:bg-[color-mix(in_srgb,var(--color-error)_15%,transparent)]"
+                  onClick={() => addSystemMessage("Error dismissed. You can retry your last message.")}
+                >
+                  Dismiss
+                </button>
               </div>
             )}
           </div>
@@ -321,6 +321,40 @@ export function SessionWorkbenchTerminal({
   );
 }
 
+/* ─── Loading skeleton ──────────────────────────────────────────── */
+
+function MessageSkeleton() {
+  return (
+    <div className="space-y-3 px-4 py-4">
+      {/* User message skeleton */}
+      <div className="rounded-lg border border-border/30 bg-muted/10 p-3">
+        <div className="mb-2 h-2.5 w-12 animate-pulse rounded bg-muted/40" />
+        <div className="space-y-1.5">
+          <div className="h-3 w-3/4 animate-pulse rounded bg-muted/30" />
+          <div className="h-3 w-1/2 animate-pulse rounded bg-muted/30" />
+        </div>
+      </div>
+      {/* Assistant message skeleton */}
+      <div className="rounded-lg border border-border/30 bg-muted/10 p-3">
+        <div className="mb-2 h-2.5 w-16 animate-pulse rounded bg-muted/40" />
+        <div className="space-y-1.5">
+          <div className="h-3 w-full animate-pulse rounded bg-muted/30" />
+          <div className="h-3 w-5/6 animate-pulse rounded bg-muted/30" />
+          <div className="h-3 w-2/3 animate-pulse rounded bg-muted/30" />
+        </div>
+      </div>
+      {/* Tool use skeleton */}
+      <div className="rounded-lg border border-border/30 bg-muted/10 p-2.5">
+        <div className="flex items-center gap-2">
+          <div className="size-3.5 animate-pulse rounded bg-muted/40" />
+          <div className="h-3 w-20 animate-pulse rounded bg-muted/40" />
+          <div className="h-3 flex-1 animate-pulse rounded bg-muted/20" />
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /* ─── Streaming Spinner with shimmer ─────────────────────────────── */
 
 function StreamingSpinner() {
@@ -346,7 +380,7 @@ function ShimmerDot({ delay }: { delay: number }) {
     <span
       className="inline-block size-1.5 rounded-full animate-pulse"
       style={{
-        backgroundColor: "var(--claude-orange, rgb(215,119,87))",
+        backgroundColor: "var(--claude-orange)",
         animationDelay: `${delay}ms`,
       }}
     />
@@ -361,37 +395,37 @@ function WelcomeScreen({ onShowDemo }: { onShowDemo?: () => void }) {
       icon: Terminal,
       title: "Run Commands",
       desc: "Execute shell commands, scripts, and build tools",
-      color: "var(--color-terminal-tool, rgb(44,122,57))",
+      color: "var(--color-terminal-tool)",
     },
     {
       icon: FileEdit,
       title: "Edit Files",
       desc: "Read, write, and modify code with precise diffs",
-      color: "var(--claude-orange, rgb(215,119,87))",
+      color: "var(--claude-orange)",
     },
     {
       icon: Search,
       title: "Search Code",
       desc: "Find files and patterns across your codebase",
-      color: "var(--claude-blue, rgb(87,105,247))",
+      color: "var(--claude-blue)",
     },
     {
       icon: Globe,
       title: "Web Access",
       desc: "Fetch URLs and search the web for information",
-      color: "var(--agent-cyan, rgb(8,145,178))",
+      color: "var(--agent-cyan)",
     },
     {
       icon: Code2,
       title: "Multi-file Edits",
       desc: "Coordinate changes across multiple files at once",
-      color: "var(--agent-purple, rgb(147,51,234))",
+      color: "var(--agent-purple)",
     },
     {
       icon: Zap,
       title: "MCP Tools",
       desc: "Use connected MCP server tools and extensions",
-      color: "var(--color-fast-mode, rgb(255,106,0))",
+      color: "var(--color-fast-mode)",
     },
   ];
 
@@ -402,7 +436,7 @@ function WelcomeScreen({ onShowDemo }: { onShowDemo?: () => void }) {
         <div
           className="flex size-14 items-center justify-center rounded-2xl"
           style={{
-            background: "linear-gradient(135deg, var(--claude-orange, rgb(215,119,87)), var(--claude-orange-shimmer, rgb(245,149,117)))",
+            background: "linear-gradient(135deg, var(--claude-orange), var(--claude-orange-shimmer))",
           }}
         >
           <MessageSquare className="size-7 text-white" />

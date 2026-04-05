@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useAppDispatch, useAppSelector } from "@/store";
 import { SessionWorkbenchSidebar } from "./SessionWorkbenchSidebar";
@@ -37,7 +37,18 @@ export function SessionWorkbenchPage({
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(
     sessionId ?? null
   );
-  const resolvedShowSidebar = showSessionSidebar ?? showSidebarPreference;
+  // Auto-hide sidebar on narrow viewports
+  const [isNarrow, setIsNarrow] = useState(false);
+  useLayoutEffect(() => {
+    const mq = window.matchMedia("(max-width: 640px)");
+    setIsNarrow(mq.matches);
+    const handler = (e: MediaQueryListEvent) => setIsNarrow(e.matches);
+    mq.addEventListener("change", handler);
+    return () => mq.removeEventListener("change", handler);
+  }, []);
+
+  const resolvedShowSidebar =
+    (showSessionSidebar ?? showSidebarPreference) && !isNarrow;
 
   const workbenchQuery = useQuery({
     queryKey: ["desktop-workbench"],

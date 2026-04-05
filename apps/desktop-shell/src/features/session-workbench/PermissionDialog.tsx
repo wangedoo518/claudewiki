@@ -34,20 +34,20 @@ export function PermissionDialog({ request, onDecision }: PermissionDialogProps)
 
   const riskConfig = {
     low: {
-      borderColor: "var(--color-success, rgb(44,122,57))",
-      bgColor: "color-mix(in srgb, var(--color-success, rgb(44,122,57)) 5%, transparent)",
+      borderColor: "var(--color-success)",
+      bgColor: "color-mix(in srgb, var(--color-success) 5%, transparent)",
       label: "Low risk",
       icon: ShieldCheck,
     },
     medium: {
-      borderColor: "var(--color-warning, rgb(150,108,30))",
-      bgColor: "color-mix(in srgb, var(--color-warning, rgb(150,108,30)) 5%, transparent)",
+      borderColor: "var(--color-warning)",
+      bgColor: "color-mix(in srgb, var(--color-warning) 5%, transparent)",
       label: "Medium risk",
       icon: Shield,
     },
     high: {
-      borderColor: "var(--color-error, rgb(171,43,63))",
-      bgColor: "color-mix(in srgb, var(--color-error, rgb(171,43,63)) 5%, transparent)",
+      borderColor: "var(--color-error)",
+      bgColor: "color-mix(in srgb, var(--color-error) 5%, transparent)",
       label: "High risk",
       icon: AlertTriangle,
     },
@@ -73,7 +73,7 @@ export function PermissionDialog({ request, onDecision }: PermissionDialogProps)
           <div
             className="flex size-6 items-center justify-center rounded-md"
             style={{
-              backgroundColor: "var(--color-permission, rgb(87,105,247))",
+              backgroundColor: "var(--color-permission)",
             }}
           >
             <Shield className="size-3.5 text-white" />
@@ -125,7 +125,7 @@ export function PermissionDialog({ request, onDecision }: PermissionDialogProps)
         <div className="flex items-center gap-2 border-t border-border/30 px-4 py-2.5">
           <button
             className="flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-[11px] font-medium text-white transition-colors"
-            style={{ backgroundColor: "var(--color-permission, rgb(87,105,247))" }}
+            style={{ backgroundColor: "var(--color-permission)" }}
             onClick={() => onDecision("allow")}
           >
             <ShieldCheck className="size-3" />
@@ -141,7 +141,7 @@ export function PermissionDialog({ request, onDecision }: PermissionDialogProps)
           <div className="flex-1" />
           <button
             className="flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-[11px] font-medium transition-colors"
-            style={{ color: "var(--color-error, rgb(171,43,63))" }}
+            style={{ color: "var(--color-error)" }}
             onClick={() => onDecision("deny")}
           >
             <ShieldX className="size-3" />
@@ -197,15 +197,15 @@ function getPermToolMeta(toolName: string) {
   const lower = toolName.toLowerCase();
 
   if (lower === "bash" || lower.includes("shell"))
-    return { icon: Terminal, label: "Bash", color: "var(--color-terminal-tool, rgb(44,122,57))" };
+    return { icon: Terminal, label: "Bash", color: "var(--color-terminal-tool)" };
   if (lower === "read" || lower === "readfile")
-    return { icon: Eye, label: "Read", color: "var(--claude-blue, rgb(87,105,247))" };
+    return { icon: Eye, label: "Read", color: "var(--claude-blue)" };
   if (lower === "edit" || lower === "editfile" || lower === "write" || lower === "writefile")
-    return { icon: FileEdit, label: toolName, color: "var(--claude-orange, rgb(215,119,87))" };
+    return { icon: FileEdit, label: toolName, color: "var(--claude-orange)" };
   if (lower === "glob" || lower === "grep")
-    return { icon: Search, label: toolName, color: "var(--color-terminal-tool, rgb(44,122,57))" };
+    return { icon: Search, label: toolName, color: "var(--color-terminal-tool)" };
   if (lower.includes("web"))
-    return { icon: Globe, label: toolName, color: "var(--claude-blue, rgb(87,105,247))" };
+    return { icon: Globe, label: toolName, color: "var(--claude-blue)" };
 
-  return { icon: Terminal, label: toolName, color: "var(--color-terminal-tool, rgb(44,122,57))" };
+  return { icon: Terminal, label: toolName, color: "var(--color-terminal-tool)" };
 }

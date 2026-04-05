@@ -43,21 +43,21 @@ const PERMISSION_MODES: {
     label: "Accept edits",
     desc: "Auto-accept file edits, ask for others",
     icon: ShieldCheck,
-    color: "var(--color-success, rgb(44,122,57))",
+    color: "var(--color-success)",
   },
   {
     value: "bypassPermissions",
     label: "Bypass permissions",
     desc: "Skip all permission checks",
     icon: ShieldOff,
-    color: "var(--color-error, rgb(171,43,63))",
+    color: "var(--color-error)",
   },
   {
     value: "plan",
     label: "Plan mode",
     desc: "Plan only, don't execute tools",
     icon: FileSearch,
-    color: "var(--color-warning, rgb(150,108,30))",
+    color: "var(--color-warning)",
   },
 ];
 
@@ -324,6 +324,7 @@ export function InputBar({
           onChange={(e) => setValue(e.target.value)}
           onKeyDown={handleKeyDown}
           onInput={handleInput}
+          aria-label="Message input"
           placeholder={
             isBusy
               ? "Waiting for response..."
@@ -352,6 +353,8 @@ export function InputBar({
               )}
               style={modeConfig.color ? { color: modeConfig.color } : undefined}
               onClick={() => setShowPermissionMenu((prev) => !prev)}
+              aria-label={`Permission mode: ${modeConfig.label}`}
+              aria-expanded={showPermissionMenu}
             >
               <ModeIcon className="size-3" />
               <span>{modeConfig.label}</span>
@@ -399,7 +402,7 @@ export function InputBar({
                           style={{
                             backgroundColor:
                               mode.color ??
-                              "var(--claude-orange, rgb(215,119,87))",
+                              "var(--claude-orange)",
                           }}
                         />
                       )}
@@ -410,7 +413,10 @@ export function InputBar({
             )}
           </div>
 
-          <button className="flex items-center gap-1.5 rounded-lg border border-border/50 px-2 py-1 text-[11px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground">
+          <button
+            className="flex items-center gap-1.5 rounded-lg border border-border/50 px-2 py-1 text-[11px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+            aria-label={`Environment: ${environmentLabel}`}
+          >
             <Monitor className="size-3" />
             <span>{environmentLabel}</span>
           </button>
@@ -421,7 +427,7 @@ export function InputBar({
           <button
             className="flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-[11px] font-medium text-white transition-colors"
             style={{
-              backgroundColor: "var(--color-error, rgb(171,43,63))",
+              backgroundColor: "var(--color-error)",
             }}
             onClick={handleStop}
           >
@@ -436,7 +442,7 @@ export function InputBar({
                 ? "cursor-pointer"
                 : "cursor-not-allowed opacity-50"
             )}
-            style={{ backgroundColor: "var(--claude-orange, rgb(215,119,87))" }}
+            style={{ backgroundColor: "var(--claude-orange)" }}
             onClick={handleSend}
             disabled={!value.trim()}
           >

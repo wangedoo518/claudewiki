@@ -123,7 +123,7 @@ export function ProjectPathSelector({
             className="size-4 shrink-0"
             style={{
               color: currentPath
-                ? "var(--claude-orange, rgb(215,119,87))"
+                ? "var(--claude-orange)"
                 : "var(--color-muted-foreground)",
             }}
           />

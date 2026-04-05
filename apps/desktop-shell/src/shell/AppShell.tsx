@@ -1,5 +1,6 @@
 import { Routes, Route, Navigate, useLocation } from "react-router-dom";
 import { TabBar } from "./TabBar";
+import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { HomePage } from "@/features/workbench/HomePage";
 import { AppsGalleryPage } from "@/features/apps/AppsGalleryPage";
 import { MinAppDetailPage } from "@/features/apps/MinAppDetailPage";
@@ -29,17 +30,21 @@ function PageTransition({ children }: { children: React.ReactNode }) {
  */
 export function AppShell() {
   return (
-    <div className="flex h-screen w-screen flex-col overflow-hidden">
-      <TabBar />
-      <main className="relative flex-1 overflow-hidden">
-        <Routes>
-          <Route path="/home" element={<PageTransition><HomePage /></PageTransition>} />
-          <Route path="/apps" element={<PageTransition><AppsGalleryPage /></PageTransition>} />
-          <Route path="/apps/:appId" element={<PageTransition><MinAppDetailPage /></PageTransition>} />
-          <Route path="/code" element={<PageTransition><CodeToolsPage /></PageTransition>} />
-          <Route path="*" element={<Navigate to="/home" replace />} />
-        </Routes>
-      </main>
-    </div>
+    <ErrorBoundary>
+      <div className="flex h-screen w-screen flex-col overflow-hidden">
+        <TabBar />
+        <main className="relative flex-1 overflow-hidden">
+          <ErrorBoundary>
+            <Routes>
+              <Route path="/home" element={<PageTransition><HomePage /></PageTransition>} />
+              <Route path="/apps" element={<PageTransition><AppsGalleryPage /></PageTransition>} />
+              <Route path="/apps/:appId" element={<PageTransition><MinAppDetailPage /></PageTransition>} />
+              <Route path="/code" element={<PageTransition><CodeToolsPage /></PageTransition>} />
+              <Route path="*" element={<Navigate to="/home" replace />} />
+            </Routes>
+          </ErrorBoundary>
+        </main>
+      </div>
+    </ErrorBoundary>
   );
 }

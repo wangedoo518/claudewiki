@@ -35,10 +35,10 @@ export function ContentHeader({
         <div className="flex items-center gap-2">
           <h1 className="text-[13px] font-semibold text-foreground">{title}</h1>
           {isStreaming && (
-            <span className="flex items-center gap-1 text-[10px]" style={{ color: "var(--claude-orange, rgb(215,119,87))" }}>
+            <span className="flex items-center gap-1 text-[10px]" style={{ color: "var(--claude-orange)" }}>
               <span
                 className="inline-block size-1.5 animate-pulse rounded-full"
-                style={{ backgroundColor: "var(--claude-orange, rgb(215,119,87))" }}
+                style={{ backgroundColor: "var(--claude-orange)" }}
               />
               Streaming
             </span>

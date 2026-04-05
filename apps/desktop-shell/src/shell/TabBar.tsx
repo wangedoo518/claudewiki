@@ -331,7 +331,7 @@ function NavButton({
       {active && (
         <span
           className="absolute bottom-0 left-1/2 h-[2px] w-4 -translate-x-1/2 rounded-full"
-          style={{ backgroundColor: "var(--claude-orange, rgb(215,119,87))" }}
+          style={{ backgroundColor: "var(--claude-orange)" }}
         />
       )}
     </button>

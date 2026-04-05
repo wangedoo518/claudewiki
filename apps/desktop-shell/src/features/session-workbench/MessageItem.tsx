@@ -1,4 +1,4 @@
-import { useState, useMemo } from "react";
+import { memo, useState, useMemo } from "react";
 import ReactMarkdown from "react-markdown";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import { oneDark } from "react-syntax-highlighter/dist/esm/styles/prism";
@@ -30,7 +30,7 @@ interface MessageItemProps {
   message: ConversationMessage;
 }
 
-export function MessageItem({ message }: MessageItemProps) {
+export const MessageItem = memo(function MessageItem({ message }: MessageItemProps) {
   switch (message.type) {
     case "text":
       return message.role === "user" ? (
@@ -49,7 +49,7 @@ export function MessageItem({ message }: MessageItemProps) {
     default:
       return <AssistantMessage content={message.content} />;
   }
-}
+});
 
 /* ─── Markdown renderer ──────────────────────────────────────────── */
 
@@ -213,12 +213,12 @@ function UserMessage({ content }: { content: string }) {
       >
         <div
           className="absolute left-0 top-0 h-full w-[3px]"
-          style={{ backgroundColor: "var(--color-label-you, rgb(37,99,235))" }}
+          style={{ backgroundColor: "var(--color-label-you)" }}
         />
         <div className="py-2.5 pl-5 pr-4">
           <div
             className="mb-1 text-[10px] font-semibold uppercase tracking-wider"
-            style={{ color: "var(--color-label-you, rgb(37,99,235))" }}
+            style={{ color: "var(--color-label-you)" }}
           >
             You
           </div>
@@ -242,12 +242,12 @@ function AssistantMessage({ content }: { content: string }) {
       >
         <div
           className="absolute left-0 top-0 h-full w-[3px]"
-          style={{ backgroundColor: "var(--color-label-claude, rgb(215,119,87))" }}
+          style={{ backgroundColor: "var(--color-label-claude)" }}
         />
         <div className="py-2.5 pl-5 pr-4">
           <div
             className="mb-1 text-[10px] font-semibold uppercase tracking-wider"
-            style={{ color: "var(--color-label-claude, rgb(215,119,87))" }}
+            style={{ color: "var(--color-label-claude)" }}
           >
             Assistant
           </div>
@@ -439,7 +439,7 @@ function ToolResultMessage({ message }: { message: ConversationMessage }) {
           <ChevronRight className="size-3 shrink-0" />
         )}
         {isError ? (
-          <AlertCircle className="size-3.5 shrink-0" style={{ color: "var(--color-error, rgb(171,43,63))" }} />
+          <AlertCircle className="size-3.5 shrink-0" style={{ color: "var(--color-error)" }} />
         ) : (
           <ToolIcon className="size-3.5 shrink-0" style={{ color }} />
         )}
@@ -534,7 +534,7 @@ function GlobResult({ output }: { output: string }) {
             className="flex items-center gap-2 px-3 py-1"
           >
             {isDir ? (
-              <Folder className="size-3 shrink-0" style={{ color: "var(--color-warning, rgb(150,108,30))" }} />
+              <Folder className="size-3 shrink-0" style={{ color: "var(--color-warning)" }} />
             ) : (
               <File className="size-3 shrink-0 text-muted-foreground" />
             )}
@@ -561,9 +561,9 @@ function FileOpResult({ output, isError }: { output: string; isError: boolean })
     <div className="p-3">
       <div className="flex items-center gap-2 text-[11px]">
         {isError ? (
-          <AlertCircle className="size-3.5" style={{ color: "var(--color-error, rgb(171,43,63))" }} />
+          <AlertCircle className="size-3.5" style={{ color: "var(--color-error)" }} />
         ) : (
-          <CheckCircle2 className="size-3.5" style={{ color: "var(--color-success, rgb(44,122,57))" }} />
+          <CheckCircle2 className="size-3.5" style={{ color: "var(--color-success)" }} />
         )}
         <pre className="whitespace-pre-wrap font-mono text-[11px] leading-[1.6] text-foreground/80">
           {output}
@@ -578,7 +578,7 @@ function FileOpResult({ output, isError }: { output: string; isError: boolean })
 function AgentResult({ output }: { output: string }) {
   return (
     <div className="p-3">
-      <div className="mb-2 flex items-center gap-1.5 text-[10px] font-medium" style={{ color: "var(--agent-purple, rgb(147,51,234))" }}>
+      <div className="mb-2 flex items-center gap-1.5 text-[10px] font-medium" style={{ color: "var(--agent-purple)" }}>
         <Brain className="size-3" />
         <span>Subagent Result</span>
       </div>
@@ -600,7 +600,7 @@ function WebResult({ output, isSearch }: { output: string; isSearch: boolean }) 
     <div className="p-3">
       {urlLine && (
         <div className="mb-2 flex items-center gap-1.5 rounded-md bg-muted/30 px-2 py-1">
-          <Globe className="size-3 shrink-0" style={{ color: "var(--claude-blue, rgb(87,105,247))" }} />
+          <Globe className="size-3 shrink-0" style={{ color: "var(--claude-blue)" }} />
           <span className="flex-1 truncate font-mono text-[11px] text-foreground/70">
             {urlLine}
           </span>
@@ -652,12 +652,12 @@ function ErrorMessage({ content }: { content: string }) {
       <div
         className="flex items-start gap-2 rounded-lg border px-3 py-2"
         style={{
-          borderColor: "color-mix(in srgb, var(--color-error, rgb(171,43,63)) 30%, transparent)",
-          backgroundColor: "color-mix(in srgb, var(--color-error, rgb(171,43,63)) 5%, transparent)",
+          borderColor: "color-mix(in srgb, var(--color-error) 30%, transparent)",
+          backgroundColor: "color-mix(in srgb, var(--color-error) 5%, transparent)",
         }}
       >
-        <AlertCircle className="mt-0.5 size-3.5 shrink-0" style={{ color: "var(--color-error, rgb(171,43,63))" }} />
-        <div className="font-mono text-[12px]" style={{ color: "var(--color-error, rgb(171,43,63))" }}>
+        <AlertCircle className="mt-0.5 size-3.5 shrink-0" style={{ color: "var(--color-error)" }} />
+        <div className="font-mono text-[12px]" style={{ color: "var(--color-error)" }}>
           {content}
         </div>
       </div>
@@ -675,30 +675,30 @@ function getToolMeta(toolName: string): {
   const lower = toolName.toLowerCase();
 
   if (lower === "bash" || lower.includes("shell"))
-    return { icon: TerminalIcon, label: "Bash", color: "var(--color-terminal-tool, rgb(44,122,57))" };
+    return { icon: TerminalIcon, label: "Bash", color: "var(--color-terminal-tool)" };
   if (lower === "read" || lower === "readfile")
-    return { icon: Eye, label: "Read", color: "var(--claude-blue, rgb(87,105,247))" };
+    return { icon: Eye, label: "Read", color: "var(--claude-blue)" };
   if (lower === "edit" || lower === "editfile")
-    return { icon: Pencil, label: "Edit", color: "var(--claude-orange, rgb(215,119,87))" };
+    return { icon: Pencil, label: "Edit", color: "var(--claude-orange)" };
   if (lower === "write" || lower === "writefile")
-    return { icon: FileCode, label: "Write", color: "var(--claude-orange, rgb(215,119,87))" };
+    return { icon: FileCode, label: "Write", color: "var(--claude-orange)" };
   if (lower === "glob")
-    return { icon: FolderSearch, label: "Glob", color: "var(--color-terminal-tool, rgb(44,122,57))" };
+    return { icon: FolderSearch, label: "Glob", color: "var(--color-terminal-tool)" };
   if (lower === "grep")
-    return { icon: Search, label: "Grep", color: "var(--color-terminal-tool, rgb(44,122,57))" };
+    return { icon: Search, label: "Grep", color: "var(--color-terminal-tool)" };
   if (lower.includes("webfetch") || lower.includes("web_fetch"))
-    return { icon: Globe, label: "WebFetch", color: "var(--claude-blue, rgb(87,105,247))" };
+    return { icon: Globe, label: "WebFetch", color: "var(--claude-blue)" };
   if (lower.includes("websearch") || lower.includes("web_search"))
-    return { icon: Globe, label: "WebSearch", color: "var(--claude-blue, rgb(87,105,247))" };
+    return { icon: Globe, label: "WebSearch", color: "var(--claude-blue)" };
   if (lower === "agent")
-    return { icon: Brain, label: "Agent", color: "var(--agent-purple, rgb(147,51,234))" };
+    return { icon: Brain, label: "Agent", color: "var(--agent-purple)" };
   if (lower.includes("notebook"))
-    return { icon: BookOpen, label: "Notebook", color: "var(--claude-blue, rgb(87,105,247))" };
+    return { icon: BookOpen, label: "Notebook", color: "var(--claude-blue)" };
   if (lower.includes("todowrite") || lower.includes("todo"))
-    return { icon: CheckCircle2, label: "TodoWrite", color: "var(--color-terminal-tool, rgb(44,122,57))" };
+    return { icon: CheckCircle2, label: "TodoWrite", color: "var(--color-terminal-tool)" };
   if (lower.includes("skill"))
-    return { icon: FileText, label: "Skill", color: "var(--agent-cyan, rgb(8,145,178))" };
+    return { icon: FileText, label: "Skill", color: "var(--agent-cyan)" };
 
   // Fallback
-  return { icon: TerminalIcon, label: toolName, color: "var(--color-terminal-tool, rgb(44,122,57))" };
+  return { icon: TerminalIcon, label: toolName, color: "var(--color-terminal-tool)" };
 }

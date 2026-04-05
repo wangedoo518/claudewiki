@@ -18,6 +18,7 @@ import { ProviderSettings } from "./sections/ProviderSettings";
 import { McpSettings } from "./sections/McpSettings";
 import { PermissionSettings } from "./sections/PermissionSettings";
 import { DataSettings } from "./sections/DataSettings";
+import { ShortcutsSettings } from "./sections/ShortcutsSettings";
 import { AboutSection } from "./sections/AboutSection";
 import {
   getBootstrap,
@@ -158,8 +159,9 @@ function SettingsContent({
   customize: DesktopCustomizeState | null;
   error?: string;
 }) {
-  // GeneralSettings uses Redux — no backend needed
+  // GeneralSettings and ShortcutsSettings use Redux / static data — no backend needed
   if (section === "general") return <GeneralSettings />;
+  if (section === "shortcuts") return <ShortcutsSettings />;
 
   // Other sections need backend data
   if (isLoading) return <SectionLoading />;

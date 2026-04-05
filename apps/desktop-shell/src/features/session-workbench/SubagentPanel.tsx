@@ -53,27 +53,27 @@ const AGENT_TYPE_META: Record<
   "general-purpose": {
     icon: Brain,
     label: "General",
-    color: "var(--agent-purple, rgb(147,51,234))",
+    color: "var(--agent-purple)",
   },
   plan: {
     icon: FileSearch,
     label: "Plan",
-    color: "var(--color-warning, rgb(150,108,30))",
+    color: "var(--color-warning)",
   },
   explore: {
     icon: Search,
     label: "Explore",
-    color: "var(--agent-cyan, rgb(8,145,178))",
+    color: "var(--agent-cyan)",
   },
   verification: {
     icon: Shield,
     label: "Verify",
-    color: "var(--color-success, rgb(44,122,57))",
+    color: "var(--color-success)",
   },
   "claude-code-guide": {
     icon: BookOpen,
     label: "Guide",
-    color: "var(--claude-blue, rgb(87,105,247))",
+    color: "var(--claude-blue)",
   },
 };
 
@@ -149,7 +149,7 @@ export function SubagentPanel({ messages, onClose }: SubagentPanelProps) {
         <div className="flex items-center gap-2">
           <Brain
             className="size-4"
-            style={{ color: "var(--agent-purple, rgb(147,51,234))" }}
+            style={{ color: "var(--agent-purple)" }}
           />
           <span className="text-[12px] font-semibold text-foreground">
             Subagents
@@ -279,11 +279,11 @@ function StatusBadge({ status }: { status: SubagentStatus }) {
         <div className="flex items-center gap-1 rounded-full bg-[color:var(--agent-purple,rgb(147,51,234))]/10 px-1.5 py-0.5">
           <Loader2
             className="size-2.5 animate-spin"
-            style={{ color: "var(--agent-purple, rgb(147,51,234))" }}
+            style={{ color: "var(--agent-purple)" }}
           />
           <span
             className="text-[9px] font-medium"
-            style={{ color: "var(--agent-purple, rgb(147,51,234))" }}
+            style={{ color: "var(--agent-purple)" }}
           >
             Running
           </span>
@@ -294,11 +294,11 @@ function StatusBadge({ status }: { status: SubagentStatus }) {
         <div className="flex items-center gap-1 rounded-full bg-[color:var(--color-success,rgb(44,122,57))]/10 px-1.5 py-0.5">
           <CheckCircle2
             className="size-2.5"
-            style={{ color: "var(--color-success, rgb(44,122,57))" }}
+            style={{ color: "var(--color-success)" }}
           />
           <span
             className="text-[9px] font-medium"
-            style={{ color: "var(--color-success, rgb(44,122,57))" }}
+            style={{ color: "var(--color-success)" }}
           >
             Done
           </span>
@@ -309,11 +309,11 @@ function StatusBadge({ status }: { status: SubagentStatus }) {
         <div className="flex items-center gap-1 rounded-full bg-[color:var(--color-error,rgb(171,43,63))]/10 px-1.5 py-0.5">
           <AlertCircle
             className="size-2.5"
-            style={{ color: "var(--color-error, rgb(171,43,63))" }}
+            style={{ color: "var(--color-error)" }}
           />
           <span
             className="text-[9px] font-medium"
-            style={{ color: "var(--color-error, rgb(171,43,63))" }}
+            style={{ color: "var(--color-error)" }}
           >
             Error
           </span>

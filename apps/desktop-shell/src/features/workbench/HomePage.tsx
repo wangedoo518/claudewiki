@@ -112,7 +112,7 @@ export function HomePage() {
                             {session.title}
                           </span>
                           {session.turn_state === "running" && (
-                            <Zap className="size-2.5 shrink-0" style={{ color: "var(--claude-orange, rgb(215,119,87))" }} />
+                            <Zap className="size-2.5 shrink-0" style={{ color: "var(--claude-orange)" }} />
                           )}
                         </div>
                         <div className="mt-0.5 pl-[18px] text-[10px] text-muted-foreground">
@@ -133,8 +133,8 @@ export function HomePage() {
             <div
               className="flex size-5 shrink-0 items-center justify-center rounded"
               style={{
-                backgroundColor: "color-mix(in srgb, var(--color-success, rgb(44,122,57)) 12%, transparent)",
-                color: "var(--color-success, rgb(44,122,57))",
+                backgroundColor: "color-mix(in srgb, var(--color-success) 12%, transparent)",
+                color: "var(--color-success)",
               }}
             >
               <BadgeCheck className="size-3" />
@@ -228,7 +228,7 @@ function HomeOverview() {
             <div
               className="flex size-8 items-center justify-center rounded-lg"
               style={{
-                background: "linear-gradient(135deg, var(--claude-orange, rgb(215,119,87)), var(--claude-orange-shimmer, rgb(245,149,117)))",
+                background: "linear-gradient(135deg, var(--claude-orange), var(--claude-orange-shimmer))",
               }}
             >
               <MessageSquare className="size-4 text-white" />

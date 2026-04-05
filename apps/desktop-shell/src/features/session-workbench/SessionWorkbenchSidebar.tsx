@@ -192,8 +192,8 @@ export function SessionWorkbenchSidebar({
                       {session.turn_state === "running" && (
                         <span className="flex items-center gap-1 rounded-full px-1.5 py-0.5 text-[9px]"
                           style={{
-                            backgroundColor: "color-mix(in srgb, var(--claude-orange, rgb(215,119,87)) 15%, transparent)",
-                            color: "var(--claude-orange, rgb(215,119,87))",
+                            backgroundColor: "color-mix(in srgb, var(--claude-orange) 15%, transparent)",
+                            color: "var(--claude-orange)",
                           }}
                         >
                           <Zap className="size-2" />
@@ -203,7 +203,7 @@ export function SessionWorkbenchSidebar({
                     </div>
                     <div className="mt-0.5 pl-[18px] text-[10px] text-muted-foreground">
                       <div className="truncate">{truncate(session.preview, 40)}</div>
-                      <div className="mt-0.5 flex items-center gap-1 opacity-60">
+                      <div className="mt-0.5 flex items-center gap-1 text-muted-foreground/70">
                         <span>{session.model_label}</span>
                         <span>·</span>
                         <span>{session.environment_label}</span>
@@ -284,7 +284,7 @@ export function SessionWorkbenchSidebar({
               <div className="my-1 h-px bg-border" />
               <button
                 className="flex w-full items-center gap-2 px-3 py-1.5 text-[11px] transition-colors hover:bg-accent"
-                style={{ color: "var(--color-error, rgb(171,43,63))" }}
+                style={{ color: "var(--color-error)" }}
                 onClick={() => {
                   onDeleteSession(contextMenu.session.id);
                   setContextMenu(null);

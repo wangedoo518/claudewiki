@@ -94,6 +94,11 @@ export function HomePage() {
                 <PanelLeftClose className="size-3 opacity-40" />
               </div>
 
+              {sessionSections.length === 0 && (
+                <div className="px-2 py-4 text-center text-[11px] text-muted-foreground">
+                  No sessions yet
+                </div>
+              )}
               {sessionSections.map((section) => (
                 <div key={section.id} className="space-y-0.5">
                   <div className="px-2 text-[9px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">

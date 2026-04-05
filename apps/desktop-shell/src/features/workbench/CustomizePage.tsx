@@ -125,35 +125,43 @@ export function CustomizePage() {
 
         <Panel title="Plugins and MCP">
           <div className="space-y-3">
-            {customize?.mcp_servers.map((server) => (
-              <div
-                key={`${server.name}-${server.target}`}
-                className="rounded-xl border border-border bg-muted/20 px-3 py-2"
-              >
-                <div className="text-sm font-medium">{server.name}</div>
-                <div className="mt-1 text-xs text-muted-foreground">
-                  {server.scope} · {server.transport}
+            {customize?.mcp_servers.length ? (
+              customize.mcp_servers.map((server) => (
+                <div
+                  key={`${server.name}-${server.target}`}
+                  className="rounded-xl border border-border bg-muted/20 px-3 py-2"
+                >
+                  <div className="text-sm font-medium">{server.name}</div>
+                  <div className="mt-1 text-xs text-muted-foreground">
+                    {server.scope} · {server.transport}
+                  </div>
+                  <code className="mt-2 block text-xs">{server.target}</code>
                 </div>
-                <code className="mt-2 block text-xs">{server.target}</code>
-              </div>
-            ))}
-            {customize?.plugins.map((plugin) => (
-              <div
-                key={plugin.id}
-                className="rounded-xl border border-border bg-background px-3 py-3"
-              >
-                <div className="flex items-center justify-between gap-3">
-                  <div className="text-sm font-medium">{plugin.name}</div>
-                  <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] uppercase tracking-[0.14em] text-muted-foreground">
-                    {plugin.enabled ? "Enabled" : "Disabled"}
-                  </span>
+              ))
+            ) : (
+              <div className="text-sm text-muted-foreground">No MCP servers configured.</div>
+            )}
+            {customize?.plugins.length ? (
+              customize.plugins.map((plugin) => (
+                <div
+                  key={plugin.id}
+                  className="rounded-xl border border-border bg-background px-3 py-3"
+                >
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="text-sm font-medium">{plugin.name}</div>
+                    <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] uppercase tracking-[0.14em] text-muted-foreground">
+                      {plugin.enabled ? "Enabled" : "Disabled"}
+                    </span>
+                  </div>
+                  <div className="mt-1 text-xs text-muted-foreground">
+                    {plugin.kind} · v{plugin.version} · {plugin.source}
+                  </div>
+                  <div className="mt-2 text-sm">{plugin.description}</div>
                 </div>
-                <div className="mt-1 text-xs text-muted-foreground">
-                  {plugin.kind} · v{plugin.version} · {plugin.source}
-                </div>
-                <div className="mt-2 text-sm">{plugin.description}</div>
-              </div>
-            ))}
+              ))
+            ) : (
+              <div className="text-sm text-muted-foreground">No plugins installed.</div>
+            )}
           </div>
         </Panel>
       </div>

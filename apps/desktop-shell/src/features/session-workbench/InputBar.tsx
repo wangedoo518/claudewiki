@@ -118,6 +118,7 @@ export function InputBar({
   const textareaRef = inputRef ?? internalRef;
   const commandListRef = useRef<HTMLDivElement>(null);
   const permMenuRef = useRef<HTMLDivElement>(null);
+  const rafRef = useRef<number>(0);
 
   // Filter slash commands based on input
   const filteredCommands = SLASH_COMMANDS.filter((cmd) =>
@@ -262,12 +263,21 @@ export function InputBar({
     }
   };
 
+  // Batch height calculation into next animation frame to avoid layout thrashing
   const handleInput = () => {
-    const textarea = textareaRef.current;
-    if (!textarea) return;
-    textarea.style.height = "auto";
-    textarea.style.height = Math.min(textarea.scrollHeight, 200) + "px";
+    cancelAnimationFrame(rafRef.current);
+    rafRef.current = requestAnimationFrame(() => {
+      const textarea = textareaRef.current;
+      if (!textarea) return;
+      textarea.style.height = "auto";
+      textarea.style.height = Math.min(textarea.scrollHeight, 200) + "px";
+    });
   };
+
+  // Cleanup pending rAF on unmount
+  useEffect(() => {
+    return () => cancelAnimationFrame(rafRef.current);
+  }, []);
 
   const ModeIcon = modeConfig.icon;
 

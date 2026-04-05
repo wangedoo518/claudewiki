@@ -10,9 +10,8 @@ import {
   MessageSquare,
   Play,
 } from "lucide-react";
-import { ScrollArea } from "@/components/ui/scroll-area";
 import { ContentHeader } from "./ContentHeader";
-import { MessageItem } from "./MessageItem";
+import { VirtualizedMessageList } from "./VirtualizedMessageList";
 import { InputBar } from "./InputBar";
 import { StatusLine } from "./StatusLine";
 import {
@@ -71,6 +70,11 @@ export function SessionWorkbenchTerminal({
   );
   const permissionMode = useAppSelector((s) => s.settings.permissionMode);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const [scrollNode, setScrollNode] = useState<HTMLDivElement | null>(null);
+  const scrollCallbackRef = useCallback((node: HTMLDivElement | null) => {
+    scrollRef.current = node;
+    setScrollNode(node);
+  }, []);
   const [showDemo, setShowDemo] = useState(false);
   const [localMessages, setLocalMessages] = useState<ConversationMessage[]>([]);
   const [showAgentPanel, setShowAgentPanel] = useState(false);
@@ -94,11 +98,7 @@ export function SessionWorkbenchTerminal({
     setLocalMessages([]);
   }, [session?.id]);
 
-  useEffect(() => {
-    if (scrollRef.current) {
-      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
-    }
-  }, [displayMessages, isRunning, pendingPermission]);
+  // Auto-scroll is now handled inside VirtualizedMessageList
 
   const handlePermissionDecision = useCallback(
     (action: PermissionAction) => {
@@ -224,8 +224,10 @@ export function SessionWorkbenchTerminal({
       {displayMessages.length === 0 && !isLoadingSession ? (
         <WelcomeScreen onShowDemo={() => setShowDemo(true)} />
       ) : (
-        <ScrollArea className="flex-1">
-          <div ref={scrollRef} className="pb-4">
+        <div
+          ref={scrollCallbackRef}
+          className="flex-1 overflow-y-auto pb-4 [&::-webkit-scrollbar]:w-2 [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-border [&::-webkit-scrollbar-track]:bg-transparent"
+        >
             {showDemo && (
               <div className="mx-4 mb-2 mt-1 flex items-center justify-between rounded-lg border border-border/30 bg-muted/10 px-3 py-1.5">
                 <span className="text-[11px] text-muted-foreground">
@@ -261,10 +263,14 @@ export function SessionWorkbenchTerminal({
               </div>
             )}
             {isLoadingSession && <MessageSkeleton />}
-            {displayMessages.map((msg) => (
-              <MessageItem key={msg.id} message={msg} />
-            ))}
-            {/* Permission dialog — renders inline at end of messages */}
+
+            {/* Virtualized message list */}
+            <VirtualizedMessageList
+              messages={displayMessages}
+              scrollElement={scrollNode}
+            />
+
+            {/* Fixed items after virtual list */}
             {pendingPermission && (
               <PermissionDialog
                 request={pendingPermission}
@@ -290,8 +296,7 @@ export function SessionWorkbenchTerminal({
                 </button>
               </div>
             )}
-          </div>
-        </ScrollArea>
+        </div>
       )}
 
       <InputBar

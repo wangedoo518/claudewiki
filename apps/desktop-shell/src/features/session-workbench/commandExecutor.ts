@@ -85,7 +85,7 @@ const COMMANDS: CommandDefinition[] = [
           `- Model: ${ctx.modelLabel}`,
           `- Permission mode: ${ctx.permissionMode}`,
           "",
-          "_Token tracking requires backend integration._",
+          "_Counts are from local message history. Actual token costs require backend API metering._",
         ].join("\n"),
       };
     },
@@ -94,11 +94,40 @@ const COMMANDS: CommandDefinition[] = [
     name: "diff",
     type: "local",
     description: "Show file changes in this session",
-    execute: () => {
+    execute: (_args, ctx) => {
+      const editTools = new Set(["edit", "editfile", "write", "writefile"]);
+      const filePaths = new Set<string>();
+
+      for (const msg of ctx.messages) {
+        if (msg.type === "tool_use" && msg.toolUse) {
+          const toolLower = msg.toolUse.toolName.toLowerCase();
+          if (editTools.has(toolLower)) {
+            try {
+              const parsed = JSON.parse(msg.toolUse.toolInput) as Record<string, unknown>;
+              const path = parsed.file_path ?? parsed.path;
+              if (typeof path === "string") filePaths.add(path);
+            } catch { /* ignore parse errors */ }
+          }
+        }
+      }
+
+      if (filePaths.size === 0) {
+        return {
+          type: "system_message",
+          message: "No file modifications detected in this session's tool history.",
+        };
+      }
+
+      const fileList = [...filePaths].map((p) => `- \`${p}\``).join("\n");
       return {
         type: "system_message",
-        message:
-          "No file changes tracked in this session.\n\n_File change tracking requires backend integration._",
+        message: [
+          `**Files Modified (${filePaths.size})**`,
+          "",
+          fileList,
+          "",
+          "_Based on Edit/Write tool calls in this session. Actual diffs require backend integration._",
+        ].join("\n"),
       };
     },
   },

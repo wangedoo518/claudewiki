@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect, useRef } from "react";
 import {
   Terminal,
   FileEdit,
@@ -30,7 +30,52 @@ interface PermissionDialogProps {
 
 export function PermissionDialog({ request, onDecision }: PermissionDialogProps) {
   const [showDetails, setShowDetails] = useState(false);
+  const dialogRef = useRef<HTMLDivElement>(null);
   const { icon: ToolIcon, label, color } = getPermToolMeta(request.toolName);
+
+  // Focus trap and keyboard navigation
+  useEffect(() => {
+    const dialog = dialogRef.current;
+    if (!dialog) return;
+
+    const getFocusable = () =>
+      dialog.querySelectorAll<HTMLElement>(
+        'button, [tabindex]:not([tabindex="-1"])'
+      );
+
+    // Auto-focus first action button
+    const buttons = getFocusable();
+    buttons[0]?.focus();
+
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        onDecision("deny");
+        return;
+      }
+
+      if (e.key === "Tab") {
+        const focusable = getFocusable();
+        const first = focusable[0];
+        const last = focusable[focusable.length - 1];
+
+        if (e.shiftKey) {
+          if (document.activeElement === first) {
+            e.preventDefault();
+            last?.focus();
+          }
+        } else {
+          if (document.activeElement === last) {
+            e.preventDefault();
+            first?.focus();
+          }
+        }
+      }
+    };
+
+    dialog.addEventListener("keydown", handleKeyDown);
+    return () => dialog.removeEventListener("keydown", handleKeyDown);
+  }, [onDecision]);
 
   const riskConfig = {
     low: {
@@ -60,7 +105,14 @@ export function PermissionDialog({ request, onDecision }: PermissionDialogProps)
   const actionPreview = formatActionPreview(request.toolName, request.toolInput);
 
   return (
-    <div className="mx-4 my-2">
+    <div
+      className="mx-4 my-2"
+      ref={dialogRef}
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="perm-dialog-title"
+      aria-describedby="perm-dialog-desc"
+    >
       <div
         className="overflow-hidden rounded-lg border"
         style={{
@@ -78,7 +130,7 @@ export function PermissionDialog({ request, onDecision }: PermissionDialogProps)
           >
             <Shield className="size-3.5 text-white" />
           </div>
-          <span className="text-[13px] font-semibold text-foreground">
+          <span id="perm-dialog-title" className="text-[13px] font-semibold text-foreground">
             Permission Required
           </span>
           <div className="ml-auto flex items-center gap-1.5">
@@ -98,7 +150,7 @@ export function PermissionDialog({ request, onDecision }: PermissionDialogProps)
           </div>
 
           {/* Action preview */}
-          <div className="mt-2 rounded-md bg-muted/30 px-3 py-2">
+          <div id="perm-dialog-desc" className="mt-2 rounded-md bg-muted/30 px-3 py-2">
             <pre className="whitespace-pre-wrap font-mono text-[12px] text-foreground/90">
               {actionPreview}
             </pre>
@@ -108,6 +160,8 @@ export function PermissionDialog({ request, onDecision }: PermissionDialogProps)
           <button
             className="mt-2 flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground"
             onClick={() => setShowDetails(!showDetails)}
+            aria-label="Toggle full details"
+            aria-expanded={showDetails}
           >
             {showDetails ? <ChevronDown className="size-3" /> : <ChevronRight className="size-3" />}
             <span>Full details</span>
@@ -127,6 +181,7 @@ export function PermissionDialog({ request, onDecision }: PermissionDialogProps)
             className="flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-[11px] font-medium text-white transition-colors"
             style={{ backgroundColor: "var(--color-permission)" }}
             onClick={() => onDecision("allow")}
+            aria-label="Allow this operation once"
           >
             <ShieldCheck className="size-3" />
             Allow once
@@ -134,6 +189,7 @@ export function PermissionDialog({ request, onDecision }: PermissionDialogProps)
           <button
             className="flex items-center gap-1.5 rounded-lg border border-border/50 bg-muted/20 px-3 py-1.5 text-[11px] font-medium text-foreground transition-colors hover:bg-muted/40"
             onClick={() => onDecision("allow_always")}
+            aria-label="Always allow this tool"
           >
             <ShieldCheck className="size-3" />
             Always allow
@@ -143,6 +199,7 @@ export function PermissionDialog({ request, onDecision }: PermissionDialogProps)
             className="flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-[11px] font-medium transition-colors"
             style={{ color: "var(--color-error)" }}
             onClick={() => onDecision("deny")}
+            aria-label="Deny this operation"
           >
             <ShieldX className="size-3" />
             Deny

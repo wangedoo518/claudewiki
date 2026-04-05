@@ -14,6 +14,7 @@ import { Input } from "@/components/ui/input";
 import { useAppDispatch } from "@/store";
 import { openHomeSession } from "./tab-helpers";
 import { Panel, SummaryCard, SummaryGrid, SurfacePage, formatTimestamp } from "./shared";
+import { truncate } from "@/lib/utils";
 
 const PRIORITIES: DesktopDispatchPriority[] = ["low", "normal", "high"];
 
@@ -171,7 +172,7 @@ export function DispatchPage() {
                   <option value="">Deliver into a fresh session</option>
                   {sessions.map((session) => (
                     <option key={session.id} value={session.id}>
-                      {session.title} · {session.project_name}
+                      {truncate(session.title, 30)} · {truncate(session.project_name, 15)}
                     </option>
                   ))}
                 </select>

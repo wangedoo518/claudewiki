@@ -59,7 +59,7 @@ export function SearchPage() {
                     <div className="mt-1 text-xs text-muted-foreground">
                       {result.snippet}
                     </div>
-                    <div className="mt-2 text-[11px] uppercase tracking-[0.14em] text-muted-foreground">
+                    <div className="mt-2 text-label uppercase tracking-[0.14em] text-muted-foreground">
                       {result.project_name} · {result.bucket}
                     </div>
                   </button>

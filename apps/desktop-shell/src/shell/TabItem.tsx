@@ -63,7 +63,7 @@ export function TabItem({
       role="tab"
       aria-selected={active}
       className={cn(
-        "group relative flex h-7 min-w-[80px] max-w-[180px] cursor-pointer items-center gap-1.5 rounded-md px-2.5 text-[13px] transition-colors select-none",
+        "group relative flex h-7 min-w-[80px] max-w-[180px] cursor-pointer items-center gap-1.5 rounded-md px-2.5 text-body transition-colors select-none",
         active
           ? "bg-background text-foreground shadow-sm"
           : "text-muted-foreground hover:bg-accent/50 hover:text-foreground"

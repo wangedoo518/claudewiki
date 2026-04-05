@@ -321,7 +321,7 @@ function NavButton({
   return (
     <button
       className={cn(
-        "relative flex h-[26px] items-center gap-1.5 rounded-md px-2.5 text-[12px] cursor-pointer transition-all select-none",
+        "relative flex h-[26px] items-center gap-1.5 rounded-md px-2.5 text-body-sm cursor-pointer transition-all select-none",
         active
           ? "bg-background text-foreground shadow-[0_1px_3px_rgba(0,0,0,0.08)] font-medium dark:bg-accent dark:shadow-[0_1px_3px_rgba(0,0,0,0.3)]"
           : "text-muted-foreground hover:bg-accent/50 hover:text-foreground"

@@ -149,7 +149,7 @@ export function CustomizePage() {
                 >
                   <div className="flex items-center justify-between gap-3">
                     <div className="text-sm font-medium">{plugin.name}</div>
-                    <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] uppercase tracking-[0.14em] text-muted-foreground">
+                    <span className="rounded-full bg-muted px-2 py-0.5 text-caption uppercase tracking-[0.14em] text-muted-foreground">
                       {plugin.enabled ? "Enabled" : "Disabled"}
                     </span>
                   </div>

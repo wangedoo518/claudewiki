@@ -290,7 +290,7 @@ export function InputBar({
           className="absolute bottom-full left-4 right-4 mb-1 max-h-[240px] overflow-y-auto rounded-lg border border-border bg-popover shadow-lg"
         >
           <div className="px-2 py-1.5">
-            <div className="px-2 pb-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+            <div className="px-2 pb-1 text-caption font-semibold uppercase tracking-wider text-muted-foreground">
               Commands
             </div>
             {filteredCommands.map((cmd, i) => (
@@ -307,11 +307,11 @@ export function InputBar({
               >
                 <Slash className="size-3 shrink-0 text-muted-foreground" />
                 <div className="min-w-0 flex-1">
-                  <div className="text-[12px] font-medium">{cmd.name}</div>
-                  <div className="text-[11px] text-muted-foreground">{cmd.desc}</div>
+                  <div className="text-body-sm font-medium">{cmd.name}</div>
+                  <div className="text-label text-muted-foreground">{cmd.desc}</div>
                 </div>
                 {i === selectedCommandIndex && (
-                  <kbd className="rounded border border-border/50 bg-muted/30 px-1 py-0.5 text-[9px] text-muted-foreground">
+                  <kbd className="rounded border border-border/50 bg-muted/30 px-1 py-0.5 text-nano text-muted-foreground">
                     Enter
                   </kbd>
                 )}
@@ -344,7 +344,7 @@ export function InputBar({
           }
           disabled={isBusy}
           rows={2}
-          className="max-h-[200px] min-h-[44px] w-full resize-none bg-transparent text-[13px] leading-relaxed text-foreground outline-none placeholder:text-muted-foreground disabled:opacity-50"
+          className="max-h-[200px] min-h-[44px] w-full resize-none bg-transparent text-body leading-relaxed text-foreground outline-none placeholder:text-muted-foreground disabled:opacity-50"
         />
       </div>
 
@@ -356,7 +356,7 @@ export function InputBar({
           <div className="relative" ref={permMenuRef}>
             <button
               className={cn(
-                "flex items-center gap-1.5 rounded-lg border border-border/50 px-2 py-1 text-[11px] transition-colors hover:bg-accent hover:text-foreground",
+                "flex items-center gap-1.5 rounded-lg border border-border/50 px-2 py-1 text-label transition-colors hover:bg-accent hover:text-foreground",
                 showPermissionMenu
                   ? "bg-accent text-foreground"
                   : "text-muted-foreground"
@@ -374,7 +374,7 @@ export function InputBar({
             {/* Permission mode dropdown */}
             {showPermissionMenu && (
               <div className="absolute bottom-full left-0 mb-1 w-[260px] rounded-lg border border-border bg-popover p-1 shadow-lg">
-                <div className="px-2 pb-1 pt-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                <div className="px-2 pb-1 pt-1 text-caption font-semibold uppercase tracking-wider text-muted-foreground">
                   Permission Mode
                 </div>
                 {PERMISSION_MODES.map((mode) => {
@@ -399,10 +399,10 @@ export function InputBar({
                         style={mode.color ? { color: mode.color } : undefined}
                       />
                       <div className="min-w-0 flex-1">
-                        <div className="text-[12px] font-medium">
+                        <div className="text-body-sm font-medium">
                           {mode.label}
                         </div>
-                        <div className="text-[10px] text-muted-foreground">
+                        <div className="text-caption text-muted-foreground">
                           {mode.desc}
                         </div>
                       </div>
@@ -424,7 +424,7 @@ export function InputBar({
           </div>
 
           <button
-            className="flex items-center gap-1.5 rounded-lg border border-border/50 px-2 py-1 text-[11px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+            className="flex items-center gap-1.5 rounded-lg border border-border/50 px-2 py-1 text-label text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
             aria-label={`Environment: ${environmentLabel}`}
           >
             <Monitor className="size-3" />
@@ -435,7 +435,7 @@ export function InputBar({
         {/* Right: Send or Stop */}
         {isBusy ? (
           <button
-            className="flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-[11px] font-medium text-white transition-colors"
+            className="flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-label font-medium text-white transition-colors"
             style={{
               backgroundColor: "var(--color-error)",
             }}
@@ -447,7 +447,7 @@ export function InputBar({
         ) : (
           <button
             className={cn(
-              "flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-[11px] font-medium text-white transition-colors",
+              "flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-label font-medium text-white transition-colors",
               value.trim()
                 ? "cursor-pointer"
                 : "cursor-not-allowed opacity-50"

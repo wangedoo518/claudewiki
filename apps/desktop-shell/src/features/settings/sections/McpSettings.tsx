@@ -128,7 +128,7 @@ export function McpSettings({ customize, error }: McpSettingsProps) {
             <Button
               variant="outline"
               size="sm"
-              className="w-full gap-1.5 text-[12px]"
+              className="w-full gap-1.5 text-body-sm"
               onClick={() => setShowAddForm(true)}
             >
               <Plus className="size-3.5" />
@@ -157,18 +157,18 @@ export function McpSettings({ customize, error }: McpSettingsProps) {
                   }}
                 />
                 <div className="min-w-0 flex-1">
-                  <div className="text-[13px] font-medium">
+                  <div className="text-body font-medium">
                     {server.name}
                   </div>
-                  <div className="truncate text-[11px] text-muted-foreground">
+                  <div className="truncate text-label text-muted-foreground">
                     {server.target}
                   </div>
                 </div>
                 <div className="flex shrink-0 items-center gap-1">
-                  <Badge variant="secondary" className="text-[10px]">
+                  <Badge variant="secondary" className="text-caption">
                     {server.scope}
                   </Badge>
-                  <Badge variant="outline" className="text-[10px]">
+                  <Badge variant="outline" className="text-caption">
                     {server.transport}
                   </Badge>
                 </div>
@@ -181,7 +181,7 @@ export function McpSettings({ customize, error }: McpSettingsProps) {
       {/* Warnings */}
       {(error || (customize?.warnings.length ?? 0) > 0) && (
         <SettingGroup title="Warnings">
-          <div className="space-y-2 text-[12px] text-muted-foreground">
+          <div className="space-y-2 text-body-sm text-muted-foreground">
             {error && <div>{error}</div>}
             {customize?.warnings.map((warning) => (
               <div key={warning}>{warning}</div>
@@ -235,7 +235,7 @@ function UserServerCard({
       />
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2">
-          <span className="text-[13px] font-medium">{server.name}</span>
+          <span className="text-body font-medium">{server.name}</span>
           {server.enabled && (
             <span
               className="inline-block size-1.5 rounded-full"
@@ -246,15 +246,15 @@ function UserServerCard({
             />
           )}
         </div>
-        <div className="truncate text-[11px] text-muted-foreground">
+        <div className="truncate text-label text-muted-foreground">
           {server.target}
         </div>
       </div>
       <div className="flex shrink-0 items-center gap-1">
-        <Badge variant="secondary" className="text-[10px]">
+        <Badge variant="secondary" className="text-caption">
           {server.scope}
         </Badge>
-        <Badge variant="outline" className="text-[10px]">
+        <Badge variant="outline" className="text-caption">
           {server.transport}
         </Badge>
       </div>
@@ -322,14 +322,14 @@ function ServerForm({
 
   return (
     <div className="rounded-md border border-[color:var(--agent-cyan,rgb(8,145,178))]/30 bg-[color:var(--agent-cyan,rgb(8,145,178))]/5 p-3">
-      <div className="mb-3 text-[12px] font-medium text-foreground">
+      <div className="mb-3 text-body-sm font-medium text-foreground">
         {initial ? "Edit Server" : "Add MCP Server"}
       </div>
 
       <div className="space-y-2">
         {/* Name */}
         <div>
-          <label className="mb-1 block text-[11px] font-medium text-muted-foreground">
+          <label className="mb-1 block text-label font-medium text-muted-foreground">
             Server Name
           </label>
           <input
@@ -337,14 +337,14 @@ function ServerForm({
             value={name}
             onChange={(e) => setName(e.target.value)}
             placeholder="e.g. github, slack, filesystem"
-            className="w-full rounded-md border border-input bg-background px-2.5 py-1.5 text-[12px] text-foreground outline-none focus:border-ring focus:ring-1 focus:ring-ring/50"
+            className="w-full rounded-md border border-input bg-background px-2.5 py-1.5 text-body-sm text-foreground outline-none focus:border-ring focus:ring-1 focus:ring-ring/50"
           />
         </div>
 
         {/* Transport + Scope row */}
         <div className="flex gap-2">
           <div className="flex-1">
-            <label className="mb-1 block text-[11px] font-medium text-muted-foreground">
+            <label className="mb-1 block text-label font-medium text-muted-foreground">
               Transport
             </label>
             <select
@@ -352,7 +352,7 @@ function ServerForm({
               onChange={(e) =>
                 setTransport(e.target.value as McpTransport)
               }
-              className="w-full rounded-md border border-input bg-background px-2.5 py-1.5 text-[12px] text-foreground outline-none focus:border-ring focus:ring-1 focus:ring-ring/50"
+              className="w-full rounded-md border border-input bg-background px-2.5 py-1.5 text-body-sm text-foreground outline-none focus:border-ring focus:ring-1 focus:ring-ring/50"
             >
               {TRANSPORTS.map((t) => (
                 <option key={t.value} value={t.value}>
@@ -362,7 +362,7 @@ function ServerForm({
             </select>
           </div>
           <div className="flex-1">
-            <label className="mb-1 block text-[11px] font-medium text-muted-foreground">
+            <label className="mb-1 block text-label font-medium text-muted-foreground">
               Scope
             </label>
             <select
@@ -370,7 +370,7 @@ function ServerForm({
               onChange={(e) =>
                 setScope(e.target.value as McpScope)
               }
-              className="w-full rounded-md border border-input bg-background px-2.5 py-1.5 text-[12px] text-foreground outline-none focus:border-ring focus:ring-1 focus:ring-ring/50"
+              className="w-full rounded-md border border-input bg-background px-2.5 py-1.5 text-body-sm text-foreground outline-none focus:border-ring focus:ring-1 focus:ring-ring/50"
             >
               {SCOPES.map((s) => (
                 <option key={s.value} value={s.value}>
@@ -383,7 +383,7 @@ function ServerForm({
 
         {/* Target */}
         <div>
-          <label className="mb-1 block text-[11px] font-medium text-muted-foreground">
+          <label className="mb-1 block text-label font-medium text-muted-foreground">
             {transport === "stdio"
               ? "Command"
               : transport === "sse" || transport === "http"
@@ -401,7 +401,7 @@ function ServerForm({
                   ? "http://localhost:3001/sse"
                   : "server target"
             }
-            className="w-full rounded-md border border-input bg-background px-2.5 py-1.5 font-mono text-[12px] text-foreground outline-none focus:border-ring focus:ring-1 focus:ring-ring/50"
+            className="w-full rounded-md border border-input bg-background px-2.5 py-1.5 font-mono text-body-sm text-foreground outline-none focus:border-ring focus:ring-1 focus:ring-ring/50"
           />
         </div>
       </div>
@@ -411,7 +411,7 @@ function ServerForm({
         <Button
           variant="ghost"
           size="sm"
-          className="gap-1 text-[11px]"
+          className="gap-1 text-label"
           onClick={onCancel}
         >
           <X className="size-3" />
@@ -419,7 +419,7 @@ function ServerForm({
         </Button>
         <Button
           size="sm"
-          className="gap-1 text-[11px]"
+          className="gap-1 text-label"
           disabled={!isValid}
           onClick={handleSubmit}
         >

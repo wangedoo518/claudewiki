@@ -25,7 +25,7 @@ export function StatusLine({
   const ModeIcon = config.icon;
 
   return (
-    <div className="flex h-6 items-center justify-between border-t border-border/30 bg-muted/20 px-3 text-[10px] text-muted-foreground">
+    <div className="flex h-6 items-center justify-between border-t border-border/30 bg-muted/20 px-3 text-caption text-muted-foreground">
       {/* Left side */}
       <div className="flex items-center gap-3">
         {/* Model */}

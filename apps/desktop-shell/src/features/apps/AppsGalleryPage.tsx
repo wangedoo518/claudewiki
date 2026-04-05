@@ -66,7 +66,7 @@ export function AppsGalleryPage() {
           <Search className="size-3.5 text-muted-foreground" />
           <input
             placeholder="Search apps..."
-            className="w-full bg-transparent text-[13px] text-foreground outline-none placeholder:text-muted-foreground"
+            className="w-full bg-transparent text-body text-foreground outline-none placeholder:text-muted-foreground"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
           />
@@ -77,7 +77,7 @@ export function AppsGalleryPage() {
         <div className="mx-auto max-w-3xl px-5 pb-8">
           {/* Core apps (MinApp icons) */}
           <section className="mb-6">
-            <h2 className="mb-2.5 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+            <h2 className="mb-2.5 text-label font-semibold uppercase tracking-wider text-muted-foreground">
               Core
             </h2>
             <div className="grid grid-cols-2 gap-2">
@@ -90,7 +90,7 @@ export function AppsGalleryPage() {
           {/* Tool cards */}
           {filteredTools.length > 0 && (
             <section>
-              <h2 className="mb-2.5 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+              <h2 className="mb-2.5 text-label font-semibold uppercase tracking-wider text-muted-foreground">
                 Tools
               </h2>
               <div className="grid grid-cols-2 gap-2">
@@ -108,8 +108,8 @@ export function AppsGalleryPage() {
                         <Icon className="size-4 text-white" />
                       </div>
                       <div className="min-w-0 flex-1 pt-0.5">
-                        <div className="text-[12px] font-semibold text-foreground">{tool.label}</div>
-                        <div className="mt-0.5 text-[11px] leading-snug text-muted-foreground">
+                        <div className="text-body-sm font-semibold text-foreground">{tool.label}</div>
+                        <div className="mt-0.5 text-label leading-snug text-muted-foreground">
                           {tool.desc}
                         </div>
                       </div>
@@ -138,8 +138,8 @@ function MinAppCard({ app }: { app: MinAppType }) {
         <MinAppIcon app={app} size={36} />
       </div>
       <div className="min-w-0 flex-1 pt-0.5">
-        <div className="text-[12px] font-semibold text-foreground">{app.name}</div>
-        <div className="mt-0.5 text-[11px] leading-snug text-muted-foreground">
+        <div className="text-body-sm font-semibold text-foreground">{app.name}</div>
+        <div className="mt-0.5 text-label leading-snug text-muted-foreground">
           {app.url ? new URL(app.url).hostname : "Built-in app"}
         </div>
       </div>

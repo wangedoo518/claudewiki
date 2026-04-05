@@ -3,6 +3,17 @@
 @custom-variant dark (&:is(.dark *));
 
 @theme {
+  /* ── Design system font sizes ──────────────────────────────────── */
+  /* Semantic scale for compact desktop UI (Claude Code style)      */
+  --font-size-micro: 8px;      /* text-micro  — rare, minimal UI elements */
+  --font-size-nano: 9px;       /* text-nano   — tiny labels, shortcuts */
+  --font-size-caption: 10px;   /* text-caption — metadata, timestamps, badges */
+  --font-size-label: 11px;     /* text-label  — most common, UI chrome */
+  --font-size-body-sm: 12px;   /* text-body-sm — buttons, settings rows */
+  --font-size-body: 13px;      /* text-body   — primary content text */
+  --font-size-subhead: 14px;   /* text-subhead — section headings */
+  --font-size-head: 15px;      /* text-head   — page titles */
+
   --color-background: oklch(1 0 0);
   --color-foreground: oklch(0.145 0 0);
   --color-card: oklch(1 0 0);

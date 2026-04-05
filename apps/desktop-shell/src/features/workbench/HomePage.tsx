@@ -64,7 +64,7 @@ export function HomePage() {
         <div className="px-2 py-2">
           <Button
             variant="ghost"
-            className="h-7 w-full justify-start gap-2 text-[12px]"
+            className="h-7 w-full justify-start gap-2 text-body-sm"
             onClick={() => openHomeSession(dispatch, null)}
           >
             <Plus className="size-3" />
@@ -89,19 +89,19 @@ export function HomePage() {
 
             {/* Session sections */}
             <section className="space-y-1.5">
-              <div className="flex items-center justify-between px-2 text-[10px] text-muted-foreground">
+              <div className="flex items-center justify-between px-2 text-caption text-muted-foreground">
                 <span>{workbench?.project_label ?? "All projects"}</span>
                 <PanelLeftClose className="size-3 opacity-40" />
               </div>
 
               {sessionSections.length === 0 && (
-                <div className="px-2 py-4 text-center text-[11px] text-muted-foreground">
+                <div className="px-2 py-4 text-center text-label text-muted-foreground">
                   No sessions yet
                 </div>
               )}
               {sessionSections.map((section) => (
                 <div key={section.id} className="space-y-0.5">
-                  <div className="px-2 text-[9px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+                  <div className="px-2 text-nano font-semibold uppercase tracking-[0.18em] text-muted-foreground">
                     {section.label}
                   </div>
                   <div className="space-y-0.5">
@@ -113,14 +113,14 @@ export function HomePage() {
                       >
                         <div className="flex items-center gap-1.5">
                           <MessageSquare className="size-3 shrink-0 opacity-30" />
-                          <span className="truncate text-[12px] font-medium text-foreground">
+                          <span className="truncate text-body-sm font-medium text-foreground">
                             {session.title}
                           </span>
                           {session.turn_state === "running" && (
                             <Zap className="size-2.5 shrink-0" style={{ color: "var(--claude-orange)" }} />
                           )}
                         </div>
-                        <div className="mt-0.5 pl-[18px] text-[10px] text-muted-foreground">
+                        <div className="mt-0.5 pl-[18px] text-caption text-muted-foreground">
                           {truncate(session.preview, 32)}
                         </div>
                       </button>
@@ -145,14 +145,14 @@ export function HomePage() {
               <BadgeCheck className="size-3" />
             </div>
             <div className="min-w-0 flex-1">
-              <div className="text-[11px] font-medium text-foreground">
+              <div className="text-label font-medium text-foreground">
                 {workbench?.account.name ?? "Warwolf"}
               </div>
-              <div className="text-[9px] text-muted-foreground">
+              <div className="text-nano text-muted-foreground">
                 {workbench?.account.plan_label ?? "Desktop"} · {workbench?.update_banner.version ?? "latest"}
               </div>
             </div>
-            <div className="rounded-full bg-muted px-1.5 py-0.5 text-[8px] uppercase tracking-[0.14em] text-muted-foreground">
+            <div className="rounded-full bg-muted px-1.5 py-0.5 text-micro uppercase tracking-[0.14em] text-muted-foreground">
               {workbench?.composer.environment_label ?? "Local"}
             </div>
           </div>
@@ -239,10 +239,10 @@ function HomeOverview() {
               <MessageSquare className="size-4 text-white" />
             </div>
             <div>
-              <h1 className="text-[15px] font-semibold tracking-tight text-foreground">
+              <h1 className="text-head font-semibold tracking-tight text-foreground">
                 Warwolf Desktop
               </h1>
-              <p className="text-[11px] text-muted-foreground">
+              <p className="text-label text-muted-foreground">
                 Claude Code style desktop workspace
               </p>
             </div>
@@ -259,10 +259,10 @@ function HomeOverview() {
             >
               <card.icon className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
               <div className="min-w-0 flex-1">
-                <div className="text-[12px] font-semibold text-foreground">
+                <div className="text-body-sm font-semibold text-foreground">
                   {card.label}
                 </div>
-                <div className="mt-0.5 text-[11px] leading-snug text-muted-foreground">
+                <div className="mt-0.5 text-label leading-snug text-muted-foreground">
                   {card.body}
                 </div>
               </div>
@@ -273,16 +273,16 @@ function HomeOverview() {
 
         {/* Quick start */}
         <section className="rounded-lg border border-border bg-background p-3">
-          <div className="text-[12px] font-semibold text-foreground">Quick start</div>
+          <div className="text-body-sm font-semibold text-foreground">Quick start</div>
           <div className="mt-2 grid gap-2 lg:grid-cols-[0.9fr_1.1fr]">
             <Button
-              className="h-7 justify-start gap-2 text-[12px]"
+              className="h-7 justify-start gap-2 text-body-sm"
               onClick={() => openHomeSession(dispatch, null)}
             >
               <Plus className="size-3" />
               New Code session
             </Button>
-            <div className="flex items-center rounded-md border border-border bg-muted/20 px-2.5 py-1.5 text-[11px] text-muted-foreground">
+            <div className="flex items-center rounded-md border border-border bg-muted/20 px-2.5 py-1.5 text-label text-muted-foreground">
               {workbench?.composer.permission_mode_label ?? "Ask permissions"} ·{" "}
               {workbench?.composer.model_label ?? "Opus 4.6"} ·{" "}
               {workbench?.composer.environment_label ?? "Local"}
@@ -309,8 +309,8 @@ function HomeRailButton({
     <button
       className={
         active
-          ? "flex w-full items-center gap-2 rounded-md bg-sidebar-accent px-2 py-1.5 text-[12px] font-medium text-sidebar-accent-foreground"
-          : "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-[12px] text-sidebar-foreground transition hover:bg-sidebar-accent/50"
+          ? "flex w-full items-center gap-2 rounded-md bg-sidebar-accent px-2 py-1.5 text-body-sm font-medium text-sidebar-accent-foreground"
+          : "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-body-sm text-sidebar-foreground transition hover:bg-sidebar-accent/50"
       }
       onClick={onClick}
     >

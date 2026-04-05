@@ -130,12 +130,12 @@ export function PermissionDialog({ request, onDecision }: PermissionDialogProps)
           >
             <Shield className="size-3.5 text-white" />
           </div>
-          <span id="perm-dialog-title" className="text-[13px] font-semibold text-foreground">
+          <span id="perm-dialog-title" className="text-body font-semibold text-foreground">
             Permission Required
           </span>
           <div className="ml-auto flex items-center gap-1.5">
             <RiskIcon className="size-3" style={{ color: risk.borderColor }} />
-            <span className="text-[10px] font-medium" style={{ color: risk.borderColor }}>
+            <span className="text-caption font-medium" style={{ color: risk.borderColor }}>
               {risk.label}
             </span>
           </div>
@@ -143,7 +143,7 @@ export function PermissionDialog({ request, onDecision }: PermissionDialogProps)
 
         {/* Tool action summary */}
         <div className="px-4 py-3">
-          <div className="flex items-center gap-2 text-[13px]">
+          <div className="flex items-center gap-2 text-body">
             <ToolIcon className="size-4 shrink-0" style={{ color }} />
             <span className="font-medium" style={{ color }}>{label}</span>
             <span className="text-muted-foreground">wants to:</span>
@@ -151,14 +151,14 @@ export function PermissionDialog({ request, onDecision }: PermissionDialogProps)
 
           {/* Action preview */}
           <div id="perm-dialog-desc" className="mt-2 rounded-md bg-muted/30 px-3 py-2">
-            <pre className="whitespace-pre-wrap font-mono text-[12px] text-foreground/90">
+            <pre className="whitespace-pre-wrap font-mono text-body-sm text-foreground/90">
               {actionPreview}
             </pre>
           </div>
 
           {/* Details toggle */}
           <button
-            className="mt-2 flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground"
+            className="mt-2 flex items-center gap-1 text-label text-muted-foreground hover:text-foreground"
             onClick={() => setShowDetails(!showDetails)}
             aria-label="Toggle full details"
             aria-expanded={showDetails}
@@ -168,7 +168,7 @@ export function PermissionDialog({ request, onDecision }: PermissionDialogProps)
           </button>
           {showDetails && (
             <div className="mt-1 rounded-md bg-muted/20 p-2">
-              <pre className="overflow-x-auto whitespace-pre-wrap font-mono text-[10px] text-muted-foreground">
+              <pre className="overflow-x-auto whitespace-pre-wrap font-mono text-caption text-muted-foreground">
                 {JSON.stringify(request.toolInput, null, 2)}
               </pre>
             </div>
@@ -178,7 +178,7 @@ export function PermissionDialog({ request, onDecision }: PermissionDialogProps)
         {/* Action buttons */}
         <div className="flex items-center gap-2 border-t border-border/30 px-4 py-2.5">
           <button
-            className="flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-[11px] font-medium text-white transition-colors"
+            className="flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-label font-medium text-white transition-colors"
             style={{ backgroundColor: "var(--color-permission)" }}
             onClick={() => onDecision("allow")}
             aria-label="Allow this operation once"
@@ -187,7 +187,7 @@ export function PermissionDialog({ request, onDecision }: PermissionDialogProps)
             Allow once
           </button>
           <button
-            className="flex items-center gap-1.5 rounded-lg border border-border/50 bg-muted/20 px-3 py-1.5 text-[11px] font-medium text-foreground transition-colors hover:bg-muted/40"
+            className="flex items-center gap-1.5 rounded-lg border border-border/50 bg-muted/20 px-3 py-1.5 text-label font-medium text-foreground transition-colors hover:bg-muted/40"
             onClick={() => onDecision("allow_always")}
             aria-label="Always allow this tool"
           >
@@ -196,7 +196,7 @@ export function PermissionDialog({ request, onDecision }: PermissionDialogProps)
           </button>
           <div className="flex-1" />
           <button
-            className="flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-[11px] font-medium transition-colors"
+            className="flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-label font-medium transition-colors"
             style={{ color: "var(--color-error)" }}
             onClick={() => onDecision("deny")}
             aria-label="Deny this operation"

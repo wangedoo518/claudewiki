@@ -207,7 +207,7 @@ export function AgentDetailHero({
             {compactDetails.map((item) => (
               <span
                 key={item}
-                className="inline-flex items-center min-h-[24px] max-w-full px-2 py-0.5 rounded-full bg-slate-900/[0.04] dark:bg-white/[0.06] text-muted-foreground text-[10px] leading-tight break-words"
+                className="inline-flex items-center min-h-[24px] max-w-full px-2 py-0.5 rounded-full bg-slate-900/[0.04] dark:bg-white/[0.06] text-muted-foreground text-caption leading-tight break-words"
               >
                 {item}
               </span>

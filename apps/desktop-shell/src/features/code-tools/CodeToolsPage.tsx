@@ -242,12 +242,12 @@ export function CodeToolsPage() {
           <h1 className="mb-2 text-xl font-semibold text-foreground">
             {t("codetools.page.title")}
           </h1>
-          <p className="mb-8 text-[13px] leading-relaxed text-muted-foreground">
+          <p className="mb-8 text-body leading-relaxed text-muted-foreground">
             {t("codetools.page.description")}
           </p>
 
           {!isBunInstalled && (
-            <div className="mb-6 flex items-center justify-between gap-3 rounded-lg border border-amber-500/30 bg-amber-500/5 px-4 py-3 text-[13px]">
+            <div className="mb-6 flex items-center justify-between gap-3 rounded-lg border border-amber-500/30 bg-amber-500/5 px-4 py-3 text-body">
               <span className="text-amber-700 dark:text-amber-400">
                 {t("codetools.notice.bunRequired")}
               </span>
@@ -268,10 +268,10 @@ export function CodeToolsPage() {
 
           {codexNoticeVisible && (
             <div className="mb-6 rounded-lg border border-blue-500/30 bg-blue-500/5 px-4 py-3">
-              <div className="text-[13px] font-medium text-blue-700 dark:text-blue-400">
+              <div className="text-body font-medium text-blue-700 dark:text-blue-400">
                 {t("codetools.notice.codexAuthMissing")}
               </div>
-              <div className="mt-1 text-[12px] text-blue-600/80 dark:text-blue-400/70">
+              <div className="mt-1 text-body-sm text-blue-600/80 dark:text-blue-400/70">
                 {t("codetools.notice.codexAuthHint")}
               </div>
             </div>
@@ -280,7 +280,7 @@ export function CodeToolsPage() {
           <div className="mb-8 space-y-6">
             {/* CLI Tool */}
             <div>
-              <div className="mb-2 flex items-center gap-2 text-[13px] font-medium text-foreground">
+              <div className="mb-2 flex items-center gap-2 text-body font-medium text-foreground">
                 {t("codetools.label.cliTool")}
               </div>
               <Select
@@ -295,7 +295,7 @@ export function CodeToolsPage() {
             {/* Model */}
             {shouldShowModelSelector && (
               <div>
-                <div className="mb-2 flex items-center gap-2 text-[13px] font-medium text-foreground">
+                <div className="mb-2 flex items-center gap-2 text-body font-medium text-foreground">
                   {t("codetools.label.model")}
                   {selectedCliTool === CLAUDE_CODE && (
                     <AnthropicProviderListPopover
@@ -310,7 +310,7 @@ export function CodeToolsPage() {
                   onChange={handleModelChange}
                 />
                 {availableProviders.length === 0 && (
-                  <p className="mt-1 text-[12px] text-muted-foreground">
+                  <p className="mt-1 text-body-sm text-muted-foreground">
                     {t("codetools.notice.noProviders")}
                     {selectedCliTool === CLAUDE_CODE
                       ? " Claude Code"
@@ -325,7 +325,7 @@ export function CodeToolsPage() {
 
             {/* Working directory */}
             <div>
-              <div className="mb-2 flex items-center gap-2 text-[13px] font-medium text-foreground">
+              <div className="mb-2 flex items-center gap-2 text-body font-medium text-foreground">
                 {t("codetools.label.workdir")}
               </div>
               <div className="flex w-full items-center gap-2">
@@ -375,7 +375,7 @@ export function CodeToolsPage() {
 
             {/* Environment variables */}
             <div>
-              <div className="mb-2 flex items-center gap-2 text-[13px] font-medium text-foreground">
+              <div className="mb-2 flex items-center gap-2 text-body font-medium text-foreground">
                 {t("codetools.label.envVars")}
               </div>
               <textarea
@@ -383,9 +383,9 @@ export function CodeToolsPage() {
                 value={environmentVariables}
                 placeholder={`KEY1=value1\nKEY2=value2`}
                 onChange={(event) => setEnvVars(event.target.value)}
-                className="w-full rounded-md border border-border bg-background px-3 py-2 font-mono text-[13px] text-foreground placeholder:text-muted-foreground focus:border-ring focus:outline-none focus:ring-1 focus:ring-ring"
+                className="w-full rounded-md border border-border bg-background px-3 py-2 font-mono text-body text-foreground placeholder:text-muted-foreground focus:border-ring focus:outline-none focus:ring-1 focus:ring-ring"
               />
-              <p className="mt-1 text-[12px] text-muted-foreground">
+              <p className="mt-1 text-body-sm text-muted-foreground">
                 {t("codetools.hint.envVars")}
               </p>
             </div>
@@ -393,7 +393,7 @@ export function CodeToolsPage() {
             {/* Terminal */}
             {shouldShowTerminalSelector && (
               <div>
-                <div className="mb-2 flex items-center gap-2 text-[13px] font-medium text-foreground">
+                <div className="mb-2 flex items-center gap-2 text-body font-medium text-foreground">
                   {t("codetools.label.terminal")}
                 </div>
                 <div className="flex w-full items-center gap-2">
@@ -418,10 +418,10 @@ export function CodeToolsPage() {
 
             {/* Update option */}
             <div>
-              <div className="mb-2 flex items-center gap-2 text-[13px] font-medium text-foreground">
+              <div className="mb-2 flex items-center gap-2 text-body font-medium text-foreground">
                 {t("codetools.label.updateOptions")}
               </div>
-              <label className="flex cursor-pointer items-center gap-2.5 text-[13px] text-foreground">
+              <label className="flex cursor-pointer items-center gap-2.5 text-body text-foreground">
                 <input
                   type="checkbox"
                   checked={autoUpdateToLatest}

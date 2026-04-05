@@ -29,7 +29,7 @@ export function AppsPage() {
     <div className="h-full overflow-auto bg-background">
       <div className="mx-auto flex w-full max-w-[720px] flex-col gap-5 py-[50px]">
         <section className="flex flex-col gap-2">
-          <h1 className="m-0 px-[36px] text-[14px] font-semibold text-foreground opacity-80">
+          <h1 className="m-0 px-[36px] text-subhead font-semibold text-foreground opacity-80">
             {t("page.apps")}
           </h1>
 
@@ -58,7 +58,7 @@ export function AppsPage() {
                       <Icon className="h-7 w-7 text-white" />
                     </div>
                   </div>
-                  <div className="w-full overflow-hidden text-ellipsis whitespace-nowrap pt-0 text-center text-[12px] text-foreground">
+                  <div className="w-full overflow-hidden text-ellipsis whitespace-nowrap pt-0 text-center text-body-sm text-foreground">
                     {app.label}
                   </div>
                 </button>

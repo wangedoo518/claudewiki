@@ -136,7 +136,7 @@ function LogContainer({
 
   return (
     <div className="mb-6 overflow-hidden rounded-lg bg-muted/50">
-      <div className="flex items-center justify-between px-3 py-2 text-[13px] font-medium bg-muted">
+      <div className="flex items-center justify-between px-3 py-2 text-body font-medium bg-muted">
         <span>{title}</span>
         {!expanded && onClose && (
           <Button
@@ -635,7 +635,7 @@ export function OpenClawPage() {
             <div className="flex items-center gap-2">
               <div className="size-2 rounded-full bg-green-500" />
               <span className="text-sm font-medium text-foreground">{t("openclaw.status.running")}</span>
-              <span className="font-mono text-[13px] text-muted-foreground">:{gatewayPort}</span>
+              <span className="font-mono text-body text-muted-foreground">:{gatewayPort}</span>
             </div>
             <Button
               variant="ghost"

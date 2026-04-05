@@ -33,9 +33,9 @@ export function ContentHeader({
       {/* Left: title + project path */}
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2">
-          <h1 className="text-[13px] font-semibold text-foreground">{title}</h1>
+          <h1 className="text-body font-semibold text-foreground">{title}</h1>
           {isStreaming && (
-            <span className="flex items-center gap-1 text-[10px]" style={{ color: "var(--claude-orange)" }}>
+            <span className="flex items-center gap-1 text-caption" style={{ color: "var(--claude-orange)" }}>
               <span
                 className="inline-block size-1.5 animate-pulse rounded-full"
                 style={{ backgroundColor: "var(--claude-orange)" }}
@@ -45,7 +45,7 @@ export function ContentHeader({
           )}
         </div>
         {projectPath && (
-          <p className="mt-0.5 truncate text-[11px] text-muted-foreground">
+          <p className="mt-0.5 truncate text-label text-muted-foreground">
             {projectPath}
           </p>
         )}
@@ -55,20 +55,20 @@ export function ContentHeader({
       <div className="flex shrink-0 items-center gap-1.5 pt-0.5">
         <Badge
           variant="secondary"
-          className="h-[18px] rounded-md px-1.5 text-[10px] font-medium"
+          className="h-[18px] rounded-md px-1.5 text-caption font-medium"
         >
           {modelLabel}
         </Badge>
         <Badge
           variant="outline"
-          className="h-[18px] rounded-md px-1.5 text-[10px] font-medium"
+          className="h-[18px] rounded-md px-1.5 text-caption font-medium"
         >
           {environmentLabel}
         </Badge>
         {onToggleAgentPanel && (
           <button
             className={cn(
-              "relative flex h-[18px] items-center gap-1 rounded-md border px-1.5 text-[10px] font-medium transition-colors",
+              "relative flex h-[18px] items-center gap-1 rounded-md border px-1.5 text-caption font-medium transition-colors",
               showAgentPanel
                 ? "border-[color:var(--agent-purple,rgb(147,51,234))]/30 bg-[color:var(--agent-purple,rgb(147,51,234))]/10 text-[color:var(--agent-purple,rgb(147,51,234))]"
                 : "border-border/50 text-muted-foreground hover:bg-accent hover:text-foreground"
@@ -118,7 +118,7 @@ function ExportDropdown({
   return (
     <div ref={ref} className="relative">
       <button
-        className="flex h-[18px] items-center gap-1 rounded-md border border-border/50 px-1.5 text-[10px] font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+        className="flex h-[18px] items-center gap-1 rounded-md border border-border/50 px-1.5 text-caption font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
         onClick={() => setOpen((v) => !v)}
         title="Export session"
       >
@@ -128,7 +128,7 @@ function ExportDropdown({
         <div className="absolute right-0 top-full z-50 mt-1 min-w-[140px] rounded-md border border-border bg-popover py-1 shadow-md">
           {onExportMarkdown && (
             <button
-              className="flex w-full items-center gap-2 px-3 py-1.5 text-[11px] text-popover-foreground transition-colors hover:bg-accent"
+              className="flex w-full items-center gap-2 px-3 py-1.5 text-label text-popover-foreground transition-colors hover:bg-accent"
               onClick={() => {
                 onExportMarkdown();
                 setOpen(false);
@@ -140,7 +140,7 @@ function ExportDropdown({
           )}
           {onExportJson && (
             <button
-              className="flex w-full items-center gap-2 px-3 py-1.5 text-[11px] text-popover-foreground transition-colors hover:bg-accent"
+              className="flex w-full items-center gap-2 px-3 py-1.5 text-label text-popover-foreground transition-colors hover:bg-accent"
               onClick={() => {
                 onExportJson();
                 setOpen(false);

@@ -96,7 +96,7 @@ export function SettingsPage() {
     <div className="flex h-full">
       <div className="flex w-[200px] shrink-0 flex-col border-r border-border bg-sidebar-background">
         <div className="px-3 py-2.5">
-          <h2 className="text-[13px] font-semibold text-foreground">{t("settings.title")}</h2>
+          <h2 className="text-body font-semibold text-foreground">{t("settings.title")}</h2>
         </div>
         <Separator />
         <nav className="flex-1 px-1.5 py-1.5">
@@ -104,7 +104,7 @@ export function SettingsPage() {
             <button
               key={item.id}
               className={cn(
-                "flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-[12px] transition-colors",
+                "flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-body-sm transition-colors",
                 active === item.id
                   ? "bg-sidebar-accent font-medium text-sidebar-accent-foreground"
                   : "text-sidebar-foreground hover:bg-sidebar-accent/50"
@@ -125,7 +125,7 @@ export function SettingsPage() {
             active === "provider" ? "max-w-none px-5" : "mx-auto max-w-3xl"
           )}
         >
-          <h2 className="mb-3 text-[15px] font-semibold text-foreground">
+          <h2 className="mb-3 text-head font-semibold text-foreground">
             {t(MENU_ITEMS.find((m) => m.id === active)?.i18nKey ?? "")}
           </h2>
 

@@ -239,13 +239,13 @@ export function SessionWorkbenchTerminal({
         >
             {showDemo && (
               <div className="mx-4 mb-2 mt-1 flex items-center justify-between rounded-lg border border-border/30 bg-muted/10 px-3 py-1.5">
-                <span className="text-[11px] text-muted-foreground">
+                <span className="text-label text-muted-foreground">
                   Demo mode — showing sample conversation
                 </span>
                 <div className="flex items-center gap-2">
                   {!pendingPermission && (
                     <button
-                      className="text-[11px] font-medium text-muted-foreground hover:text-foreground hover:underline"
+                      className="text-label font-medium text-muted-foreground hover:text-foreground hover:underline"
                       onClick={() =>
                         dispatch(
                           setPendingPermission({
@@ -263,7 +263,7 @@ export function SessionWorkbenchTerminal({
                     </button>
                   )}
                   <button
-                    className="text-[11px] font-medium text-foreground hover:underline"
+                    className="text-label font-medium text-foreground hover:underline"
                     onClick={() => setShowDemo(false)}
                   >
                     Exit demo
@@ -289,7 +289,7 @@ export function SessionWorkbenchTerminal({
             {isRunning && !pendingPermission && <StreamingSpinner />}
             {errorMessage && (
               <div
-                className="mx-4 mt-3 flex items-start gap-2 rounded-lg border px-3 py-2 text-[12px]"
+                className="mx-4 mt-3 flex items-start gap-2 rounded-lg border px-3 py-2 text-body-sm"
                 style={{
                   borderColor: "color-mix(in srgb, var(--color-error) 30%, transparent)",
                   backgroundColor: "color-mix(in srgb, var(--color-error) 5%, transparent)",
@@ -298,7 +298,7 @@ export function SessionWorkbenchTerminal({
               >
                 <span className="flex-1">{errorMessage}</span>
                 <button
-                  className="shrink-0 rounded px-1.5 py-0.5 text-[11px] font-medium transition-colors hover:bg-[color-mix(in_srgb,var(--color-error)_15%,transparent)]"
+                  className="shrink-0 rounded px-1.5 py-0.5 text-label font-medium transition-colors hover:bg-[color-mix(in_srgb,var(--color-error)_15%,transparent)]"
                   onClick={() => addSystemMessage("Error dismissed. You can retry your last message.")}
                 >
                   Dismiss
@@ -381,7 +381,7 @@ function StreamingSpinner() {
           <ShimmerDot delay={150} />
           <ShimmerDot delay={300} />
         </div>
-        <span className="text-[13px] text-muted-foreground">
+        <span className="text-body text-muted-foreground">
           Thinking...
         </span>
       </div>
@@ -459,7 +459,7 @@ function WelcomeScreen({ onShowDemo }: { onShowDemo?: () => void }) {
           <h2 className="text-base font-semibold text-foreground">
             What can I help you with?
           </h2>
-          <p className="mt-1 max-w-sm text-[13px] text-muted-foreground">
+          <p className="mt-1 max-w-sm text-body text-muted-foreground">
             I can read, write, and run code in your project. Just describe what you need.
           </p>
         </div>
@@ -474,8 +474,8 @@ function WelcomeScreen({ onShowDemo }: { onShowDemo?: () => void }) {
           >
             <item.icon className="mt-0.5 size-4 shrink-0" style={{ color: item.color }} />
             <div className="min-w-0">
-              <div className="text-[12px] font-medium text-foreground">{item.title}</div>
-              <div className="text-[11px] leading-snug text-muted-foreground">{item.desc}</div>
+              <div className="text-body-sm font-medium text-foreground">{item.title}</div>
+              <div className="text-label leading-snug text-muted-foreground">{item.desc}</div>
             </div>
           </div>
         ))}
@@ -483,17 +483,17 @@ function WelcomeScreen({ onShowDemo }: { onShowDemo?: () => void }) {
 
       {/* Hint + Demo */}
       <div className="flex flex-col items-center gap-2">
-        <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground/60">
+        <div className="flex items-center gap-1.5 text-label text-muted-foreground/60">
           <span>Type</span>
-          <kbd className="rounded border border-border/50 bg-muted/30 px-1.5 py-0.5 font-mono text-[10px]">/</kbd>
+          <kbd className="rounded border border-border/50 bg-muted/30 px-1.5 py-0.5 font-mono text-caption">/</kbd>
           <span>for commands</span>
           <span className="mx-1">|</span>
-          <kbd className="rounded border border-border/50 bg-muted/30 px-1.5 py-0.5 font-mono text-[10px]">Enter</kbd>
+          <kbd className="rounded border border-border/50 bg-muted/30 px-1.5 py-0.5 font-mono text-caption">Enter</kbd>
           <span>to send</span>
         </div>
         {onShowDemo && (
           <button
-            className="flex items-center gap-1.5 rounded-md border border-border/40 bg-muted/10 px-3 py-1 text-[11px] text-muted-foreground transition-colors hover:bg-muted/30 hover:text-foreground"
+            className="flex items-center gap-1.5 rounded-md border border-border/40 bg-muted/10 px-3 py-1 text-label text-muted-foreground transition-colors hover:bg-muted/30 hover:text-foreground"
             onClick={onShowDemo}
           >
             <Play className="size-3" />

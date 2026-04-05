@@ -50,10 +50,10 @@ export function ConfirmDialog({
               </div>
             )}
             <div className="min-w-0 flex-1">
-              <DialogPrimitive.Title className="text-[14px] font-semibold text-foreground">
+              <DialogPrimitive.Title className="text-subhead font-semibold text-foreground">
                 {title}
               </DialogPrimitive.Title>
-              <DialogPrimitive.Description className="mt-1.5 text-[13px] leading-relaxed text-muted-foreground">
+              <DialogPrimitive.Description className="mt-1.5 text-body leading-relaxed text-muted-foreground">
                 {description}
               </DialogPrimitive.Description>
             </div>
@@ -64,14 +64,14 @@ export function ConfirmDialog({
 
           <div className="mt-5 flex justify-end gap-2">
             <DialogPrimitive.Close asChild>
-              <Button variant="outline" size="sm" className="text-[12px]">
+              <Button variant="outline" size="sm" className="text-body-sm">
                 {cancelLabel}
               </Button>
             </DialogPrimitive.Close>
             <Button
               variant={isDestructive ? "destructive" : "default"}
               size="sm"
-              className="text-[12px]"
+              className="text-body-sm"
               style={
                 isDestructive
                   ? { backgroundColor: "var(--color-error)", color: "white" }

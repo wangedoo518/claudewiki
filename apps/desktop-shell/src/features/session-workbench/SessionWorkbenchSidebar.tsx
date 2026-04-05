@@ -99,10 +99,10 @@ export function SessionWorkbenchSidebar({
     <div className="flex h-full w-[260px] shrink-0 flex-col border-r border-border bg-sidebar-background">
       {/* Header */}
       <div className="flex items-center justify-between px-3 py-2">
-        <span className="text-[12px] font-medium text-sidebar-foreground">
+        <span className="text-body-sm font-medium text-sidebar-foreground">
           Sessions
           {totalSessions > 0 && (
-            <span className="ml-1.5 text-[10px] text-muted-foreground">
+            <span className="ml-1.5 text-caption text-muted-foreground">
               ({totalSessions})
             </span>
           )}
@@ -152,7 +152,7 @@ export function SessionWorkbenchSidebar({
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               placeholder="Search sessions..."
-              className="w-full bg-transparent text-[11px] text-foreground outline-none placeholder:text-muted-foreground"
+              className="w-full bg-transparent text-label text-foreground outline-none placeholder:text-muted-foreground"
             />
           </div>
         </div>
@@ -161,7 +161,7 @@ export function SessionWorkbenchSidebar({
       {/* Session list */}
       <ScrollArea className="flex-1">
         <div className="px-1.5 pb-2">
-          <div className="px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+          <div className="px-2 py-1 text-caption font-semibold uppercase tracking-wider text-muted-foreground">
             {projectLabel}
           </div>
 
@@ -169,7 +169,7 @@ export function SessionWorkbenchSidebar({
             <div key={section.id} className="mb-2">
               <div className="flex items-center gap-1.5 px-2 py-1">
                 <Clock className="size-2.5 text-muted-foreground/50" />
-                <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                <span className="text-caption font-semibold uppercase tracking-wider text-muted-foreground">
                   {section.label}
                 </span>
               </div>
@@ -188,11 +188,11 @@ export function SessionWorkbenchSidebar({
                   >
                     <div className="flex items-center gap-1.5">
                       <MessageSquare className="size-3 shrink-0 opacity-40" />
-                      <span className="flex-1 truncate text-[12px] font-medium">
+                      <span className="flex-1 truncate text-body-sm font-medium">
                         {truncate(session.title, 28)}
                       </span>
                       {session.turn_state === "running" && (
-                        <span className="flex items-center gap-1 rounded-full px-1.5 py-0.5 text-[9px]"
+                        <span className="flex items-center gap-1 rounded-full px-1.5 py-0.5 text-nano"
                           style={{
                             backgroundColor: "color-mix(in srgb, var(--claude-orange) 15%, transparent)",
                             color: "var(--claude-orange)",
@@ -203,7 +203,7 @@ export function SessionWorkbenchSidebar({
                         </span>
                       )}
                     </div>
-                    <div className="mt-0.5 pl-[18px] text-[10px] text-muted-foreground">
+                    <div className="mt-0.5 pl-[18px] text-caption text-muted-foreground">
                       <div className="truncate">{truncate(session.preview, 40)}</div>
                       <div className="mt-0.5 flex items-center gap-1 text-muted-foreground/70">
                         <span>{session.model_label}</span>
@@ -218,13 +218,13 @@ export function SessionWorkbenchSidebar({
           ))}
 
           {filteredSections.length === 0 && searchQuery && (
-            <div className="px-2 py-6 text-center text-[11px] text-muted-foreground">
+            <div className="px-2 py-6 text-center text-label text-muted-foreground">
               No sessions match "{searchQuery}"
             </div>
           )}
 
           {totalSessions === 0 && (
-            <div className="px-2 py-8 text-center text-[11px] text-muted-foreground">
+            <div className="px-2 py-8 text-center text-label text-muted-foreground">
               No sessions yet.
               <br />
               Start a conversation to create one.
@@ -237,7 +237,7 @@ export function SessionWorkbenchSidebar({
       <div className="border-t border-sidebar-border p-2">
         <Button
           variant="ghost"
-          className="h-7 w-full justify-start gap-2 text-[11px]"
+          className="h-7 w-full justify-start gap-2 text-label"
           onClick={onCreateSession}
           disabled={isCreatingSession}
         >
@@ -260,7 +260,7 @@ export function SessionWorkbenchSidebar({
           {onExportSession && (
             <>
               <button
-                className="flex w-full items-center gap-2 px-3 py-1.5 text-[11px] text-popover-foreground transition-colors hover:bg-accent"
+                className="flex w-full items-center gap-2 px-3 py-1.5 text-label text-popover-foreground transition-colors hover:bg-accent"
                 onClick={() => {
                   onExportSession(contextMenu.session.id, "markdown");
                   setContextMenu(null);
@@ -270,7 +270,7 @@ export function SessionWorkbenchSidebar({
                 Export as Markdown
               </button>
               <button
-                className="flex w-full items-center gap-2 px-3 py-1.5 text-[11px] text-popover-foreground transition-colors hover:bg-accent"
+                className="flex w-full items-center gap-2 px-3 py-1.5 text-label text-popover-foreground transition-colors hover:bg-accent"
                 onClick={() => {
                   onExportSession(contextMenu.session.id, "json");
                   setContextMenu(null);
@@ -285,7 +285,7 @@ export function SessionWorkbenchSidebar({
             <>
               <div className="my-1 h-px bg-border" />
               <button
-                className="flex w-full items-center gap-2 px-3 py-1.5 text-[11px] transition-colors hover:bg-accent"
+                className="flex w-full items-center gap-2 px-3 py-1.5 text-label transition-colors hover:bg-accent"
                 style={{ color: "var(--color-error)" }}
                 onClick={() => {
                   setDeleteConfirm(contextMenu.session);

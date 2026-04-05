@@ -89,7 +89,7 @@ export function ProjectPathSelector({
     return (
       <button
         className={cn(
-          "flex items-center gap-1.5 rounded-md border border-border/50 px-2 py-1 text-[11px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground",
+          "flex items-center gap-1.5 rounded-md border border-border/50 px-2 py-1 text-label text-muted-foreground transition-colors hover:bg-accent hover:text-foreground",
           className
         )}
         onClick={() => void handleSelect()}
@@ -129,15 +129,15 @@ export function ProjectPathSelector({
           />
           {currentPath ? (
             <div className="min-w-0 flex-1">
-              <div className="truncate text-[12px] font-medium text-foreground">
+              <div className="truncate text-body-sm font-medium text-foreground">
                 {getDirectoryName(currentPath)}
               </div>
-              <div className="truncate text-[10px] text-muted-foreground">
+              <div className="truncate text-caption text-muted-foreground">
                 {currentPath}
               </div>
             </div>
           ) : (
-            <span className="text-[12px] text-muted-foreground">
+            <span className="text-body-sm text-muted-foreground">
               No project directory selected
             </span>
           )}
@@ -154,7 +154,7 @@ export function ProjectPathSelector({
         <Button
           variant="outline"
           size="sm"
-          className="gap-1.5 text-[11px]"
+          className="gap-1.5 text-label"
           onClick={() => void handleSelect()}
           disabled={isSelecting}
         >
@@ -175,7 +175,7 @@ export function ProjectPathSelector({
             value={manualPath}
             onChange={(e) => setManualPath(e.target.value)}
             placeholder="/path/to/project"
-            className="flex-1 rounded-md border border-input bg-background px-2.5 py-1.5 font-mono text-[12px] text-foreground outline-none focus:border-ring focus:ring-1 focus:ring-ring/50"
+            className="flex-1 rounded-md border border-input bg-background px-2.5 py-1.5 font-mono text-body-sm text-foreground outline-none focus:border-ring focus:ring-1 focus:ring-ring/50"
             onKeyDown={(e) => {
               if (e.key === "Enter") handleManualSubmit();
               if (e.key === "Escape") setShowManualInput(false);
@@ -183,7 +183,7 @@ export function ProjectPathSelector({
           />
           <Button
             size="sm"
-            className="text-[11px]"
+            className="text-label"
             onClick={handleManualSubmit}
           >
             Set
@@ -191,7 +191,7 @@ export function ProjectPathSelector({
           <Button
             variant="ghost"
             size="sm"
-            className="text-[11px]"
+            className="text-label"
             onClick={() => setShowManualInput(false)}
           >
             Cancel
@@ -202,7 +202,7 @@ export function ProjectPathSelector({
       {/* Recent paths */}
       {!showManualInput && !currentPath && (
         <button
-          className="flex items-center gap-1 text-[11px] text-muted-foreground transition-colors hover:text-foreground"
+          className="flex items-center gap-1 text-label text-muted-foreground transition-colors hover:text-foreground"
           onClick={() => setShowManualInput(true)}
         >
           <ChevronRight className="size-3" />

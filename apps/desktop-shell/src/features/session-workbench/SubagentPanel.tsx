@@ -151,11 +151,11 @@ export function SubagentPanel({ messages, onClose }: SubagentPanelProps) {
             className="size-4"
             style={{ color: "var(--agent-purple)" }}
           />
-          <span className="text-[12px] font-semibold text-foreground">
+          <span className="text-body-sm font-semibold text-foreground">
             Subagents
           </span>
           {agents.length > 0 && (
-            <span className="rounded-full bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
+            <span className="rounded-full bg-muted px-1.5 py-0.5 text-caption text-muted-foreground">
               {agents.length}
             </span>
           )}
@@ -177,7 +177,7 @@ export function SubagentPanel({ messages, onClose }: SubagentPanelProps) {
             {/* Running section */}
             {running.length > 0 && (
               <div className="mb-3">
-                <div className="mb-1.5 px-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                <div className="mb-1.5 px-1 text-caption font-semibold uppercase tracking-wider text-muted-foreground">
                   Active ({running.length})
                 </div>
                 <div className="space-y-1">
@@ -191,7 +191,7 @@ export function SubagentPanel({ messages, onClose }: SubagentPanelProps) {
             {/* Completed section */}
             {completed.length > 0 && (
               <div>
-                <div className="mb-1.5 px-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                <div className="mb-1.5 px-1 text-caption font-semibold uppercase tracking-wider text-muted-foreground">
                   Completed ({completed.length})
                 </div>
                 <div className="space-y-1">
@@ -228,10 +228,10 @@ function AgentCard({ agent }: { agent: SubagentInfo }) {
         )}
         <Icon className="size-3.5 shrink-0" style={{ color: meta.color }} />
         <div className="min-w-0 flex-1">
-          <div className="truncate text-[11px] font-medium text-foreground">
+          <div className="truncate text-label font-medium text-foreground">
             {agent.description}
           </div>
-          <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
+          <div className="flex items-center gap-1.5 text-caption text-muted-foreground">
             <span>{meta.label}</span>
             {agent.model && (
               <>
@@ -252,7 +252,7 @@ function AgentCard({ agent }: { agent: SubagentInfo }) {
 
       {expanded && agent.resultPreview && (
         <div className="border-t border-border/30 px-2.5 py-2">
-          <pre className="whitespace-pre-wrap font-mono text-[10px] leading-relaxed text-muted-foreground">
+          <pre className="whitespace-pre-wrap font-mono text-caption leading-relaxed text-muted-foreground">
             {agent.resultPreview}
           </pre>
         </div>
@@ -260,7 +260,7 @@ function AgentCard({ agent }: { agent: SubagentInfo }) {
 
       {expanded && !agent.resultPreview && agent.status === "running" && (
         <div className="border-t border-border/30 px-2.5 py-2">
-          <div className="flex items-center gap-2 text-[10px] text-muted-foreground">
+          <div className="flex items-center gap-2 text-caption text-muted-foreground">
             <Loader2 className="size-3 animate-spin" />
             <span>Agent is working...</span>
           </div>
@@ -282,7 +282,7 @@ function StatusBadge({ status }: { status: SubagentStatus }) {
             style={{ color: "var(--agent-purple)" }}
           />
           <span
-            className="text-[9px] font-medium"
+            className="text-nano font-medium"
             style={{ color: "var(--agent-purple)" }}
           >
             Running
@@ -297,7 +297,7 @@ function StatusBadge({ status }: { status: SubagentStatus }) {
             style={{ color: "var(--color-success)" }}
           />
           <span
-            className="text-[9px] font-medium"
+            className="text-nano font-medium"
             style={{ color: "var(--color-success)" }}
           >
             Done
@@ -312,7 +312,7 @@ function StatusBadge({ status }: { status: SubagentStatus }) {
             style={{ color: "var(--color-error)" }}
           />
           <span
-            className="text-[9px] font-medium"
+            className="text-nano font-medium"
             style={{ color: "var(--color-error)" }}
           >
             Error
@@ -329,10 +329,10 @@ function EmptyState() {
     <div className="flex flex-col items-center justify-center gap-2 p-6 text-center">
       <Brain className="size-8 text-muted-foreground/30" />
       <div>
-        <div className="text-[12px] font-medium text-muted-foreground">
+        <div className="text-body-sm font-medium text-muted-foreground">
           No subagents
         </div>
-        <div className="mt-0.5 text-[11px] text-muted-foreground/60">
+        <div className="mt-0.5 text-label text-muted-foreground/60">
           Subagents appear here when the AI spawns parallel workers for complex
           tasks.
         </div>

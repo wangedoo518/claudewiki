@@ -17,10 +17,10 @@ export function ShortcutsSettings() {
               key={shortcut.keys}
               className="flex items-center justify-between py-2"
             >
-              <span className="text-[13px] text-foreground">
+              <span className="text-body text-foreground">
                 {shortcut.description}
               </span>
-              <kbd className="rounded-md border border-border bg-muted/40 px-2 py-1 font-mono text-[11px] text-muted-foreground">
+              <kbd className="rounded-md border border-border bg-muted/40 px-2 py-1 font-mono text-label text-muted-foreground">
                 {shortcut.keys}
               </kbd>
             </div>
@@ -34,9 +34,9 @@ export function ShortcutsSettings() {
             className="mt-0.5 size-4 shrink-0"
             style={{ color: "var(--claude-blue)" }}
           />
-          <div className="text-[12px] leading-relaxed text-muted-foreground">
+          <div className="text-body-sm leading-relaxed text-muted-foreground">
             Shortcuts are active when the session workbench is focused.
-            Press <kbd className="rounded border border-border/50 bg-muted/30 px-1 py-0.5 font-mono text-[10px]">/</kbd> in
+            Press <kbd className="rounded border border-border/50 bg-muted/30 px-1 py-0.5 font-mono text-caption">/</kbd> in
             the input bar to access slash commands.
           </div>
         </div>

@@ -69,7 +69,7 @@ function MarkdownContent({ content }: { content: string }) {
 
           return (
             <code
-              className="rounded-[3px] bg-muted px-1.5 py-0.5 font-mono text-[12px] text-foreground"
+              className="rounded-[3px] bg-muted px-1.5 py-0.5 font-mono text-body-sm text-foreground"
               {...props}
             >
               {children}
@@ -95,7 +95,7 @@ function MarkdownContent({ content }: { content: string }) {
           return <h1 className="mb-2 mt-3 text-base font-bold first:mt-0">{children}</h1>;
         },
         h2({ children }) {
-          return <h2 className="mb-2 mt-3 text-[15px] font-bold first:mt-0">{children}</h2>;
+          return <h2 className="mb-2 mt-3 text-head font-bold first:mt-0">{children}</h2>;
         },
         h3({ children }) {
           return <h3 className="mb-1.5 mt-2.5 text-sm font-semibold first:mt-0">{children}</h3>;
@@ -110,7 +110,7 @@ function MarkdownContent({ content }: { content: string }) {
         table({ children }) {
           return (
             <div className="mb-2 overflow-x-auto last:mb-0">
-              <table className="w-full border-collapse text-[12px]">{children}</table>
+              <table className="w-full border-collapse text-body-sm">{children}</table>
             </div>
           );
         },
@@ -163,12 +163,12 @@ function CodeBlock({ language, code }: { language: string; code: string }) {
     <div className="group/code relative my-2 overflow-hidden rounded-lg border border-border/50">
       {/* Header */}
       <div className="flex items-center justify-between border-b border-border/50 bg-muted/40 px-3 py-1">
-        <span className="font-mono text-[10px] uppercase tracking-wider text-muted-foreground">
+        <span className="font-mono text-caption uppercase tracking-wider text-muted-foreground">
           {language}
         </span>
         <button
           onClick={handleCopy}
-          className="flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] text-muted-foreground opacity-0 transition-opacity hover:bg-accent group-hover/code:opacity-100"
+          className="flex items-center gap-1 rounded px-1.5 py-0.5 text-caption text-muted-foreground opacity-0 transition-opacity hover:bg-accent group-hover/code:opacity-100"
         >
           {copied ? (
             <>
@@ -217,12 +217,12 @@ function UserMessage({ content }: { content: string }) {
         />
         <div className="py-2.5 pl-5 pr-4">
           <div
-            className="mb-1 text-[10px] font-semibold uppercase tracking-wider"
+            className="mb-1 text-caption font-semibold uppercase tracking-wider"
             style={{ color: "var(--color-label-you)" }}
           >
             You
           </div>
-          <div className="whitespace-pre-wrap text-[13px] leading-relaxed text-foreground">
+          <div className="whitespace-pre-wrap text-body leading-relaxed text-foreground">
             {content}
           </div>
         </div>
@@ -246,12 +246,12 @@ function AssistantMessage({ content }: { content: string }) {
         />
         <div className="py-2.5 pl-5 pr-4">
           <div
-            className="mb-1 text-[10px] font-semibold uppercase tracking-wider"
+            className="mb-1 text-caption font-semibold uppercase tracking-wider"
             style={{ color: "var(--color-label-claude)" }}
           >
             Assistant
           </div>
-          <div className="text-[13px] leading-relaxed text-foreground">
+          <div className="text-body leading-relaxed text-foreground">
             <MarkdownContent content={content} />
           </div>
         </div>
@@ -268,7 +268,7 @@ function SystemMessage({ content }: { content: string }) {
   return (
     <div className="mx-4 my-1">
       <button
-        className="flex w-full items-center gap-2 rounded-lg border border-border/30 bg-muted/20 px-3 py-1.5 text-[11px] text-muted-foreground transition-colors hover:bg-muted/30"
+        className="flex w-full items-center gap-2 rounded-lg border border-border/30 bg-muted/20 px-3 py-1.5 text-label text-muted-foreground transition-colors hover:bg-muted/30"
         onClick={() => setExpanded(!expanded)}
       >
         {expanded ? <ChevronDown className="size-3" /> : <ChevronRight className="size-3" />}
@@ -282,7 +282,7 @@ function SystemMessage({ content }: { content: string }) {
       </button>
       {expanded && (
         <div className="mt-1 rounded-b-lg border border-t-0 border-border/30 bg-muted/10 p-3">
-          <pre className="whitespace-pre-wrap font-mono text-[11px] text-muted-foreground">
+          <pre className="whitespace-pre-wrap font-mono text-label text-muted-foreground">
             {content}
           </pre>
         </div>
@@ -340,7 +340,7 @@ function ToolUseMessage({ message }: { message: ConversationMessage }) {
   return (
     <div className="mx-4 my-1">
       <button
-        className="flex w-full items-center gap-2 rounded-lg border border-border/40 px-3 py-2 text-[12px] transition-colors hover:bg-muted/30"
+        className="flex w-full items-center gap-2 rounded-lg border border-border/40 px-3 py-2 text-body-sm transition-colors hover:bg-muted/30"
         style={{ backgroundColor: "var(--color-msg-bash-bg, var(--color-muted))" }}
         onClick={() => setExpanded(!expanded)}
       >
@@ -352,7 +352,7 @@ function ToolUseMessage({ message }: { message: ConversationMessage }) {
         <ToolIcon className="size-3.5 shrink-0" style={{ color }} />
         <span className="font-medium" style={{ color }}>{label}</span>
         {!expanded && inputPreview && (
-          <span className="flex-1 truncate text-left font-mono text-[11px] text-muted-foreground">
+          <span className="flex-1 truncate text-left font-mono text-label text-muted-foreground">
             {inputPreview}
           </span>
         )}
@@ -365,7 +365,7 @@ function ToolUseMessage({ message }: { message: ConversationMessage }) {
           {parsedInput ? (
             <StructuredToolInput params={parsedInput} />
           ) : (
-            <pre className="overflow-x-auto whitespace-pre-wrap p-3 font-mono text-[11px] text-foreground/80">
+            <pre className="overflow-x-auto whitespace-pre-wrap p-3 font-mono text-label text-foreground/80">
               {toolInput}
             </pre>
           )}
@@ -386,15 +386,15 @@ function StructuredToolInput({ params }: { params: Record<string, unknown> }) {
 
         return (
           <div key={key} className="flex gap-2 px-3 py-1.5">
-            <span className="shrink-0 font-mono text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+            <span className="shrink-0 font-mono text-caption font-semibold uppercase tracking-wider text-muted-foreground">
               {key}
             </span>
             {isLong ? (
-              <pre className="flex-1 overflow-x-auto whitespace-pre-wrap font-mono text-[11px] text-foreground/80">
+              <pre className="flex-1 overflow-x-auto whitespace-pre-wrap font-mono text-label text-foreground/80">
                 {strValue}
               </pre>
             ) : (
-              <span className="flex-1 truncate font-mono text-[11px] text-foreground/80">
+              <span className="flex-1 truncate font-mono text-label text-foreground/80">
                 {strValue}
               </span>
             )}
@@ -426,7 +426,7 @@ function ToolResultMessage({ message }: { message: ConversationMessage }) {
     <div className="mx-4 my-1">
       <button
         className={cn(
-          "flex w-full items-center gap-2 rounded-lg border px-3 py-1.5 text-[12px] transition-colors",
+          "flex w-full items-center gap-2 rounded-lg border px-3 py-1.5 text-body-sm transition-colors",
           isError
             ? "border-[color:var(--color-error,rgb(171,43,63))]/30 bg-[color:var(--color-error,rgb(171,43,63))]/5 hover:bg-[color:var(--color-error,rgb(171,43,63))]/10"
             : "border-[color:var(--color-success,rgb(44,122,57))]/20 bg-[color:var(--color-success,rgb(44,122,57))]/5 hover:bg-[color:var(--color-success,rgb(44,122,57))]/10"
@@ -447,11 +447,11 @@ function ToolResultMessage({ message }: { message: ConversationMessage }) {
         {!expanded && (
           <>
             {isLong && (
-              <span className="rounded bg-muted/50 px-1 py-0.5 text-[10px] text-muted-foreground">
+              <span className="rounded bg-muted/50 px-1 py-0.5 text-caption text-muted-foreground">
                 {lineCount} lines
               </span>
             )}
-            <span className="flex-1 truncate text-left font-mono text-[11px] text-muted-foreground">
+            <span className="flex-1 truncate text-left font-mono text-label text-muted-foreground">
               {lines[0]?.slice(0, 80)}
             </span>
           </>
@@ -510,7 +510,7 @@ function ToolResultContent({
 
   // Default
   return (
-    <pre className="whitespace-pre-wrap p-3 font-mono text-[11px] leading-[1.6] text-foreground/80">
+    <pre className="whitespace-pre-wrap p-3 font-mono text-label leading-[1.6] text-foreground/80">
       {output}
     </pre>
   );
@@ -538,16 +538,16 @@ function GlobResult({ output }: { output: string }) {
             ) : (
               <File className="size-3 shrink-0 text-muted-foreground" />
             )}
-            <span className="font-mono text-[11px] text-muted-foreground/60">
+            <span className="font-mono text-label text-muted-foreground/60">
               {dir}
             </span>
-            <span className="font-mono text-[11px] text-foreground/80">
+            <span className="font-mono text-label text-foreground/80">
               {name}
             </span>
           </div>
         );
       })}
-      <div className="px-3 py-1 text-[10px] text-muted-foreground">
+      <div className="px-3 py-1 text-caption text-muted-foreground">
         {files.length} file{files.length !== 1 ? "s" : ""} matched
       </div>
     </div>
@@ -559,13 +559,13 @@ function GlobResult({ output }: { output: string }) {
 function FileOpResult({ output, isError }: { output: string; isError: boolean }) {
   return (
     <div className="p-3">
-      <div className="flex items-center gap-2 text-[11px]">
+      <div className="flex items-center gap-2 text-label">
         {isError ? (
           <AlertCircle className="size-3.5" style={{ color: "var(--color-error)" }} />
         ) : (
           <CheckCircle2 className="size-3.5" style={{ color: "var(--color-success)" }} />
         )}
-        <pre className="whitespace-pre-wrap font-mono text-[11px] leading-[1.6] text-foreground/80">
+        <pre className="whitespace-pre-wrap font-mono text-label leading-[1.6] text-foreground/80">
           {output}
         </pre>
       </div>
@@ -578,11 +578,11 @@ function FileOpResult({ output, isError }: { output: string; isError: boolean })
 function AgentResult({ output }: { output: string }) {
   return (
     <div className="p-3">
-      <div className="mb-2 flex items-center gap-1.5 text-[10px] font-medium" style={{ color: "var(--agent-purple)" }}>
+      <div className="mb-2 flex items-center gap-1.5 text-caption font-medium" style={{ color: "var(--agent-purple)" }}>
         <Brain className="size-3" />
         <span>Subagent Result</span>
       </div>
-      <pre className="whitespace-pre-wrap font-mono text-[11px] leading-[1.6] text-foreground/80">
+      <pre className="whitespace-pre-wrap font-mono text-label leading-[1.6] text-foreground/80">
         {output}
       </pre>
     </div>
@@ -601,16 +601,16 @@ function WebResult({ output, isSearch }: { output: string; isSearch: boolean }) 
       {urlLine && (
         <div className="mb-2 flex items-center gap-1.5 rounded-md bg-muted/30 px-2 py-1">
           <Globe className="size-3 shrink-0" style={{ color: "var(--claude-blue)" }} />
-          <span className="flex-1 truncate font-mono text-[11px] text-foreground/70">
+          <span className="flex-1 truncate font-mono text-label text-foreground/70">
             {urlLine}
           </span>
           <ExternalLink className="size-3 shrink-0 text-muted-foreground" />
         </div>
       )}
-      <div className="mb-1 text-[10px] font-medium text-muted-foreground">
+      <div className="mb-1 text-caption font-medium text-muted-foreground">
         {isSearch ? "Search Results" : "Fetched Content"}
       </div>
-      <pre className="whitespace-pre-wrap font-mono text-[11px] leading-[1.6] text-foreground/80">
+      <pre className="whitespace-pre-wrap font-mono text-label leading-[1.6] text-foreground/80">
         {urlLine ? lines.filter((l) => l !== urlLine).join("\n") : output}
       </pre>
     </div>
@@ -621,7 +621,7 @@ function WebResult({ output, isSearch }: { output: string; isSearch: boolean }) 
 
 function DiffDisplay({ content }: { content: string }) {
   return (
-    <pre className="p-3 font-mono text-[11px] leading-[1.6]">
+    <pre className="p-3 font-mono text-label leading-[1.6]">
       {content.split("\n").map((line, i) => {
         let lineClass = "text-foreground/80";
         if (line.startsWith("+") && !line.startsWith("+++")) {
@@ -657,7 +657,7 @@ function ErrorMessage({ content }: { content: string }) {
         }}
       >
         <AlertCircle className="mt-0.5 size-3.5 shrink-0" style={{ color: "var(--color-error)" }} />
-        <div className="font-mono text-[12px]" style={{ color: "var(--color-error)" }}>
+        <div className="font-mono text-body-sm" style={{ color: "var(--color-error)" }}>
           {content}
         </div>
       </div>

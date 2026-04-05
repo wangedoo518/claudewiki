@@ -2,6 +2,7 @@ import { configureStore, combineReducers } from "@reduxjs/toolkit";
 import {
   persistStore,
   persistReducer,
+  createTransform,
   FLUSH,
   REHYDRATE,
   PAUSE,
@@ -34,17 +35,39 @@ const rootReducer = combineReducers({
   permissions: permissionsReducer,
 });
 
+// Strip sensitive fields before persisting to localStorage
+const sanitizeSettingsTransform = createTransform(
+  // inbound: called when persisting (state → storage)
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  (inboundState: any) => {
+    if (!inboundState || typeof inboundState !== "object") return inboundState;
+    const state = { ...inboundState };
+    // Never persist API keys or secrets to localStorage
+    if (state.provider && typeof state.provider === "object") {
+      state.provider = { ...state.provider, apiKey: "" };
+    }
+    return state;
+  },
+  // outbound: called when rehydrating (storage → state) — pass through
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  (outboundState: any) => outboundState,
+  { whitelist: ["settings"] }
+);
+
 const persistConfig = {
   key: "open-claude-code",
   version: 1,
   storage,
   blacklist: ["sessions", "ui", "permissions"],
+  transforms: [sanitizeSettingsTransform],
 };
 
-const persistedReducer = persistReducer(persistConfig, rootReducer);
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const persistedReducer = persistReducer(persistConfig, rootReducer as any);
 
 export const store = configureStore({
-  reducer: persistedReducer,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  reducer: persistedReducer as any,
   middleware: (getDefaultMiddleware) =>
     getDefaultMiddleware({
       serializableCheck: {

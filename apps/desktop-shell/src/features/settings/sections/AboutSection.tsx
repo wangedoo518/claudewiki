@@ -27,13 +27,13 @@ export function AboutSection({
             </div>
             <div className="text-xs text-muted-foreground">Desktop shell</div>
             <div className="mt-1 flex gap-1">
-              <Badge variant="secondary" className="text-[10px]">
+              <Badge variant="secondary" className="text-caption">
                 Tauri 2
               </Badge>
-              <Badge variant="secondary" className="text-[10px]">
+              <Badge variant="secondary" className="text-caption">
                 React 19
               </Badge>
-              <Badge variant="secondary" className="text-[10px]">
+              <Badge variant="secondary" className="text-caption">
                 Rust runtime
               </Badge>
             </div>

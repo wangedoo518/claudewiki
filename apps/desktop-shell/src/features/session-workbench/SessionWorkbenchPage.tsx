@@ -10,6 +10,10 @@ import {
   inferToolRiskLevel,
 } from "@/store/slices/permissions";
 import {
+  appendStreamingContent,
+  setStreaming,
+} from "@/store/slices/sessions";
+import {
   appendMessage,
   createSession,
   getSession,
@@ -111,8 +115,13 @@ export function SessionWorkbenchPage({
       onSnapshot: (session) => {
         queryClient.setQueryData(["desktop-session", session.id], session);
         void queryClient.invalidateQueries({ queryKey: ["desktop-workbench"] });
+        // Track streaming state from turn_state.
+        const isRunning = session.turn_state === "running";
+        dispatch(setStreaming(isRunning));
       },
       onMessage: (nextSessionId, message) => {
+        // When a complete message arrives, clear the streaming buffer.
+        dispatch(setStreaming(false));
         queryClient.setQueryData(
           ["desktop-session", nextSessionId],
           (
@@ -129,6 +138,9 @@ export function SessionWorkbenchPage({
           }
         );
         void queryClient.invalidateQueries({ queryKey: ["desktop-workbench"] });
+      },
+      onTextDelta: (payload) => {
+        dispatch(appendStreamingContent(payload.content));
       },
       onPermissionRequest: (payload) => {
         let parsedInput: Record<string, unknown> = {};

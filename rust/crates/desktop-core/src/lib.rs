@@ -39,6 +39,7 @@ pub mod agentic_loop;
 mod codex_auth;
 mod managed_auth;
 mod oauth_runtime;
+pub mod system_prompt;
 
 pub use codex_auth::{
     DesktopCodexAuthOverview, DesktopCodexAuthSource, DesktopCodexInstallationRecord,
@@ -2125,6 +2126,11 @@ impl DesktopState {
         &self,
         session_id: &str,
     ) -> Result<(), DesktopStateError> {
+        // Signal the agentic loop to stop (if running).
+        if let Some(token) = self.cancel_tokens.read().await.get(session_id) {
+            token.cancel();
+        }
+
         let mut store = self.store.write().await;
         let record = store
             .sessions
@@ -2369,22 +2375,96 @@ impl DesktopState {
             session: detail.clone(),
         });
 
+        // ── Spawn agentic loop ───────────────────────────────────
+        let cancel_token = CancellationToken::new();
+        let permission_gate = Arc::new(agentic_loop::PermissionGate::new(
+            sender.clone(),
+            session_id.clone(),
+        ));
+        self.permission_gates
+            .write()
+            .await
+            .insert(session_id.clone(), permission_gate.clone());
+        self.cancel_tokens
+            .write()
+            .await
+            .insert(session_id.clone(), cancel_token.clone());
+
+        // Try to resolve managed auth credentials for the agentic loop.
+        // Default provider: try codex-openai first, then qwen-code.
+        let runtime_client = self
+            .managed_auth_runtime_client("codex-openai")
+            .await
+            .or_else(|_| {
+                // Try sync fallback for qwen — already async so just return Err.
+                Err(DesktopStateError::ProviderNotFound("no provider".into()))
+            });
+
         let state = self.clone();
         let turn_executor = Arc::clone(&self.turn_executor);
-        tokio::spawn(async move {
-            state
-                .run_background_turn(
-                    session_id,
-                    session,
-                    previous_message_count,
-                    DesktopTurnRequest {
-                        message: message.clone(),
-                        project_path,
-                    },
-                    turn_executor,
-                )
-                .await;
-        });
+
+        match runtime_client {
+            Ok(client) => {
+                // Use the new agentic loop with real tool execution.
+                let bridge_base_url = format!(
+                    "http://127.0.0.1:4357/api/desktop/code-tools/claude-bridge/{}",
+                    client.provider_id
+                );
+                let tool_specs = tools::mvp_tool_specs();
+                let project_path_buf = PathBuf::from(&project_path);
+                let claude_md = system_prompt::find_claude_md(&project_path_buf);
+                let system_prompt_text = system_prompt::build_system_prompt(
+                    &project_path_buf,
+                    &tool_specs,
+                    claude_md.as_deref(),
+                );
+
+                let config = agentic_loop::AgenticLoopConfig {
+                    bridge_base_url,
+                    bearer_token: client.bearer_token,
+                    model: "default".to_string(),
+                    project_path: project_path_buf,
+                    system_prompt: Some(system_prompt_text),
+                    bypass_permissions: true, // TODO: read from settings
+                };
+
+                let mut session_for_loop = session;
+                session_for_loop.messages.push(user_message);
+
+                tokio::spawn(async move {
+                    let result = agentic_loop::run_agentic_loop(
+                        session_for_loop,
+                        config,
+                        sender.clone(),
+                        session_id.clone(),
+                        permission_gate,
+                        cancel_token,
+                    )
+                    .await;
+                    state
+                        .finalize_agentic_turn(&session_id, result, sender)
+                        .await;
+                });
+            }
+            Err(_) => {
+                // No managed auth credentials available — fall back to the old
+                // synchronous turn executor (no local tool execution).
+                tokio::spawn(async move {
+                    state
+                        .run_background_turn(
+                            session_id,
+                            session,
+                            previous_message_count,
+                            DesktopTurnRequest {
+                                message: message.clone(),
+                                project_path,
+                            },
+                            turn_executor,
+                        )
+                        .await;
+                });
+            }
+        }
 
         Ok(detail)
     }
@@ -2743,6 +2823,65 @@ impl DesktopState {
                 message: DesktopConversationMessage::from(&message),
             });
         }
+        let _ = sender.send(DesktopSessionEvent::Snapshot { session: detail });
+    }
+
+    /// Finalize an agentic loop turn: update session store, set Idle, persist, broadcast.
+    async fn finalize_agentic_turn(
+        &self,
+        session_id: &str,
+        result: Result<agentic_loop::AgenticTurnResult, agentic_loop::AgenticError>,
+        sender: broadcast::Sender<DesktopSessionEvent>,
+    ) {
+        // Clean up per-session state.
+        self.permission_gates.write().await.remove(session_id);
+        self.cancel_tokens.write().await.remove(session_id);
+
+        let (new_session, model_label) = match result {
+            Ok(turn) => (turn.session, turn.model_label),
+            Err(error) => {
+                eprintln!("agentic loop error for session {session_id}: {error}");
+                // On error, broadcast an error message and reset to Idle.
+                let error_message = ConversationMessage {
+                    role: runtime::MessageRole::Assistant,
+                    blocks: vec![runtime::ContentBlock::Text {
+                        text: format!("Error: {error}"),
+                    }],
+                    usage: None,
+                };
+                let _ = sender.send(DesktopSessionEvent::Message {
+                    session_id: session_id.to_string(),
+                    message: DesktopConversationMessage::from(&error_message),
+                });
+                // Try to get the current session to return.
+                let store = self.store.read().await;
+                if let Some(record) = store.sessions.get(session_id) {
+                    let mut session = record.session.clone();
+                    session
+                        .push_message(error_message)
+                        .unwrap_or_default();
+                    (session, DEFAULT_MODEL_LABEL.to_string())
+                } else {
+                    return;
+                }
+            }
+        };
+
+        // Update session store.
+        let detail = {
+            let mut store = self.store.write().await;
+            let Some(record) = store.sessions.get_mut(session_id) else {
+                return;
+            };
+            record.metadata.updated_at = unix_timestamp_millis();
+            record.metadata.bucket = DesktopSessionBucket::Today;
+            record.metadata.turn_state = DesktopTurnState::Idle;
+            record.metadata.model_label = model_label;
+            record.session = new_session;
+            record.detail()
+        };
+
+        self.persist().await;
         let _ = sender.send(DesktopSessionEvent::Snapshot { session: detail });
     }
 }

@@ -22,8 +22,10 @@
 - [ ] **8.1** Remove 6 stub commands, add 4 missing ones
 - [ ] **Checkpoint**: InputBar ↔ commandExecutor 1:1
 
-## Phase 9: E2E Test + Robustness
-- [ ] **9.1** Incremental persistence during agentic loop
-- [ ] **9.2** Error recovery (API error, tool panic, max iterations)
-- [ ] **9.3** Verify gates/tokens cleanup in finalize
-- [ ] **Checkpoint**: `cargo test` all pass
+## Phase 9: E2E Test + Robustness ✅
+- [x] **9.1** Error recovery: API errors → visible error message + graceful return
+- [x] **9.2** Max iterations → system message explaining limit + graceful return
+- [x] **9.3** Tool output truncation at 100KB
+- [x] **9.4** Incremental persistence via `on_iteration_complete` callback
+- [x] **9.5** gates/tokens cleanup confirmed in `finalize_agentic_turn`
+- [x] **Checkpoint**: `cargo test` 10 passed, 0 failed

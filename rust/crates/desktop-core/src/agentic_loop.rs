@@ -8,6 +8,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
+use reqwest::Response;
 use runtime::{ContentBlock, ConversationMessage, Session as RuntimeSession};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -253,7 +254,7 @@ pub async fn run_agentic_loop(
             });
         }
 
-        // ── Build Anthropic Messages API request ─────────────────
+        // ── Build Anthropic Messages API request (streaming) ─────
         let api_request = build_api_request(
             &current_session,
             &config.model,
@@ -261,19 +262,22 @@ pub async fn run_agentic_loop(
             &tool_specs,
         );
 
-        // ── Call LLM via code-tools-bridge ───────────────────────
-        let response = call_llm_api(&client, &config.bridge_base_url, &config.bearer_token, &api_request)
+        // ── Call LLM via code-tools-bridge (streaming SSE) ──────
+        let (assistant_message, stop_reason, response_model) =
+            call_llm_api_streaming(
+                &client,
+                &config.bridge_base_url,
+                &config.bearer_token,
+                &api_request,
+                &event_sender,
+                &session_id,
+            )
             .await
             .map_err(AgenticError::ApiError)?;
 
-        // Extract model label from response.
-        if let Some(m) = response.get("model").and_then(|v| v.as_str()) {
-            model_label = m.to_string();
+        if let Some(m) = response_model {
+            model_label = m;
         }
-
-        // Parse assistant message from response.
-        let (assistant_message, stop_reason) = parse_assistant_response(&response)
-            .map_err(|e| AgenticError::Internal(e.to_string()))?;
 
         // Append assistant message to session.
         current_session
@@ -452,7 +456,7 @@ fn build_api_request(
         "max_tokens": 16384,
         "messages": messages,
         "tools": tools,
-        "stream": false
+        "stream": true
     });
 
     if let Some(system) = system_prompt {
@@ -462,13 +466,21 @@ fn build_api_request(
     request
 }
 
-/// Call the LLM API via the code-tools-bridge proxy (non-streaming for Phase 1).
-async fn call_llm_api(
+/// Call the LLM API via the code-tools-bridge proxy with streaming SSE.
+///
+/// Parses Anthropic SSE events incrementally, broadcasts `TextDelta` events
+/// to the frontend for real-time text display, and accumulates the full
+/// assistant message (text blocks + tool_use blocks) for the agentic loop.
+///
+/// Returns `(ConversationMessage, stop_reason, model)`.
+async fn call_llm_api_streaming(
     client: &reqwest::Client,
     bridge_base_url: &str,
     bearer_token: &str,
     request_body: &Value,
-) -> Result<Value, String> {
+    event_sender: &broadcast::Sender<DesktopSessionEvent>,
+    session_id: &str,
+) -> Result<(ConversationMessage, Option<String>, Option<String>), String> {
     let url = format!("{bridge_base_url}/v1/messages");
 
     let response = client
@@ -491,16 +503,233 @@ async fn call_llm_api(
         return Err(format!("LLM API returned {status}: {body}"));
     }
 
-    response
-        .json::<Value>()
-        .await
-        .map_err(|e| format!("failed to parse LLM response: {e}"))
+    // Check if response is actually SSE (text/event-stream) or plain JSON.
+    let content_type = response
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+
+    if content_type.contains("text/event-stream") {
+        parse_sse_stream(response, event_sender, session_id).await
+    } else {
+        // Fallback: non-streaming JSON response (upstream didn't support streaming).
+        let body = response
+            .json::<Value>()
+            .await
+            .map_err(|e| format!("failed to parse LLM response: {e}"))?;
+        parse_json_response(&body)
+    }
 }
 
-/// Parse an Anthropic Messages API response into a `ConversationMessage`.
-fn parse_assistant_response(response: &Value) -> Result<(ConversationMessage, Option<String>), String> {
+/// Parse a streaming SSE response from the Anthropic Messages API.
+///
+/// Events follow the Anthropic protocol:
+/// - `message_start`: contains model and initial usage
+/// - `content_block_start`: begins a text or tool_use block
+/// - `content_block_delta`: incremental content (text_delta or input_json_delta)
+/// - `content_block_stop`: ends a content block
+/// - `message_delta`: contains stop_reason and final usage
+/// - `message_stop`: stream is done
+async fn parse_sse_stream(
+    response: Response,
+    event_sender: &broadcast::Sender<DesktopSessionEvent>,
+    session_id: &str,
+) -> Result<(ConversationMessage, Option<String>, Option<String>), String> {
+    use futures_util::StreamExt;
+
+    let mut model_label: Option<String> = None;
+    let mut stop_reason: Option<String> = None;
+
+    // Accumulated content blocks indexed by position.
+    let mut text_blocks: HashMap<usize, String> = HashMap::new();
+    let mut tool_blocks: HashMap<usize, ToolBlockAccumulator> = HashMap::new();
+    let mut block_types: HashMap<usize, String> = HashMap::new(); // index → "text" | "tool_use"
+
+    let mut stream = response.bytes_stream();
+    let mut buffer = String::new();
+
+    while let Some(chunk_result) = stream.next().await {
+        let chunk = chunk_result.map_err(|e| format!("SSE stream error: {e}"))?;
+        buffer.push_str(&String::from_utf8_lossy(&chunk));
+
+        // Process complete lines from buffer.
+        while let Some(newline_pos) = buffer.find('\n') {
+            let line = buffer[..newline_pos].trim_end_matches('\r').to_string();
+            buffer = buffer[newline_pos + 1..].to_string();
+
+            if line.is_empty() || line.starts_with(':') {
+                continue;
+            }
+
+            if let Some(data) = line.strip_prefix("data: ") {
+                if data == "[DONE]" {
+                    break;
+                }
+                let event: Value = match serde_json::from_str(data) {
+                    Ok(v) => v,
+                    Err(_) => continue,
+                };
+
+                let event_type = event
+                    .get("type")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+
+                match event_type {
+                    "message_start" => {
+                        if let Some(msg) = event.get("message") {
+                            model_label = msg
+                                .get("model")
+                                .and_then(|v| v.as_str())
+                                .map(String::from);
+                        }
+                    }
+                    "content_block_start" => {
+                        let index = event
+                            .get("index")
+                            .and_then(|v| v.as_u64())
+                            .unwrap_or(0) as usize;
+                        if let Some(cb) = event.get("content_block") {
+                            let block_type = cb
+                                .get("type")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("text");
+                            block_types.insert(index, block_type.to_string());
+                            match block_type {
+                                "text" => {
+                                    text_blocks.insert(index, String::new());
+                                }
+                                "tool_use" => {
+                                    let id = cb
+                                        .get("id")
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or("")
+                                        .to_string();
+                                    let name = cb
+                                        .get("name")
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or("")
+                                        .to_string();
+                                    tool_blocks.insert(
+                                        index,
+                                        ToolBlockAccumulator {
+                                            id,
+                                            name,
+                                            input_json: String::new(),
+                                        },
+                                    );
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                    "content_block_delta" => {
+                        let index = event
+                            .get("index")
+                            .and_then(|v| v.as_u64())
+                            .unwrap_or(0) as usize;
+                        if let Some(delta) = event.get("delta") {
+                            let delta_type = delta
+                                .get("type")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("");
+                            match delta_type {
+                                "text_delta" => {
+                                    if let Some(text) =
+                                        delta.get("text").and_then(|v| v.as_str())
+                                    {
+                                        if let Some(acc) = text_blocks.get_mut(&index) {
+                                            acc.push_str(text);
+                                        }
+                                        // Broadcast text delta to frontend.
+                                        let _ = event_sender.send(
+                                            DesktopSessionEvent::TextDelta {
+                                                session_id: session_id.to_string(),
+                                                content: text.to_string(),
+                                            },
+                                        );
+                                    }
+                                }
+                                "input_json_delta" => {
+                                    if let Some(partial) = delta
+                                        .get("partial_json")
+                                        .and_then(|v| v.as_str())
+                                    {
+                                        if let Some(acc) = tool_blocks.get_mut(&index) {
+                                            acc.input_json.push_str(partial);
+                                        }
+                                    }
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                    "message_delta" => {
+                        if let Some(delta) = event.get("delta") {
+                            stop_reason = delta
+                                .get("stop_reason")
+                                .and_then(|v| v.as_str())
+                                .map(String::from);
+                        }
+                    }
+                    "message_stop" | "error" => {
+                        // Stream complete.
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    // ── Assemble final ConversationMessage from accumulated blocks ────
+    let mut max_index = 0usize;
+    for &idx in block_types.keys() {
+        if idx >= max_index {
+            max_index = idx + 1;
+        }
+    }
+
+    let mut blocks = Vec::new();
+    for idx in 0..max_index {
+        match block_types.get(&idx).map(String::as_str) {
+            Some("text") => {
+                let text = text_blocks.remove(&idx).unwrap_or_default();
+                blocks.push(ContentBlock::Text { text });
+            }
+            Some("tool_use") => {
+                if let Some(acc) = tool_blocks.remove(&idx) {
+                    blocks.push(ContentBlock::ToolUse {
+                        id: acc.id,
+                        name: acc.name,
+                        input: acc.input_json,
+                    });
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let message = ConversationMessage {
+        role: runtime::MessageRole::Assistant,
+        blocks,
+        usage: None,
+    };
+
+    Ok((message, stop_reason, model_label))
+}
+
+/// Fallback: parse a non-streaming JSON response.
+fn parse_json_response(
+    response: &Value,
+) -> Result<(ConversationMessage, Option<String>, Option<String>), String> {
     let stop_reason = response
         .get("stop_reason")
+        .and_then(|v| v.as_str())
+        .map(String::from);
+    let model_label = response
+        .get("model")
         .and_then(|v| v.as_str())
         .map(String::from);
 
@@ -544,7 +773,6 @@ fn parse_assistant_response(response: &Value) -> Result<(ConversationMessage, Op
                 blocks.push(ContentBlock::ToolUse { id, name, input });
             }
             _ => {
-                // Unknown block type: treat as text.
                 let text = block.to_string();
                 blocks.push(ContentBlock::Text { text });
             }
@@ -557,7 +785,14 @@ fn parse_assistant_response(response: &Value) -> Result<(ConversationMessage, Op
         usage: None,
     };
 
-    Ok((message, stop_reason))
+    Ok((message, stop_reason, model_label))
+}
+
+/// Helper for accumulating tool_use input JSON across streaming deltas.
+struct ToolBlockAccumulator {
+    id: String,
+    name: String,
+    input_json: String,
 }
 
 /// Returns `true` for tools that are read-only and never need permission.

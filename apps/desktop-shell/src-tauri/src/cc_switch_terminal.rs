@@ -91,37 +91,20 @@ fn launch_ghostty(command: &str, cwd: Option<&str>) -> Result<(), String> {
 }
 
 fn build_ghostty_args(command: &str, cwd: Option<&str>) -> Vec<String> {
-    let input = ghostty_raw_input(command);
+    let full_command = build_shell_command(command, cwd);
+    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
 
-    let mut args = vec![
+    vec![
         "-na".to_string(),
         "Ghostty".to_string(),
         "--args".to_string(),
         "--quit-after-last-window-closed=true".to_string(),
-    ];
-
-    if let Some(dir) = cwd {
-        if !dir.trim().is_empty() {
-            args.push(format!("--working-directory={dir}"));
-        }
-    }
-
-    args.push(format!("--input={input}"));
-    args
-}
-
-fn ghostty_raw_input(command: &str) -> String {
-    let mut escaped = String::from("raw:");
-    for ch in command.chars() {
-        match ch {
-            '\\' => escaped.push_str("\\\\"),
-            '\n' => escaped.push_str("\\n"),
-            '\r' => escaped.push_str("\\r"),
-            _ => escaped.push(ch),
-        }
-    }
-    escaped.push_str("\\n");
-    escaped
+        "-e".to_string(),
+        shell,
+        "-l".to_string(),
+        "-c".to_string(),
+        full_command,
+    ]
 }
 
 fn launch_kitty(command: &str, cwd: Option<&str>) -> Result<(), String> {
@@ -252,4 +235,27 @@ fn shell_escape(value: &str) -> String {
 
 fn escape_osascript(value: &str) -> String {
     value.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::build_ghostty_args;
+
+    #[test]
+    fn ghostty_launch_args_open_new_window_and_execute_command() {
+        let args = build_ghostty_args("echo hello", Some("/tmp/project"));
+
+        assert!(args.iter().any(|arg| arg == "-na"));
+        assert!(args.iter().any(|arg| arg == "Ghostty"));
+        assert!(args.iter().any(|arg| arg == "-e"));
+        assert!(
+            args.iter()
+                .all(|arg| !arg.starts_with("--input=raw:")),
+            "ghostty launch should not inject raw input into existing panes"
+        );
+        assert!(
+            args.iter()
+                .any(|arg| arg.contains("cd \"/tmp/project\" && echo hello"))
+        );
+    }
 }

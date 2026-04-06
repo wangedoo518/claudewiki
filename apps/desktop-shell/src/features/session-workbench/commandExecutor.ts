@@ -7,7 +7,6 @@
  *   local-jsx — async local, render interactive UI (e.g., /config, /theme, /model)
  */
 
-import type { AppDispatch } from "@/store";
 import type { ConversationMessage } from "./types";
 
 /* ─── Command definitions ───────────────────────────────────────── */
@@ -28,7 +27,6 @@ export interface CommandDefinition {
 }
 
 export interface CommandContext {
-  dispatch: AppDispatch;
   messages: ConversationMessage[];
   permissionMode: string;
   modelLabel: string;

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useAppDispatch, useAppSelector } from "@/store";
+import { useAppDispatch } from "@/store";
 import { SessionWorkbenchSidebar } from "./SessionWorkbenchSidebar";
 import { SessionWorkbenchTerminal } from "./SessionWorkbenchTerminal";
 import { useSessionLifecycle } from "./useSessionLifecycle";
@@ -15,6 +15,7 @@ import {
   subscribeToSessionEvents,
   type DesktopSessionDetail,
 } from "@/lib/tauri";
+import { useSettingsStore } from "@/state/settings-store";
 
 interface SessionWorkbenchPageProps {
   tabId: string;
@@ -32,8 +33,8 @@ export function SessionWorkbenchPage({
   autoSelectFallbackSession = true,
 }: SessionWorkbenchPageProps) {
   const dispatch = useAppDispatch();
-  const showSidebarPreference = useAppSelector(
-    (s) => s.settings.showSessionSidebar
+  const showSidebarPreference = useSettingsStore(
+    (state) => state.showSessionSidebar
   );
   const queryClient = useQueryClient();
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(

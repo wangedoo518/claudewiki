@@ -14,7 +14,6 @@ import {
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
 import { cn } from "@/lib/utils";
-import { useAppSelector } from "@/store";
 import { GeneralSettings } from "./sections/GeneralSettings";
 import { ProviderSettings } from "./sections/ProviderSettings";
 import { McpSettings } from "./sections/McpSettings";
@@ -31,6 +30,7 @@ import {
   type DesktopCustomizeState,
   type DesktopSettingsState,
 } from "@/lib/tauri";
+import { useSettingsStore } from "@/state/settings-store";
 
 type SettingsSection =
   | "general"
@@ -61,8 +61,7 @@ export function SettingsPage() {
   const [active, setActive] = useState<SettingsSection>("general");
   const { t, i18n } = useTranslation();
 
-  // Sync i18n language with Redux settings
-  const language = useAppSelector((s) => s.settings.language);
+  const language = useSettingsStore((state) => state.language);
   useEffect(() => {
     void i18n.changeLanguage(language);
   }, [language, i18n]);

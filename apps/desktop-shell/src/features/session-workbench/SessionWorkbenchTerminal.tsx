@@ -20,10 +20,7 @@ import type { PermissionAction } from "./permission-types";
 import { SubagentPanel, extractSubagents } from "./SubagentPanel";
 import { exportAsMarkdown, exportAsJson } from "./sessionExport";
 import { useKeyboardShortcuts } from "./useKeyboardShortcuts";
-import { useAppDispatch, useAppSelector } from "@/store";
-import {
-  setShowSessionSidebar,
-} from "@/store/slices/settings";
+import { useSettingsStore } from "@/state/settings-store";
 import { usePermissionsStore } from "@/state/permissions-store";
 import {
   forwardPermissionDecision,
@@ -59,7 +56,6 @@ export function SessionWorkbenchTerminal({
   environmentLabel = "Local",
   projectPath,
 }: SessionWorkbenchTerminalProps) {
-  const dispatch = useAppDispatch();
   const navigate = useNavigate();
   const pendingPermission = usePermissionsStore(
     (state) => state.pendingRequest
@@ -70,7 +66,11 @@ export function SessionWorkbenchTerminal({
   const clearPendingPermission = usePermissionsStore(
     (state) => state.clearPendingPermission
   );
-  const permissionMode = useAppSelector((s) => s.settings.permissionMode);
+  const permissionMode = useSettingsStore((state) => state.permissionMode);
+  const showSidebar = useSettingsStore((state) => state.showSessionSidebar);
+  const setShowSessionSidebar = useSettingsStore(
+    (state) => state.setShowSessionSidebar
+  );
   const [scrollNode, setScrollNode] = useState<HTMLDivElement | null>(null);
   const scrollCallbackRef = useCallback((node: HTMLDivElement | null) => {
     setScrollNode(node);
@@ -144,7 +144,6 @@ export function SessionWorkbenchTerminal({
   const handleSlashCommand = useCallback(
     (input: string): boolean => {
       const context: CommandContext = {
-        dispatch,
         messages,
         permissionMode,
         modelLabel,
@@ -175,7 +174,7 @@ export function SessionWorkbenchTerminal({
 
       return true;
     },
-    [dispatch, messages, permissionMode, modelLabel, session, onSend, navigate, addSystemMessage]
+    [messages, permissionMode, modelLabel, session, onSend, navigate, addSystemMessage]
   );
 
   // Export handlers
@@ -193,7 +192,6 @@ export function SessionWorkbenchTerminal({
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
   // Keyboard shortcuts
-  const showSidebar = useAppSelector((s) => s.settings.showSessionSidebar);
   useKeyboardShortcuts({
     onEscape: useCallback(() => {
       if (pendingPermission) return; // don't interfere with permission dialog
@@ -211,8 +209,8 @@ export function SessionWorkbenchTerminal({
       navigate("/settings");
     }, [navigate]),
     onToggleSidebar: useCallback(() => {
-      dispatch(setShowSessionSidebar(!showSidebar));
-    }, [dispatch, showSidebar]),
+      setShowSessionSidebar(!showSidebar);
+    }, [setShowSessionSidebar, showSidebar]),
     onExportSession: handleExportMarkdown,
     onToggleAgentPanel: useCallback(() => {
       setShowAgentPanel((v) => !v);

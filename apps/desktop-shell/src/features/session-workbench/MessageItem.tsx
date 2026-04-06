@@ -43,6 +43,9 @@ export const MessageItem = memo(function MessageItem({ message }: MessageItemPro
     case "tool_use":
       return <ToolUseMessage message={message} />;
     case "tool_result":
+      if (isTodoToolResult(message)) {
+        return <TodoMessage message={message} />;
+      }
       return <ToolResultMessage message={message} />;
     case "error":
       return <ErrorMessage content={message.content} />;
@@ -701,4 +704,79 @@ function getToolMeta(toolName: string): {
 
   // Fallback
   return { icon: TerminalIcon, label: toolName, color: "var(--color-terminal-tool)" };
+}
+
+/* ─── TodoWrite message ─────────────────────────────────────────── */
+
+interface TodoItem {
+  content: string;
+  status: "pending" | "in_progress" | "completed";
+  activeForm?: string;
+}
+
+function isTodoToolResult(message: ConversationMessage): boolean {
+  const name = message.toolResult?.toolName?.toLowerCase() ?? "";
+  return name === "todowrite" || name === "todo_write";
+}
+
+function parseTodoOutput(output: string): TodoItem[] {
+  try {
+    const parsed = JSON.parse(output) as unknown;
+    if (Array.isArray(parsed)) return parsed as TodoItem[];
+    if (typeof parsed === "object" && parsed !== null && "todos" in parsed) {
+      return (parsed as { todos: TodoItem[] }).todos;
+    }
+  } catch {
+    // Not JSON — try to extract from text.
+  }
+  return [];
+}
+
+function TodoMessage({ message }: { message: ConversationMessage }) {
+  const output = message.toolResult?.output ?? message.content;
+  const todos = parseTodoOutput(output);
+
+  if (todos.length === 0) {
+    return <ToolResultMessage message={message} />;
+  }
+
+  return (
+    <div className="mx-4 my-2 rounded-lg border border-[color:var(--color-terminal-tool)]/20 bg-[color:var(--color-terminal-tool)]/5 p-3">
+      <div className="mb-2 flex items-center gap-2 text-body font-medium">
+        <CheckCircle2 className="size-4" style={{ color: "var(--color-terminal-tool)" }} />
+        <span>Task List</span>
+        <span className="ml-auto rounded bg-muted/50 px-1.5 py-0.5 text-caption text-muted-foreground">
+          {todos.filter((t) => t.status === "completed").length}/{todos.length}
+        </span>
+      </div>
+      <div className="space-y-1">
+        {todos.map((todo, i) => (
+          <div key={`${todo.content}-${i}`} className="flex items-start gap-2 py-0.5">
+            <span className="mt-0.5 text-body-sm">
+              {todo.status === "completed" && (
+                <CheckCircle2 className="size-3.5 text-[color:var(--color-success)]" />
+              )}
+              {todo.status === "in_progress" && (
+                <span className="inline-block size-3.5 animate-spin rounded-full border-2 border-[color:var(--color-warning)] border-t-transparent" />
+              )}
+              {todo.status === "pending" && (
+                <span className="inline-block size-3.5 rounded-full border-2 border-muted-foreground/40" />
+              )}
+            </span>
+            <span
+              className={cn(
+                "text-body-sm",
+                todo.status === "completed" && "text-muted-foreground line-through",
+                todo.status === "in_progress" && "font-medium",
+              )}
+            >
+              {todo.status === "in_progress" && todo.activeForm
+                ? todo.activeForm
+                : todo.content}
+            </span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
 }

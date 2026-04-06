@@ -9,7 +9,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use reqwest::Response;
-use runtime::{ContentBlock, ConversationMessage, Session as RuntimeSession};
+use runtime::{
+    should_compact, compact_session, CompactionConfig,
+    ContentBlock, ConversationMessage, Session as RuntimeSession,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::sync::{broadcast, oneshot, Mutex};
@@ -278,6 +281,30 @@ pub async fn run_agentic_loop(
                 model_label,
                 iterations,
                 was_cancelled: true,
+            });
+        }
+
+        // ── Auto-compact if context is too large ──────────────────
+        let compaction_config = CompactionConfig::default();
+        if should_compact(&current_session, compaction_config) {
+            let result = compact_session(&current_session, compaction_config);
+            let removed = result.removed_message_count;
+            current_session = result.compacted_session;
+
+            // Broadcast compaction notice to frontend.
+            let notice = ConversationMessage {
+                role: runtime::MessageRole::Assistant,
+                blocks: vec![ContentBlock::Text {
+                    text: format!(
+                        "📦 Context compacted: {removed} older messages summarized to free context window."
+                    ),
+                }],
+                usage: None,
+            };
+            let _ = current_session.push_message(notice.clone());
+            let _ = event_sender.send(DesktopSessionEvent::Message {
+                session_id: session_id.clone(),
+                message: DesktopConversationMessage::from(&notice),
             });
         }
 

@@ -1,7 +1,8 @@
-import { Cpu, Globe, Zap } from "lucide-react";
+import { Cpu, FileSearch, Globe, Zap } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { getPermissionConfig } from "./InputBar";
 import { useSettingsStore } from "@/state/settings-store";
+import { useStreamingStore } from "@/state/streaming-store";
 
 interface StatusLineProps {
   modelLabel?: string;
@@ -21,6 +22,7 @@ export function StatusLine({
   isRunning = false,
 }: StatusLineProps) {
   const permissionMode = useSettingsStore((state) => state.permissionMode);
+  const isPlanMode = useStreamingStore((state) => state.isPlanMode);
   const config = getPermissionConfig(permissionMode);
   const ModeIcon = config.icon;
 
@@ -39,6 +41,17 @@ export function StatusLine({
           <ModeIcon className="size-2.5" />
           <span>{config.label}</span>
         </span>
+
+        {/* Plan Mode badge */}
+        {isPlanMode && (
+          <span
+            className="flex items-center gap-1 font-medium"
+            style={{ color: "var(--color-warning)" }}
+          >
+            <FileSearch className="size-2.5" />
+            Plan Mode
+          </span>
+        )}
 
         {/* Environment */}
         <StatusItem icon={Globe} label={environmentLabel} />

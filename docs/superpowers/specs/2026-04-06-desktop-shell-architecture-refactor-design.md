@@ -1,3 +1,15 @@
+---
+title: Desktop Shell Architecture Refactor Design
+doc_type: spec
+status: active
+owner: desktop-shell
+last_verified: 2026-04-06
+related:
+  - docs/desktop-shell/README.md
+  - docs/desktop-shell/architecture/overview.md
+  - docs/desktop-shell/plans/README.md
+---
+
 # Desktop Shell Architecture Refactor Design
 
 **Goal**

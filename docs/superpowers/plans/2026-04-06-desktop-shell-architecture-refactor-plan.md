@@ -1,3 +1,15 @@
+---
+title: Desktop Shell Architecture Refactor Plan
+doc_type: plan
+status: active
+owner: desktop-shell
+last_verified: 2026-04-06
+related:
+  - docs/desktop-shell/README.md
+  - docs/desktop-shell/architecture/overview.md
+  - docs/desktop-shell/specs/README.md
+---
+
 # Desktop Shell Architecture Refactor Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.

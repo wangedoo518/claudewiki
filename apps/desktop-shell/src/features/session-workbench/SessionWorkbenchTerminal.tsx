@@ -22,6 +22,7 @@ import { exportAsMarkdown, exportAsJson } from "./sessionExport";
 import { useKeyboardShortcuts } from "./useKeyboardShortcuts";
 import { useSettingsStore } from "@/state/settings-store";
 import { usePermissionsStore } from "@/state/permissions-store";
+import { useStreamingStore } from "@/state/streaming-store";
 import {
   forwardPermissionDecision,
   type ContentBlock,
@@ -286,7 +287,7 @@ export function SessionWorkbenchTerminal({
                 onDecision={handlePermissionDecision}
               />
             )}
-            {isRunning && !pendingPermission && <StreamingSpinner />}
+            {isRunning && !pendingPermission && <StreamingIndicator />}
             {errorMessage && (
               <div
                 className="mx-4 mt-3 flex items-start gap-2 rounded-lg border px-3 py-2 text-body-sm"
@@ -371,11 +372,27 @@ function MessageSkeleton() {
 
 /* ─── Streaming Spinner with shimmer ─────────────────────────────── */
 
-function StreamingSpinner() {
+function StreamingIndicator() {
+  const streamingContent = useStreamingStore((s) => s.streamingContent);
+
+  if (streamingContent) {
+    // Show streaming text in real time.
+    return (
+      <div className="mx-4 my-2">
+        <div className="rounded-lg border border-border/30 bg-muted/10 px-4 py-3">
+          <div className="whitespace-pre-wrap text-body text-foreground/90">
+            {streamingContent}
+            <span className="ml-0.5 inline-block h-4 w-0.5 animate-pulse bg-foreground/60" />
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // No text yet — show thinking spinner.
   return (
     <div className="mx-4 my-2">
       <div className="flex items-center gap-3 rounded-lg border border-border/30 bg-muted/10 px-4 py-3">
-        {/* Shimmer dots */}
         <div className="flex items-center gap-1">
           <ShimmerDot delay={0} />
           <ShimmerDot delay={150} />

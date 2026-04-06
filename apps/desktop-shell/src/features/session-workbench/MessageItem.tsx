@@ -488,12 +488,18 @@ function ToolResultContent({
   const lower = toolName.toLowerCase();
 
   // Glob — render as file list
-  if (lower === "glob") {
+  if (lower === "glob" || lower === "glob_search") {
     return <GlobResult output={output} />;
   }
 
+  // Grep — render with search context
+  if (lower === "grep" || lower === "grep_search") {
+    return <GrepResult output={output} />;
+  }
+
   // Write / Edit — show file operation result
-  if (lower === "write" || lower === "writefile" || lower === "edit" || lower === "editfile") {
+  if (lower === "write" || lower === "writefile" || lower === "write_file"
+    || lower === "edit" || lower === "editfile" || lower === "edit_file") {
     if (isDiff) return <DiffDisplay content={output} />;
     return <FileOpResult output={output} isError={isError} />;
   }
@@ -554,6 +560,49 @@ function GlobResult({ output }: { output: string }) {
         {files.length} file{files.length !== 1 ? "s" : ""} matched
       </div>
     </div>
+  );
+}
+
+/* ─── Grep result — search matches with context ───────────────────── */
+
+function GrepResult({ output }: { output: string }) {
+  const lines = output.split("\n").filter((l) => l.trim());
+
+  return (
+    <pre className="p-3 font-mono text-label leading-[1.6]">
+      {lines.map((line, i) => {
+        // File path headers (e.g. "src/main.rs:42:")
+        const hasFilePrefix = /^[^\s].*:\d+[:-]/.test(line);
+        // Separator lines (e.g. "--")
+        const isSeparator = line === "--";
+
+        let lineClass = "text-foreground/80";
+        if (isSeparator) {
+          lineClass = "text-muted-foreground/40";
+        } else if (hasFilePrefix) {
+          // Highlight the file:line prefix
+          const colonIdx = line.indexOf(":");
+          if (colonIdx > 0) {
+            return (
+              <div key={i} className="px-1">
+                <span className="text-[color:var(--claude-blue)]">{line.slice(0, colonIdx)}</span>
+                <span className="text-muted-foreground">{line.slice(colonIdx, line.indexOf(":", colonIdx + 1) + 1)}</span>
+                <span className="text-foreground/80">{line.slice(line.indexOf(":", colonIdx + 1) + 1)}</span>
+              </div>
+            );
+          }
+        }
+
+        return (
+          <div key={i} className={cn("px-1", lineClass)}>
+            {line || " "}
+          </div>
+        );
+      })}
+      <div className="mt-1 border-t border-border/20 pt-1 text-caption text-muted-foreground">
+        {lines.length} line{lines.length !== 1 ? "s" : ""}
+      </div>
+    </pre>
   );
 }
 
@@ -677,17 +726,17 @@ function getToolMeta(toolName: string): {
 } {
   const lower = toolName.toLowerCase();
 
-  if (lower === "bash" || lower.includes("shell"))
+  if (lower === "bash" || lower.includes("shell") || lower === "powershell")
     return { icon: TerminalIcon, label: "Bash", color: "var(--color-terminal-tool)" };
-  if (lower === "read" || lower === "readfile")
+  if (lower === "read" || lower === "readfile" || lower === "read_file")
     return { icon: Eye, label: "Read", color: "var(--claude-blue)" };
-  if (lower === "edit" || lower === "editfile")
+  if (lower === "edit" || lower === "editfile" || lower === "edit_file")
     return { icon: Pencil, label: "Edit", color: "var(--claude-orange)" };
-  if (lower === "write" || lower === "writefile")
+  if (lower === "write" || lower === "writefile" || lower === "write_file")
     return { icon: FileCode, label: "Write", color: "var(--claude-orange)" };
-  if (lower === "glob")
+  if (lower === "glob" || lower === "glob_search")
     return { icon: FolderSearch, label: "Glob", color: "var(--color-terminal-tool)" };
-  if (lower === "grep")
+  if (lower === "grep" || lower === "grep_search")
     return { icon: Search, label: "Grep", color: "var(--color-terminal-tool)" };
   if (lower.includes("webfetch") || lower.includes("web_fetch"))
     return { icon: Globe, label: "WebFetch", color: "var(--claude-blue)" };

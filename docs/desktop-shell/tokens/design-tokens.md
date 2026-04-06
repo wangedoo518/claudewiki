@@ -8,8 +8,6 @@ source_of_truth: true
 related:
   - docs/desktop-shell/README.md
   - docs/desktop-shell/operations/README.md
-supersedes:
-  - apps/desktop-shell/DESIGN_TOKENS.md
 ---
 
 # Warwolf Desktop Design Token 规范

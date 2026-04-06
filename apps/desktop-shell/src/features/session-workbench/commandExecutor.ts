@@ -1,7 +1,7 @@
 /**
  * Slash command executor — handles /commands from InputBar.
  *
- * Command types (from FUNCTIONAL_TOKENS.md §5.1):
+ * Command types (from docs/desktop-shell/tokens/functional-tokens.md §5.1):
  *   prompt   — expand to prompt sent to the model (e.g., /commit, /review)
  *   local    — synchronous local execution, return text (e.g., /clear, /cost)
  *   local-jsx — async local, render interactive UI (e.g., /config, /theme, /model)

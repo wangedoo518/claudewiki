@@ -206,7 +206,7 @@ Examples:
 - functional tokens
 - terminology references
 
-This category should hold the stable shared vocabulary currently split across `apps/desktop-shell/FUNCTIONAL_TOKENS.md` and `apps/desktop-shell/DESIGN_TOKENS.md`.
+This category should hold the stable shared vocabulary for `desktop-shell` in one canonical location under `docs/desktop-shell/tokens/`.
 
 #### `operations/`
 
@@ -386,12 +386,12 @@ Add minimal index pages or seed documents where needed.
 
 Prioritize:
 
-- `apps/desktop-shell/FUNCTIONAL_TOKENS.md`
-- `apps/desktop-shell/DESIGN_TOKENS.md`
+- the existing functional token reference
+- the existing design token reference
 - the existing `desktop-shell` architecture spec
 - the existing `desktop-shell` implementation plan
 
-Migration may initially preserve old files with short forwarding notes if needed to avoid breaking local habits.
+After migration, remove the old token files so the new canonical docs are the only remaining source.
 
 ### Phase 3: normalize metadata and cross-links
 

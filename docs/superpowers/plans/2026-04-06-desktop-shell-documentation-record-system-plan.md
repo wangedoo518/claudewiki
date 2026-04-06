@@ -38,10 +38,13 @@ related:
 **Modify**
 
 - `AGENTS.md`
-- `apps/desktop-shell/DESIGN_TOKENS.md`
-- `apps/desktop-shell/FUNCTIONAL_TOKENS.md`
 - `docs/superpowers/specs/2026-04-06-desktop-shell-architecture-refactor-design.md`
 - `docs/superpowers/plans/2026-04-06-desktop-shell-architecture-refactor-plan.md`
+
+**Delete**
+
+- `apps/desktop-shell/DESIGN_TOKENS.md`
+- `apps/desktop-shell/FUNCTIONAL_TOKENS.md`
 
 **Verification**
 
@@ -292,8 +295,8 @@ git commit -m "docs(desktop-shell): add architecture and index documents"
 **Files:**
 - Create: `docs/desktop-shell/tokens/design-tokens.md`
 - Create: `docs/desktop-shell/tokens/functional-tokens.md`
-- Modify: `apps/desktop-shell/DESIGN_TOKENS.md`
-- Modify: `apps/desktop-shell/FUNCTIONAL_TOKENS.md`
+- Delete: `apps/desktop-shell/DESIGN_TOKENS.md`
+- Delete: `apps/desktop-shell/FUNCTIONAL_TOKENS.md`
 
 - [ ] **Step 1: Write the canonical token docs**
 
@@ -308,8 +311,6 @@ source_of_truth: true
 related:
   - docs/desktop-shell/README.md
   - docs/desktop-shell/operations/README.md
-supersedes:
-  - apps/desktop-shell/DESIGN_TOKENS.md
 ---
 ```
 
@@ -324,29 +325,17 @@ source_of_truth: true
 related:
   - docs/desktop-shell/README.md
   - docs/desktop-shell/operations/README.md
-supersedes:
-  - apps/desktop-shell/FUNCTIONAL_TOKENS.md
 ---
 ```
 
 After each frontmatter block, copy the existing body from the legacy token document unchanged.
 
-- [ ] **Step 2: Replace legacy token docs with forwarding notes**
+- [ ] **Step 2: Delete the legacy token docs**
 
-```md
-# Moved
+Run:
 
-Canonical document moved to:
-
-- `docs/desktop-shell/tokens/design-tokens.md`
-```
-
-```md
-# Moved
-
-Canonical document moved to:
-
-- `docs/desktop-shell/tokens/functional-tokens.md`
+```bash
+rm apps/desktop-shell/DESIGN_TOKENS.md apps/desktop-shell/FUNCTIONAL_TOKENS.md
 ```
 
 - [ ] **Step 3: Apply the migration**
@@ -358,24 +347,25 @@ sed -n '1,40p' apps/desktop-shell/DESIGN_TOKENS.md
 sed -n '1,40p' apps/desktop-shell/FUNCTIONAL_TOKENS.md
 ```
 
-Then create the canonical token docs and replace the legacy files with the forwarding notes above.
+Then create the canonical token docs and delete the legacy files.
 
-Expected: token content now lives under `docs/desktop-shell/tokens/`, while the old locations remain as explicit redirects.
+Expected: token content now lives under `docs/desktop-shell/tokens/`, and the old locations no longer exist.
 
 - [ ] **Step 4: Verify no ambiguity remains**
 
 Run:
 
 ```bash
-rg -n "Canonical document moved to|source_of_truth: true" docs/desktop-shell apps/desktop-shell
+test ! -f apps/desktop-shell/DESIGN_TOKENS.md && test ! -f apps/desktop-shell/FUNCTIONAL_TOKENS.md && rg -n "source_of_truth: true" docs/desktop-shell/tokens
 ```
 
-Expected: the new token docs are marked as canonical and the old files are visibly redirects.
+Expected: the new token docs are marked as canonical and the old files are absent.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add docs/desktop-shell/tokens/design-tokens.md docs/desktop-shell/tokens/functional-tokens.md apps/desktop-shell/DESIGN_TOKENS.md apps/desktop-shell/FUNCTIONAL_TOKENS.md
+git add docs/desktop-shell/tokens/design-tokens.md docs/desktop-shell/tokens/functional-tokens.md
+git rm apps/desktop-shell/DESIGN_TOKENS.md apps/desktop-shell/FUNCTIONAL_TOKENS.md
 git commit -m "docs(desktop-shell): migrate token references"
 ```
 
@@ -512,9 +502,6 @@ git commit -m "docs: point agents to desktop-shell documentation hub"
 **Files:**
 - Verify: `docs/desktop-shell/**/*`
 - Verify: `AGENTS.md`
-- Verify: `apps/desktop-shell/DESIGN_TOKENS.md`
-- Verify: `apps/desktop-shell/FUNCTIONAL_TOKENS.md`
-
 - [ ] **Step 1: Run metadata verification**
 
 Run:
@@ -530,10 +517,10 @@ Expected: all canonical docs and linked legacy docs expose the required metadata
 Run:
 
 ```bash
-rg -n "Canonical document moved to|Desktop Shell Documentation Map|Architecture Refactor Design|Documentation Record System Plan" AGENTS.md docs/desktop-shell apps/desktop-shell docs/superpowers
+rg -n "Desktop Shell Documentation Map|Architecture Refactor Design|Documentation Record System Plan" AGENTS.md docs/desktop-shell docs/superpowers && test ! -f apps/desktop-shell/DESIGN_TOKENS.md && test ! -f apps/desktop-shell/FUNCTIONAL_TOKENS.md
 ```
 
-Expected: forwarding notes, root map, and hub references all resolve from repo text search.
+Expected: root map and hub references resolve, and the old token files are absent.
 
 - [ ] **Step 3: Run whitespace and patch safety checks**
 
@@ -558,7 +545,7 @@ Expected: only the planned documentation files appear modified.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add AGENTS.md docs/desktop-shell docs/superpowers/specs/2026-04-06-desktop-shell-architecture-refactor-design.md docs/superpowers/plans/2026-04-06-desktop-shell-architecture-refactor-plan.md apps/desktop-shell/DESIGN_TOKENS.md apps/desktop-shell/FUNCTIONAL_TOKENS.md
+git add AGENTS.md docs/desktop-shell docs/superpowers/specs/2026-04-06-desktop-shell-architecture-refactor-design.md docs/superpowers/plans/2026-04-06-desktop-shell-architecture-refactor-plan.md
 git commit -m "docs(desktop-shell): establish documentation record system"
 ```
 
@@ -585,4 +572,4 @@ No spec sections are left without a task.
 
 - `doc_type` values are consistent with the design: `architecture`, `decision`, `spec`, `plan`, `token`, `operation`.
 - `status` values are consistently `active` for canonical or connected documents in this migration.
-- Canonical token docs use `source_of_truth: true`, while legacy redirect files do not.
+- Canonical token docs use `source_of_truth: true`, and no legacy token files remain.

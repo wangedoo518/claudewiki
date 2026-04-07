@@ -113,13 +113,17 @@ export function SessionWorkbenchPage({
       onSnapshot: (session) => {
         queryClient.setQueryData(sessionWorkbenchKeys.detail(session.id), session);
         void queryClient.invalidateQueries({ queryKey: workbenchKeys.root() });
-        // Track streaming state from turn_state.
-        const isRunning = session.turn_state === "running";
-        useStreamingStore.getState().setStreaming(isRunning);
+        // When turn finishes (snapshot with turn_state=idle), clear any
+        // residual streaming buffer. No isStreaming bool — single source
+        // of truth is session.turn_state itself.
+        if (session.turn_state !== "running") {
+          useStreamingStore.getState().clearStreamingContent();
+        }
       },
       onMessage: (nextSessionId, message) => {
-        // Complete message arrived — clear streaming buffer.
-        useStreamingStore.getState().setStreaming(false);
+        // A complete message arrived — clear the streaming buffer because
+        // its contents are now in the committed message list.
+        useStreamingStore.getState().clearStreamingContent();
         queryClient.setQueryData(
           sessionWorkbenchKeys.detail(nextSessionId),
           (

@@ -2828,6 +2828,18 @@ impl DesktopState {
                 // order (FIFO). Without this serialization, tasks N and N+1
                 // can race on the store write lock, and the older snapshot
                 // can overwrite the newer one.
+                // In-memory update only — disk flush is deferred to
+                // `finalize_agentic_turn` at turn end. Previous code ran
+                // a full-store JSON serialize per iteration (see
+                // docs/performance-report.md: persist() was ~677µs/call
+                // and dominated turn latency). For a 20-iteration turn
+                // this is a ~13.5ms savings. Crash recovery is handled
+                // by the startup reconcile pass (L-03) + the fact that
+                // the message log is always consistent because we push
+                // messages before calling the callback.
+                //
+                // The per-session serial Mutex is kept to preserve
+                // update ordering between concurrent spawned tasks.
                 let persist_state = state.clone();
                 let persist_session_id = session_id.clone();
                 let persist_serial = Arc::new(Mutex::new(()));
@@ -2838,18 +2850,14 @@ impl DesktopState {
                         let serial = Arc::clone(&persist_serial);
                         let session_snapshot = updated_session.clone();
                         tokio::spawn(async move {
-                            // Acquire the per-session serial lock BEFORE
-                            // touching the store. This turns the set of
-                            // spawned tasks into a FIFO queue (tokio::Mutex
-                            // acquisitions are ordered).
                             let _persist_guard = serial.lock().await;
                             let mut store = s.store.write().await;
                             if let Some(record) = store.sessions.get_mut(&sid) {
                                 record.session = session_snapshot;
                                 record.metadata.updated_at = unix_timestamp_millis();
                             }
-                            drop(store);
-                            s.persist().await;
+                            // No s.persist().await here — finalize_agentic_turn
+                            // handles disk flush at turn end.
                         });
                     });
 
@@ -5278,6 +5286,115 @@ mod tests {
             DesktopTurnState::Idle,
             "startup reconcile must reset Running → Idle"
         );
+
+        let _ = fs::remove_file(path);
+    }
+
+    /// Performance benchmark: measures the cost of append/persist/list
+    /// operations on a long session. Marked `#[ignore]` so it doesn't
+    /// slow down the regular `cargo test` run. Invoke with:
+    ///
+    ///   cargo test -p desktop-core --release -- --ignored bench_long_session --nocapture
+    #[tokio::test]
+    #[ignore]
+    async fn bench_long_session_append_and_persist() {
+        use super::ConversationMessage;
+        use std::time::Instant;
+
+        let path = legacy_sessions_fixture_path();
+        let state = DesktopState::with_executor(
+            Arc::new(super::MockTurnExecutor),
+            Some(Arc::new(DesktopPersistence { path: path.clone() })),
+            None,
+            None,
+        );
+
+        // Create one session.
+        let session = state
+            .create_session(super::CreateDesktopSessionRequest {
+                title: Some("bench".into()),
+                project_name: Some("bench-project".into()),
+                project_path: Some("/tmp/bench".into()),
+            })
+            .await;
+        let session_id = session.id;
+
+        const MESSAGE_COUNT: usize = 200;
+        let mut append_durations = Vec::with_capacity(MESSAGE_COUNT);
+        let mut persist_durations = Vec::with_capacity(MESSAGE_COUNT);
+
+        for i in 0..MESSAGE_COUNT {
+            // Record the message append directly (bypass agentic loop
+            // because it requires OAuth). Test raw store + persist path.
+            let message = format!("bench message {i} — lorem ipsum dolor sit amet consectetur adipiscing elit");
+
+            let t_append = Instant::now();
+            {
+                let mut store = state.store.write().await;
+                if let Some(record) = store.sessions.get_mut(&session_id) {
+                    record
+                        .session
+                        .push_message(ConversationMessage::user_text(message.clone()))
+                        .ok();
+                    record
+                        .session
+                        .push_message(ConversationMessage {
+                            role: super::MessageRole::Assistant,
+                            blocks: vec![super::ContentBlock::Text {
+                                text: "mock reply".to_string(),
+                            }],
+                            usage: None,
+                        })
+                        .ok();
+                    record.metadata.updated_at = super::unix_timestamp_millis();
+                }
+            }
+            append_durations.push(t_append.elapsed());
+
+            let t_persist = Instant::now();
+            state.persist().await;
+            persist_durations.push(t_persist.elapsed());
+        }
+
+        // Now measure list_sessions with 1 session of 400 messages.
+        let t_list = Instant::now();
+        let _listed = state.list_sessions().await;
+        let list_duration = t_list.elapsed();
+
+        // Measure get_session (full detail serialization).
+        let t_get = Instant::now();
+        let _ = state.get_session(&session_id).await;
+        let get_duration = t_get.elapsed();
+
+        // Print summary statistics.
+        fn stats(name: &str, durs: &[std::time::Duration]) {
+            let total: std::time::Duration = durs.iter().sum();
+            let avg = total / durs.len() as u32;
+            let max = durs.iter().max().copied().unwrap_or_default();
+            let min = durs.iter().min().copied().unwrap_or_default();
+            // Approximate p99 without sorting.
+            let mut sorted = durs.to_vec();
+            sorted.sort();
+            let p50 = sorted[sorted.len() / 2];
+            let p99 = sorted[sorted.len() * 99 / 100];
+            println!(
+                "{name:>10}: n={} total={:.2?} avg={:.2?} p50={:.2?} p99={:.2?} min={:.2?} max={:.2?}",
+                durs.len(),
+                total,
+                avg,
+                p50,
+                p99,
+                min,
+                max
+            );
+        }
+
+        println!("\n═══ Performance Benchmark (long session, {MESSAGE_COUNT} turns) ═══");
+        stats("append", &append_durations);
+        stats("persist", &persist_durations);
+        println!("  list (400 messages): {:.2?}", list_duration);
+        println!("  get  (400 messages): {:.2?}", get_duration);
+        println!("═════════════════════════════════════════════════════════");
 
         let _ = fs::remove_file(path);
     }

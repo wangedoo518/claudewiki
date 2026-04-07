@@ -1108,6 +1108,10 @@ pub struct DesktopState {
     permission_gates: Arc<RwLock<HashMap<SessionId, Arc<agentic_loop::PermissionGate>>>>,
     /// Per-session cancellation tokens for the async agentic loop.
     cancel_tokens: Arc<RwLock<HashMap<SessionId, CancellationToken>>>,
+    /// Shared HTTP client reused across all agentic loop turns.
+    /// Constructing a new client per turn costs DNS + TCP + TLS handshake.
+    /// This single client maintains a connection pool for keep-alive.
+    http_client: reqwest::Client,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1259,6 +1263,11 @@ impl DesktopState {
             scheduler_started: Arc::new(AtomicBool::new(false)),
             permission_gates: Arc::new(RwLock::new(HashMap::new())),
             cancel_tokens: Arc::new(RwLock::new(HashMap::new())),
+            http_client: reqwest::Client::builder()
+                .timeout(Duration::from_secs(300))
+                .pool_idle_timeout(Duration::from_secs(90))
+                .build()
+                .unwrap_or_else(|_| reqwest::Client::new()),
         }
     }
 
@@ -2670,15 +2679,34 @@ impl DesktopState {
                 };
 
                 // Build incremental persistence callback.
+                //
+                // The callback is invoked synchronously from inside the
+                // agentic loop. Each invocation spawns a tokio task that:
+                //   1. Updates the in-memory record (write lock, fast)
+                //   2. Calls persist() to write the whole store to disk
+                //
+                // To prevent lost updates when two callbacks fire in rapid
+                // succession (e.g., a 20-iteration turn), we serialize the
+                // persist jobs via a per-session tokio Mutex. This ensures
+                // write-lock acquisition order matches callback invocation
+                // order (FIFO). Without this serialization, tasks N and N+1
+                // can race on the store write lock, and the older snapshot
+                // can overwrite the newer one.
                 let persist_state = state.clone();
                 let persist_session_id = session_id.clone();
+                let persist_serial = Arc::new(Mutex::new(()));
                 let on_iteration_complete: Arc<dyn Fn(&RuntimeSession) + Send + Sync> =
                     Arc::new(move |updated_session: &RuntimeSession| {
                         let s = persist_state.clone();
                         let sid = persist_session_id.clone();
+                        let serial = Arc::clone(&persist_serial);
                         let session_snapshot = updated_session.clone();
-                        // Fire-and-forget async persist from sync callback.
                         tokio::spawn(async move {
+                            // Acquire the per-session serial lock BEFORE
+                            // touching the store. This turns the set of
+                            // spawned tasks into a FIFO queue (tokio::Mutex
+                            // acquisitions are ordered).
+                            let _persist_guard = serial.lock().await;
                             let mut store = s.store.write().await;
                             if let Some(record) = store.sessions.get_mut(&sid) {
                                 record.session = session_snapshot;
@@ -2699,6 +2727,7 @@ impl DesktopState {
                     on_iteration_complete: Some(on_iteration_complete),
                     mcp_servers: Vec::new(), // TODO: populate from frontend settings
                     hooks: None, // TODO: load from .claude/settings.json
+                    http_client: self.http_client.clone(),
                 };
 
                 let mut session_for_loop = session;
@@ -3912,7 +3941,13 @@ fn with_workspace_cwd<T>(
     }
 }
 
-fn process_workspace_lock() -> &'static StdMutex<()> {
+/// Process-wide workspace CWD lock.
+///
+/// Used by both the legacy `execute_live_turn` path and the new
+/// `agentic_loop::execute_tool_in_workspace` to serialize CWD
+/// manipulation across concurrent sessions/tasks. Both paths MUST
+/// use this same lock or they will race on `std::env::set_current_dir`.
+pub(crate) fn process_workspace_lock() -> &'static StdMutex<()> {
     static LOCK: OnceLock<StdMutex<()>> = OnceLock::new();
     LOCK.get_or_init(|| StdMutex::new(()))
 }

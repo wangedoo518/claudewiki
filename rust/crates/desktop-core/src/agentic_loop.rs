@@ -278,6 +278,9 @@ pub struct AgenticLoopConfig {
     pub mcp_servers: Vec<McpServerEntry>,
     /// Hook configuration for PreToolUse/PostToolUse lifecycle hooks.
     pub hooks: Option<RuntimeHookConfig>,
+    /// Shared HTTP client — pass from DesktopState.http_client to
+    /// avoid constructing a new client per turn.
+    pub http_client: reqwest::Client,
 }
 
 /// Run the async agentic conversation loop.
@@ -300,7 +303,8 @@ pub async fn run_agentic_loop(
     let mut iterations = 0usize;
     let mut model_label = config.model.clone();
 
-    let client = reqwest::Client::new();
+    // Use the shared HTTP client from DesktopState.
+    let client = config.http_client.clone();
     let tool_specs = tools::mvp_tool_specs();
 
     // ── Probe MCP servers (CONFIG VALIDATION ONLY, not callable) ──
@@ -1111,10 +1115,12 @@ fn execute_tool_in_workspace(
     tool_name: &str,
     input: &Value,
 ) -> Result<String, String> {
-    use std::sync::{Mutex as StdMutex, OnceLock};
-
-    static LOCK: OnceLock<StdMutex<()>> = OnceLock::new();
-    let lock = LOCK.get_or_init(|| StdMutex::new(()));
+    // Use the SHARED process-wide lock from lib.rs so both the legacy
+    // execute_live_turn path and the agentic loop serialize on the same
+    // mutex. Previously agentic_loop had its own local OnceLock which
+    // meant concurrent legacy+agentic turns did NOT exclude each other
+    // on set_current_dir. See docs/audit-lessons.md L-08.
+    let lock = crate::process_workspace_lock();
     let _guard = lock.lock().unwrap_or_else(|e| e.into_inner());
 
     let original = std::env::current_dir().map_err(|e| e.to_string())?;

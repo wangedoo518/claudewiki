@@ -105,6 +105,24 @@ export async function setSessionLifecycleStatus(
   );
 }
 
+/** A workspace skill discovered under `<project_path>/.claude/skills/`. */
+export interface WorkspaceSkill {
+  name: string;
+  description: string;
+  source: string;
+}
+
+/** List all workspace skills available for the given project. */
+export async function listWorkspaceSkills(
+  projectPath: string,
+): Promise<{ count: number; skills: WorkspaceSkill[] }> {
+  const params = new URLSearchParams({ project_path: projectPath });
+  return fetchJson<{ count: number; skills: WorkspaceSkill[] }>(
+    `/api/desktop/skills?${params.toString()}`,
+    { method: "GET" },
+  );
+}
+
 /** Toggle the flagged bit on a session. */
 export async function setSessionFlagged(
   sessionId: string,

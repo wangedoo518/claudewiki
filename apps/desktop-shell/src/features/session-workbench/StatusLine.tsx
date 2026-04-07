@@ -3,11 +3,14 @@ import { cn } from "@/lib/utils";
 import { getPermissionConfig } from "./InputBar";
 import { useSettingsStore } from "@/state/settings-store";
 import { useStreamingStore } from "@/state/streaming-store";
+import { WorkspaceSkillsPanel } from "./WorkspaceSkillsPanel";
 
 interface StatusLineProps {
   modelLabel?: string;
   environmentLabel?: string;
   isRunning?: boolean;
+  /** Project root path; used to query workspace skills. */
+  projectPath?: string;
 }
 
 /**
@@ -20,6 +23,7 @@ export function StatusLine({
   modelLabel = "Opus 4.6",
   environmentLabel = "Local",
   isRunning = false,
+  projectPath,
 }: StatusLineProps) {
   const permissionMode = useSettingsStore((state) => state.permissionMode);
   const isPlanMode = useStreamingStore((state) => state.isPlanMode);
@@ -59,6 +63,9 @@ export function StatusLine({
 
       {/* Right side */}
       <div className="flex items-center gap-3">
+        {/* Workspace skills count + popover */}
+        <WorkspaceSkillsPanel projectPath={projectPath} />
+
         {isRunning && (
           <span
             className="flex items-center gap-1 font-medium"

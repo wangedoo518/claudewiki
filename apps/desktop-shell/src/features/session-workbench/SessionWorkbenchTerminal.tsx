@@ -340,6 +340,7 @@ export function SessionWorkbenchTerminal({
         modelLabel={modelLabel}
         environmentLabel={environmentLabel}
         isRunning={isRunning}
+        projectPath={session?.project_path}
       />
      </div>
 

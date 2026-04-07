@@ -269,6 +269,7 @@ pub fn app(state: AppState) -> Router {
         .route("/api/desktop/sessions/{id}/lifecycle", post(set_session_lifecycle_handler))
         .route("/api/desktop/sessions/{id}/flag", post(set_session_flag_handler))
         .route("/api/desktop/attachments/process", post(process_attachment_handler))
+        .route("/api/desktop/skills", get(list_workspace_skills_handler))
         .route("/api/desktop/settings/permission-mode", post(set_permission_mode_handler).get(get_permission_mode_handler))
         .route("/api/desktop/debug/mcp/probe", post(debug_mcp_probe_handler))
         .route("/api/desktop/debug/mcp/call", post(debug_mcp_call_handler))
@@ -887,6 +888,41 @@ async fn set_session_flag_handler(
         .await
         .map_err(into_api_error)?;
     Ok(Json(serde_json::json!({ "session": session })))
+}
+
+/// List workspace skills discovered under `<project_path>/.claude/skills/`.
+///
+/// Query: `?project_path=<path>`. Returns the same shape the agentic
+/// loop uses internally so the frontend can display which skills the
+/// LLM has access to in its system prompt.
+async fn list_workspace_skills_handler(
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let project_path = params.get("project_path").ok_or_else(|| {
+        (
+            axum::http::StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "missing project_path query param".to_string(),
+            }),
+        )
+    })?;
+    let skills = desktop_core::system_prompt::find_workspace_skills(
+        std::path::Path::new(project_path),
+    );
+    let summary: Vec<serde_json::Value> = skills
+        .iter()
+        .map(|s| {
+            serde_json::json!({
+                "name": s.name,
+                "description": s.description,
+                "source": s.source.display().to_string(),
+            })
+        })
+        .collect();
+    Ok(Json(serde_json::json!({
+        "count": skills.len(),
+        "skills": summary,
+    })))
 }
 
 /// Process a file attachment (drag-drop upload from the frontend).

@@ -43,6 +43,8 @@ export interface SettingsState {
   setFontSize: (fontSize: number) => void;
   setDefaultModel: (model: string) => void;
   setPermissionMode: (mode: PermissionMode) => void;
+  /** Hydrate permissionMode from backend .claw/settings.json for the given project. */
+  hydratePermissionModeFromDisk: (projectPath: string) => Promise<void>;
   setDefaultProjectPath: (path: string) => void;
   setProvider: (provider: Partial<ProviderConfig>) => void;
   setShowSessionSidebar: (show: boolean) => void;
@@ -138,14 +140,55 @@ function createInitialSettingsState() {
 
 export const useSettingsStore = create<SettingsState>()(
   persist(
-    (set) => ({
+    (set, get) => ({
       ...createInitialSettingsState(),
       setTheme: (theme) => set({ theme }),
       setWarwolfTheme: (warwolfTheme) => set({ warwolfTheme }),
       setLanguage: (language) => set({ language }),
       setFontSize: (fontSize) => set({ fontSize }),
       setDefaultModel: (defaultModel) => set({ defaultModel }),
-      setPermissionMode: (permissionMode) => set({ permissionMode }),
+      setPermissionMode: (permissionMode) => {
+        // Optimistic update: set Zustand state immediately for UI responsiveness.
+        const previous = (get() as SettingsState).permissionMode;
+        set({ permissionMode });
+        // Persist to backend .claw/settings.json so the agentic loop's
+        // ConfigLoader reads the same value. Roll back on failure.
+        const projectPath = (get() as SettingsState).defaultProjectPath;
+        if (!projectPath) {
+          // No project yet — Zustand-only update is fine.
+          return;
+        }
+        void import("@/features/session-workbench/api/client")
+          .then(({ writePermissionModeToDisk }) =>
+            writePermissionModeToDisk(projectPath, permissionMode),
+          )
+          .catch((err) => {
+            console.error(
+              "Failed to persist permissionMode to backend; rolling back:",
+              err,
+            );
+            set({ permissionMode: previous });
+          });
+      },
+      hydratePermissionModeFromDisk: async (projectPath: string) => {
+        try {
+          const { readPermissionModeFromDisk } = await import(
+            "@/features/session-workbench/api/client"
+          );
+          const { mode } = await readPermissionModeFromDisk(projectPath);
+          // Only update if mode is a valid value.
+          if (
+            mode === "default" ||
+            mode === "acceptEdits" ||
+            mode === "bypassPermissions" ||
+            mode === "plan"
+          ) {
+            set({ permissionMode: mode });
+          }
+        } catch {
+          // Silent fall-through: keep whatever was persisted in localStorage.
+        }
+      },
       setDefaultProjectPath: (defaultProjectPath) => set({ defaultProjectPath }),
       setProvider: (provider) =>
         set((state) => ({

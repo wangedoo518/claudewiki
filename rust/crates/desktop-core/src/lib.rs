@@ -2283,6 +2283,111 @@ impl DesktopState {
         self.get_dispatch_item(&item_id).await
     }
 
+    /// Write the permission mode to the project's `.claw/settings.json` file.
+    ///
+    /// This is the authoritative source of truth for the permission mode.
+    /// The agentic loop reads this on each turn via `ConfigLoader::load()`.
+    ///
+    /// Accepts one of: `"default"`, `"acceptEdits"`, `"bypassPermissions"`,
+    /// `"plan"`. Values are normalized to the on-disk keys the runtime
+    /// config loader recognizes.
+    pub async fn set_permission_mode(
+        &self,
+        project_path: &str,
+        mode: &str,
+    ) -> Result<(), DesktopStateError> {
+        // Normalize frontend mode labels to config-file labels that
+        // `parse_optional_permission_mode` in the runtime crate accepts.
+        let normalized = match mode {
+            "default" => "default",
+            "acceptEdits" => "acceptEdits",
+            "bypassPermissions" => "danger-full-access",
+            "plan" => "plan",
+            other => {
+                return Err(DesktopStateError::InvalidProvider(format!(
+                    "unsupported permission mode: {other}"
+                )));
+            }
+        };
+
+        let project = PathBuf::from(project_path);
+        let claw_dir = project.join(".claw");
+        let settings_path = claw_dir.join("settings.json");
+
+        // Read existing settings (if any) and merge permissionMode.
+        let mut json_obj: serde_json::Map<String, serde_json::Value> =
+            if settings_path.is_file() {
+                match fs::read_to_string(&settings_path) {
+                    Ok(content) => serde_json::from_str(&content)
+                        .unwrap_or_else(|_| serde_json::Map::new()),
+                    Err(_) => serde_json::Map::new(),
+                }
+            } else {
+                serde_json::Map::new()
+            };
+        json_obj.insert(
+            "permissionMode".to_string(),
+            serde_json::Value::String(normalized.to_string()),
+        );
+
+        // Ensure .claw/ directory exists.
+        if let Err(e) = fs::create_dir_all(&claw_dir) {
+            return Err(DesktopStateError::InvalidProvider(format!(
+                "failed to create {}: {e}",
+                claw_dir.display()
+            )));
+        }
+
+        let serialized = serde_json::to_string_pretty(&serde_json::Value::Object(json_obj))
+            .map_err(|e| {
+                DesktopStateError::InvalidProvider(format!(
+                    "failed to serialize settings: {e}"
+                ))
+            })?;
+
+        fs::write(&settings_path, serialized).map_err(|e| {
+            DesktopStateError::InvalidProvider(format!(
+                "failed to write {}: {e}",
+                settings_path.display()
+            ))
+        })?;
+
+        Ok(())
+    }
+
+    /// Read the current permission mode from `.claw/settings.json`.
+    ///
+    /// Returns the frontend-facing label (`"default"`, `"acceptEdits"`,
+    /// `"bypassPermissions"`, `"plan"`) or `"default"` if the file does not
+    /// exist or contains no permissionMode field.
+    pub async fn get_permission_mode(
+        &self,
+        project_path: &str,
+    ) -> Result<String, DesktopStateError> {
+        let project = PathBuf::from(project_path);
+        let settings_path = project.join(".claw").join("settings.json");
+
+        if !settings_path.is_file() {
+            return Ok("default".to_string());
+        }
+
+        let content = fs::read_to_string(&settings_path)
+            .map_err(|e| DesktopStateError::InvalidProvider(e.to_string()))?;
+        let json: serde_json::Value = serde_json::from_str(&content)
+            .map_err(|e| DesktopStateError::InvalidProvider(e.to_string()))?;
+
+        let mode = json
+            .get("permissionMode")
+            .and_then(|v| v.as_str())
+            .unwrap_or("default");
+
+        // Convert disk format back to frontend format.
+        Ok(match mode {
+            "danger-full-access" | "dontAsk" => "bypassPermissions".to_string(),
+            other => other.to_string(),
+        })
+    }
+
     /// Compact a session's message history to free context window.
     pub async fn compact_session_messages(
         &self,
@@ -2297,6 +2402,12 @@ impl DesktopState {
             .sessions
             .get_mut(session_id)
             .ok_or_else(|| DesktopStateError::SessionNotFound(session_id.to_string()))?;
+
+        // Refuse compaction while a turn is running: the agentic loop's
+        // incremental persistence callback would overwrite our work.
+        if record.metadata.turn_state == DesktopTurnState::Running {
+            return Err(DesktopStateError::SessionBusy(session_id.to_string()));
+        }
 
         if !should_compact(&record.session, config) {
             // Nothing to compact — return current state.
@@ -2527,6 +2638,24 @@ impl DesktopState {
                     claude_md.as_deref(),
                 );
 
+                // Resolve real permission mode from .claude/settings.json.
+                // Defaults to WorkspaceWrite (not DangerFullAccess) so write
+                // operations trigger the permission dialog.
+                let bypass_permissions = {
+                    let loader = ConfigLoader::default_for(&project_path_buf);
+                    match loader.load() {
+                        Ok(rc) => match rc
+                            .permission_mode()
+                            .map(permission_mode_from_config)
+                            .unwrap_or(PermissionMode::WorkspaceWrite)
+                        {
+                            PermissionMode::DangerFullAccess => true,
+                            _ => false,
+                        },
+                        Err(_) => false, // Safe default: prompt the user.
+                    }
+                };
+
                 // Build incremental persistence callback.
                 let persist_state = state.clone();
                 let persist_session_id = session_id.clone();
@@ -2553,7 +2682,7 @@ impl DesktopState {
                     model: "default".to_string(),
                     project_path: project_path_buf,
                     system_prompt: Some(system_prompt_text),
-                    bypass_permissions: true, // TODO: read from settings
+                    bypass_permissions,
                     on_iteration_complete: Some(on_iteration_complete),
                     mcp_servers: Vec::new(), // TODO: populate from frontend settings
                     hooks: None, // TODO: load from .claude/settings.json
@@ -2563,6 +2692,41 @@ impl DesktopState {
                 session_for_loop.messages.push(user_message);
 
                 tokio::spawn(async move {
+                    // Drop guard: ensures gates/tokens are cleaned up even
+                    // if the future panics mid-execution.
+                    struct SessionCleanupGuard {
+                        state: DesktopState,
+                        session_id: SessionId,
+                        fired: bool,
+                    }
+                    impl Drop for SessionCleanupGuard {
+                        fn drop(&mut self) {
+                            if self.fired {
+                                return;
+                            }
+                            // On panic path: spawn cleanup task (we can't
+                            // await inside Drop).
+                            let state = self.state.clone();
+                            let sid = self.session_id.clone();
+                            tokio::spawn(async move {
+                                state.permission_gates.write().await.remove(&sid);
+                                state.cancel_tokens.write().await.remove(&sid);
+                                // Also reset turn state so the session is
+                                // not stuck in Running forever.
+                                let mut store = state.store.write().await;
+                                if let Some(record) = store.sessions.get_mut(&sid) {
+                                    record.metadata.turn_state = DesktopTurnState::Idle;
+                                }
+                            });
+                        }
+                    }
+
+                    let mut guard = SessionCleanupGuard {
+                        state: state.clone(),
+                        session_id: session_id.clone(),
+                        fired: false,
+                    };
+
                     let result = agentic_loop::run_agentic_loop(
                         session_for_loop,
                         config,
@@ -2572,6 +2736,9 @@ impl DesktopState {
                         cancel_token,
                     )
                     .await;
+
+                    // Normal path: finalize handles cleanup; mark guard as fired.
+                    guard.fired = true;
                     state
                         .finalize_agentic_turn(&session_id, result, sender)
                         .await;

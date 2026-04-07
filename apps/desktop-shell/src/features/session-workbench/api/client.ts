@@ -88,6 +88,31 @@ export async function forkSession(
   );
 }
 
+/** Write the permission mode to the project's settings.json on disk. */
+export async function writePermissionModeToDisk(
+  projectPath: string,
+  mode: "default" | "acceptEdits" | "bypassPermissions" | "plan",
+): Promise<{ ok: boolean; mode: string }> {
+  return fetchJson<{ ok: boolean; mode: string }>(
+    `/api/desktop/settings/permission-mode`,
+    {
+      method: "POST",
+      body: JSON.stringify({ project_path: projectPath, mode }),
+    },
+  );
+}
+
+/** Read the current permission mode from the project's settings.json. */
+export async function readPermissionModeFromDisk(
+  projectPath: string,
+): Promise<{ mode: string }> {
+  const params = new URLSearchParams({ project_path: projectPath });
+  return fetchJson<{ mode: string }>(
+    `/api/desktop/settings/permission-mode?${params.toString()}`,
+    { method: "GET" },
+  );
+}
+
 export async function compactSession(
   sessionId: string
 ): Promise<{ compacted: boolean }> {
@@ -173,7 +198,11 @@ export async function subscribeToSessionEvents(
   });
 
   source.onerror = () => {
+    // Close the connection explicitly to prevent the browser from
+    // auto-reconnecting forever on flaky networks. The caller is
+    // responsible for re-subscribing if needed.
     handlers.onError?.(new Error("Session event stream disconnected"));
+    source.close();
   };
 
   return () => {

@@ -266,6 +266,7 @@ pub fn app(state: AppState) -> Router {
         .route("/api/desktop/sessions/{id}/resume", post(resume_session))
         .route("/api/desktop/sessions/{id}/compact", post(compact_session))
         .route("/api/desktop/sessions/{id}/fork", post(fork_session))
+        .route("/api/desktop/settings/permission-mode", post(set_permission_mode_handler).get(get_permission_mode_handler))
         .route("/api/desktop/sessions/{id}/permission", post(forward_permission))
         .route(
             "/api/desktop/sessions/{id}/events",
@@ -825,6 +826,53 @@ async fn fork_session(
         .await
         .map_err(into_api_error)?;
     Ok(Json(serde_json::json!({ "session": session })))
+}
+
+async fn set_permission_mode_handler(
+    State(state): State<AppState>,
+    Json(body): Json<serde_json::Value>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let project_path = body
+        .get("project_path")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| {
+            (
+                axum::http::StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: "missing project_path".to_string(),
+                }),
+            )
+        })?;
+    let mode = body
+        .get("mode")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| {
+            (
+                axum::http::StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: "missing mode".to_string(),
+                }),
+            )
+        })?;
+    state
+        .desktop
+        .set_permission_mode(project_path, mode)
+        .await
+        .map_err(into_api_error)?;
+    Ok(Json(serde_json::json!({ "ok": true, "mode": mode })))
+}
+
+async fn get_permission_mode_handler(
+    State(state): State<AppState>,
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let project_path = params.get("project_path").cloned().unwrap_or_default();
+    let mode = state
+        .desktop
+        .get_permission_mode(&project_path)
+        .await
+        .map_err(into_api_error)?;
+    Ok(Json(serde_json::json!({ "mode": mode })))
 }
 
 async fn compact_session(

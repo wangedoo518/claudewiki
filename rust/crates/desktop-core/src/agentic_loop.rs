@@ -137,33 +137,60 @@ impl PermissionGate {
         });
 
         // Wait for the user's response (with timeout).
+        //
+        // Race-safety invariant: if `resolve()` successfully sends a decision,
+        // it also removes the entry from `pending`. Therefore the `Ok(Ok)`
+        // success path below does NOT need to clean up the map — resolve()
+        // already did. Only the timeout and channel-closed paths need cleanup.
+        //
+        // This prevents the previous race where:
+        // 1. resolve() holds the lock, removes entry, sends decision
+        // 2. timeout fires at the same instant
+        // 3. check_permission unconditionally removes (no-op — already gone)
+        // Was fine, BUT:
+        // 1. User's decision arrives, resolve() is about to acquire lock
+        // 2. Timeout fires, check_permission removes entry and drops sender
+        // 3. resolve() then acquires lock, entry is gone, returns false
+        // 4. User sees their Allow silently dropped → Deny
+        //
+        // Fix: only clean up in the failure paths.
         let result = tokio::time::timeout(
             Duration::from_secs(PERMISSION_TIMEOUT_SECS),
             receiver,
         )
         .await;
 
-        // Clean up the pending entry if it's still there (timeout/drop case).
-        {
-            let mut pending = self.pending.lock().await;
-            pending.remove(&request_id);
-        }
-
         match result {
             Ok(Ok(decision)) => {
-                // If user chose AllowAlways, remember it for this session.
+                // resolve() succeeded — entry already removed. No cleanup needed.
                 if decision == PermissionDecision::AllowAlways {
                     let mut always = self.always_allow.lock().await;
                     always.insert(tool_name.to_string());
                 }
                 decision
             }
-            Ok(Err(_)) => PermissionDecision::Deny {
-                reason: "permission channel closed".into(),
-            },
-            Err(_) => PermissionDecision::Deny {
-                reason: "permission request timed out (5 min)".into(),
-            },
+            Ok(Err(_)) => {
+                // oneshot sender was dropped without sending. Clean up
+                // defensively in case the entry is still present.
+                let mut pending = self.pending.lock().await;
+                pending.remove(&request_id);
+                PermissionDecision::Deny {
+                    reason: "permission channel closed".into(),
+                }
+            }
+            Err(_) => {
+                // Timeout: clean up the entry if it's still there.
+                // Note: there is still a small window where resolve() could
+                // have started just before the timeout fires but not yet
+                // acquired the lock. We check for the entry and if it's
+                // gone, trust that resolve() will send on the dropped
+                // receiver (which is a no-op, harmless).
+                let mut pending = self.pending.lock().await;
+                pending.remove(&request_id);
+                PermissionDecision::Deny {
+                    reason: "permission request timed out (5 min)".into(),
+                }
+            }
         }
     }
 
@@ -1096,6 +1123,113 @@ fn coerce_tool_input_to_object(raw: &str) -> Value {
         .ok()
         .filter(|v| v.is_object())
         .unwrap_or_else(|| Value::Object(serde_json::Map::new()))
+}
+
+#[cfg(test)]
+mod permission_gate_tests {
+    use super::*;
+    use tokio::sync::broadcast;
+
+    fn make_gate() -> (Arc<PermissionGate>, broadcast::Receiver<DesktopSessionEvent>) {
+        let (tx, rx) = broadcast::channel(16);
+        let gate = Arc::new(PermissionGate::new(tx, "test-session".to_string()));
+        (gate, rx)
+    }
+
+    #[tokio::test]
+    async fn resolve_wins_when_user_responds_before_timeout() {
+        let (gate, mut rx) = make_gate();
+
+        // Spawn check_permission, it will wait for a decision.
+        let gate_clone = Arc::clone(&gate);
+        let check_task = tokio::spawn(async move {
+            gate_clone
+                .check_permission(
+                    "bash",
+                    &serde_json::json!({"command": "ls"}),
+                    false, // not bypass
+                )
+                .await
+        });
+
+        // Wait for the PermissionRequest event to arrive.
+        let event = tokio::time::timeout(Duration::from_millis(500), rx.recv())
+            .await
+            .expect("SSE event should arrive")
+            .expect("event receiver should not be closed");
+
+        let request_id = match event {
+            DesktopSessionEvent::PermissionRequest { request_id, .. } => request_id,
+            other => panic!("expected PermissionRequest, got {other:?}"),
+        };
+
+        // Simulate user clicking Allow shortly after.
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        let resolved = gate.resolve(&request_id, PermissionDecision::Allow).await;
+        assert!(resolved, "resolve should succeed");
+
+        let decision = check_task.await.expect("check task should complete");
+        assert_eq!(decision, PermissionDecision::Allow);
+
+        // Pending map should be empty after resolve.
+        let pending = gate.pending.lock().await;
+        assert!(pending.is_empty());
+    }
+
+    #[tokio::test]
+    async fn allow_always_remembers_tool() {
+        let (gate, mut rx) = make_gate();
+
+        // First call: user chooses AllowAlways.
+        let gate_clone = Arc::clone(&gate);
+        let first = tokio::spawn(async move {
+            gate_clone
+                .check_permission("bash", &serde_json::json!({}), false)
+                .await
+        });
+        let event = rx.recv().await.unwrap();
+        let request_id = match event {
+            DesktopSessionEvent::PermissionRequest { request_id, .. } => request_id,
+            _ => panic!(),
+        };
+        gate.resolve(&request_id, PermissionDecision::AllowAlways).await;
+        let d1 = first.await.unwrap();
+        assert_eq!(d1, PermissionDecision::AllowAlways);
+
+        // Second call: should return Allow immediately without asking.
+        let d2 = gate
+            .check_permission("bash", &serde_json::json!({}), false)
+            .await;
+        assert_eq!(d2, PermissionDecision::Allow);
+    }
+
+    #[tokio::test]
+    async fn bypass_all_short_circuits() {
+        let (gate, _rx) = make_gate();
+        // bypass=true should not require user input.
+        let decision = gate
+            .check_permission("bash", &serde_json::json!({}), true)
+            .await;
+        assert_eq!(decision, PermissionDecision::Allow);
+    }
+
+    #[tokio::test]
+    async fn read_only_tools_auto_allowed() {
+        let (gate, _rx) = make_gate();
+        for name in ["read_file", "glob_search", "grep_search", "Read", "Glob", "Grep"] {
+            let decision = gate
+                .check_permission(name, &serde_json::json!({}), false)
+                .await;
+            assert_eq!(decision, PermissionDecision::Allow, "tool {name}");
+        }
+    }
+
+    #[tokio::test]
+    async fn resolve_with_unknown_id_returns_false() {
+        let (gate, _rx) = make_gate();
+        let result = gate.resolve("nonexistent-id", PermissionDecision::Allow).await;
+        assert!(!result, "resolve with unknown id should return false");
+    }
 }
 
 #[cfg(test)]

@@ -15,12 +15,55 @@ import {
   Monitor,
   Slash,
   ChevronDown,
+  Paperclip,
+  X as XIcon,
+  FileText,
+  Image as ImageIcon,
+  AlertCircle,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
   useSettingsStore,
   type PermissionMode,
 } from "@/state/settings-store";
+
+/* ─── Attachment helpers ─────────────────────────────────────────── */
+
+interface ProcessedAttachment {
+  filename: string;
+  content: string;
+  truncated: boolean;
+  kind: "text" | "image_base64" | "binary_stub";
+  byte_size: number;
+}
+
+/** Read a File object as base64 (no `data:` prefix). */
+function readFileAsBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = reader.result as string;
+      // result is "data:<mime>;base64,<b64>" — strip everything before the comma
+      const commaIdx = result.indexOf(",");
+      resolve(commaIdx >= 0 ? result.slice(commaIdx + 1) : result);
+    };
+    reader.onerror = () => reject(reader.error ?? new Error("FileReader failed"));
+    reader.readAsDataURL(file);
+  });
+}
+
+async function uploadAttachment(file: File): Promise<ProcessedAttachment> {
+  const base64 = await readFileAsBase64(file);
+  const response = await fetch("/api/desktop/attachments/process", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ filename: file.name, base64 }),
+  });
+  if (!response.ok) {
+    throw new Error(`upload failed: ${response.status} ${response.statusText}`);
+  }
+  return (await response.json()) as ProcessedAttachment;
+}
 
 /* ─── Permission mode config ────────────────────────────────────── */
 
@@ -111,11 +154,71 @@ export function InputBar({
   const [commandFilter, setCommandFilter] = useState("");
   const [selectedCommandIndex, setSelectedCommandIndex] = useState(0);
   const [showPermissionMenu, setShowPermissionMenu] = useState(false);
+  const [attachments, setAttachments] = useState<ProcessedAttachment[]>([]);
+  const [uploadError, setUploadError] = useState<string | null>(null);
+  const [isDragging, setIsDragging] = useState(false);
+  const [isUploading, setIsUploading] = useState(false);
   const internalRef = useRef<HTMLTextAreaElement>(null);
   const textareaRef = inputRef ?? internalRef;
   const commandListRef = useRef<HTMLDivElement>(null);
   const permMenuRef = useRef<HTMLDivElement>(null);
   const rafRef = useRef<number>(0);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // ── Attachment handling ─────────────────────────────────────────
+  const handleFiles = useCallback(async (files: FileList | File[]) => {
+    const list = Array.from(files);
+    if (list.length === 0) return;
+    setIsUploading(true);
+    setUploadError(null);
+    const uploaded: ProcessedAttachment[] = [];
+    for (const file of list) {
+      try {
+        // Cap file size at 10 MB to prevent UI freeze on huge uploads.
+        if (file.size > 10 * 1024 * 1024) {
+          setUploadError(`${file.name} exceeds 10 MB limit`);
+          continue;
+        }
+        const result = await uploadAttachment(file);
+        uploaded.push(result);
+      } catch (e) {
+        setUploadError(
+          e instanceof Error ? e.message : "attachment upload failed",
+        );
+      }
+    }
+    setAttachments((prev) => [...prev, ...uploaded]);
+    setIsUploading(false);
+  }, []);
+
+  const removeAttachment = useCallback((index: number) => {
+    setAttachments((prev) => prev.filter((_, i) => i !== index));
+  }, []);
+
+  const handleDragOver = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    if (e.dataTransfer.types.includes("Files")) {
+      setIsDragging(true);
+    }
+  }, []);
+
+  const handleDragLeave = useCallback((e: React.DragEvent) => {
+    // Only clear if leaving the input area entirely (not just moving over a child)
+    if (e.currentTarget === e.target) {
+      setIsDragging(false);
+    }
+  }, []);
+
+  const handleDrop = useCallback(
+    (e: React.DragEvent) => {
+      e.preventDefault();
+      setIsDragging(false);
+      if (e.dataTransfer.files.length > 0) {
+        void handleFiles(e.dataTransfer.files);
+      }
+    },
+    [handleFiles],
+  );
 
   // Filter slash commands based on input
   const filteredCommands = SLASH_COMMANDS.filter((cmd) =>
@@ -152,26 +255,50 @@ export function InputBar({
 
   const handleSend = useCallback(() => {
     const trimmed = value.trim();
-    if (!trimmed || isBusy) return;
-    // Save to history
-    setHistory((prev) => [trimmed, ...prev.slice(0, 49)]);
-    setHistoryIndex(-1);
+    // Allow sending if there's text OR at least one attachment.
+    if ((!trimmed && attachments.length === 0) || isBusy) return;
+    // Save to history (only the typed text, not the prepended attachments)
+    if (trimmed) {
+      setHistory((prev) => [trimmed, ...prev.slice(0, 49)]);
+      setHistoryIndex(-1);
+    }
 
-    // Check for slash commands first
+    // Check for slash commands first (skip attachments for slash commands)
     if (trimmed.startsWith("/") && onSlashCommand?.(trimmed)) {
       setValue("");
+      setAttachments([]);
       if (textareaRef.current) {
         textareaRef.current.style.height = "auto";
       }
       return;
     }
 
-    void onSend(trimmed);
+    // Build the final message with attachments prepended as a markdown block.
+    let finalMessage = trimmed;
+    if (attachments.length > 0) {
+      const attachmentBlock = attachments
+        .map((a) => {
+          if (a.kind === "image_base64") {
+            return `## ${a.filename}\n\n[Image attached: ${a.byte_size} bytes]\n`;
+          }
+          if (a.kind === "binary_stub") {
+            return `## ${a.filename}\n\n${a.content}\n`;
+          }
+          // text
+          return `## ${a.filename}\n\n\`\`\`\n${a.content}\n\`\`\`${a.truncated ? "\n\n_(content was truncated)_" : ""}\n`;
+        })
+        .join("\n");
+      finalMessage = `# Attached files\n\n${attachmentBlock}\n${trimmed}`;
+    }
+
+    void onSend(finalMessage);
     setValue("");
+    setAttachments([]);
+    setUploadError(null);
     if (textareaRef.current) {
       textareaRef.current.style.height = "auto";
     }
-  }, [value, isBusy, onSend, onSlashCommand]);
+  }, [value, attachments, isBusy, onSend, onSlashCommand, textareaRef]);
 
   const handleStop = useCallback(() => {
     onStop?.();
@@ -318,13 +445,91 @@ export function InputBar({
         </div>
       )}
 
-      {/* Textarea */}
+      {/* Hidden file input for the paperclip button */}
+      <input
+        ref={fileInputRef}
+        type="file"
+        multiple
+        className="hidden"
+        onChange={(e) => {
+          if (e.target.files) {
+            void handleFiles(e.target.files);
+          }
+          // Reset so user can re-pick the same file if they removed it
+          e.target.value = "";
+        }}
+      />
+
+      {/* Attachment chips row */}
+      {(attachments.length > 0 || uploadError) && (
+        <div className="mb-2 flex flex-wrap items-center gap-1.5">
+          {attachments.map((att, i) => (
+            <div
+              key={`${att.filename}-${i}`}
+              className="flex items-center gap-1.5 rounded-md border border-border/50 bg-muted/20 px-2 py-1 text-caption"
+              title={`${att.filename} (${att.byte_size} bytes${att.truncated ? ", truncated" : ""})`}
+            >
+              {att.kind === "image_base64" ? (
+                <ImageIcon className="size-3" style={{ color: "var(--claude-blue)" }} />
+              ) : att.kind === "binary_stub" ? (
+                <AlertCircle className="size-3" style={{ color: "var(--color-warning)" }} />
+              ) : (
+                <FileText className="size-3" style={{ color: "var(--muted-foreground)" }} />
+              )}
+              <span className="max-w-[180px] truncate font-medium">
+                {att.filename}
+              </span>
+              <button
+                type="button"
+                className="ml-0.5 rounded p-0.5 text-muted-foreground hover:bg-accent hover:text-foreground"
+                onClick={() => removeAttachment(i)}
+                aria-label={`Remove ${att.filename}`}
+              >
+                <XIcon className="size-2.5" />
+              </button>
+            </div>
+          ))}
+          {isUploading && (
+            <span className="text-caption text-muted-foreground">Uploading…</span>
+          )}
+          {uploadError && (
+            <span
+              className="flex items-center gap-1 text-caption"
+              style={{ color: "var(--color-error)" }}
+            >
+              <AlertCircle className="size-3" />
+              {uploadError}
+              <button
+                type="button"
+                className="ml-1 underline"
+                onClick={() => setUploadError(null)}
+              >
+                dismiss
+              </button>
+            </span>
+          )}
+        </div>
+      )}
+
+      {/* Textarea (with drag-drop) */}
       <div
         className={cn(
-          "rounded-xl border border-input bg-muted/10 px-4 py-2.5 transition-colors",
-          "focus-within:border-ring focus-within:ring-1 focus-within:ring-ring/50"
+          "relative rounded-xl border border-input bg-muted/10 px-4 py-2.5 transition-colors",
+          "focus-within:border-ring focus-within:ring-1 focus-within:ring-ring/50",
+          isDragging && "border-[color:var(--claude-blue)] bg-[color:var(--claude-blue)]/5",
         )}
+        onDragOver={handleDragOver}
+        onDragLeave={handleDragLeave}
+        onDrop={handleDrop}
       >
+        {isDragging && (
+          <div className="pointer-events-none absolute inset-0 flex items-center justify-center rounded-xl bg-[color:var(--claude-blue)]/10">
+            <div className="flex items-center gap-2 text-body-sm font-medium" style={{ color: "var(--claude-blue)" }}>
+              <Paperclip className="size-4" />
+              Drop files to attach
+            </div>
+          </div>
+        )}
         <textarea
           ref={textareaRef}
           value={value}
@@ -347,8 +552,24 @@ export function InputBar({
 
       {/* Bottom button row */}
       <div className="mt-2 flex items-center justify-between">
-        {/* Left: permission + environment */}
+        {/* Left: permission + attachment + environment */}
         <div className="flex items-center gap-2">
+          {/* Attach file button */}
+          <button
+            type="button"
+            className={cn(
+              "flex items-center gap-1 rounded-lg border border-border/50 px-2 py-1 text-label transition-colors hover:bg-accent hover:text-foreground",
+              "text-muted-foreground",
+              isUploading && "opacity-50",
+            )}
+            onClick={() => fileInputRef.current?.click()}
+            disabled={isBusy || isUploading}
+            aria-label="Attach file"
+            title="Attach file (or drag-drop into the textarea)"
+          >
+            <Paperclip className="size-3" />
+          </button>
+
           {/* Permission mode selector */}
           <div className="relative" ref={permMenuRef}>
             <button

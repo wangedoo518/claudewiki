@@ -41,6 +41,7 @@ pub mod attachments;
 mod codex_auth;
 mod managed_auth;
 mod oauth_runtime;
+pub mod protocol_codegen;
 pub mod secure_storage;
 pub mod system_prompt;
 

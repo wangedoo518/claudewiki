@@ -2283,6 +2283,42 @@ impl DesktopState {
         self.get_dispatch_item(&item_id).await
     }
 
+    /// Compact a session's message history to free context window.
+    pub async fn compact_session_messages(
+        &self,
+        session_id: &str,
+    ) -> Result<DesktopSessionDetail, DesktopStateError> {
+        use runtime::{compact_session, should_compact, CompactionConfig};
+
+        let config = CompactionConfig::default();
+
+        let mut store = self.store.write().await;
+        let record = store
+            .sessions
+            .get_mut(session_id)
+            .ok_or_else(|| DesktopStateError::SessionNotFound(session_id.to_string()))?;
+
+        if !should_compact(&record.session, config) {
+            // Nothing to compact — return current state.
+            return Ok(record.detail());
+        }
+
+        let result = compact_session(&record.session, config);
+        record.session = result.compacted_session;
+        record.metadata.updated_at = unix_timestamp_millis();
+
+        let detail = record.detail();
+        let sender = record.events.clone();
+        drop(store);
+
+        self.persist().await;
+        let _ = sender.send(DesktopSessionEvent::Snapshot {
+            session: detail.clone(),
+        });
+
+        Ok(detail)
+    }
+
     pub async fn create_session(
         &self,
         request: CreateDesktopSessionRequest,

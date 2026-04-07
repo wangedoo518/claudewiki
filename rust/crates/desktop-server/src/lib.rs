@@ -264,6 +264,7 @@ pub fn app(state: AppState) -> Router {
         .route("/api/desktop/sessions/{id}/title", post(rename_session))
         .route("/api/desktop/sessions/{id}/cancel", post(cancel_session))
         .route("/api/desktop/sessions/{id}/resume", post(resume_session))
+        .route("/api/desktop/sessions/{id}/compact", post(compact_session))
         .route("/api/desktop/sessions/{id}/permission", post(forward_permission))
         .route(
             "/api/desktop/sessions/{id}/events",
@@ -806,6 +807,18 @@ async fn resume_session(
         .await
         .map_err(into_api_error)?;
     Ok(Json(serde_json::json!({ "session": session })))
+}
+
+async fn compact_session(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let session = state
+        .desktop
+        .compact_session_messages(&id)
+        .await
+        .map_err(into_api_error)?;
+    Ok(Json(serde_json::json!({ "compacted": true, "session": session })))
 }
 
 async fn forward_permission(

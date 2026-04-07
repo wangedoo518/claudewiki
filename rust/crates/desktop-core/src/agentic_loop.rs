@@ -407,10 +407,15 @@ pub async fn run_agentic_loop(
 
             let tool_result_message = match permission {
                 PermissionDecision::Allow | PermissionDecision::AllowAlways => {
-                    // Execute the tool in a blocking thread.
+                    // Execute the tool in a blocking thread with CWD set to project path.
                     let name = tool_name.clone();
                     let input_value = tool_input_value.clone();
+                    let tool_cwd = config.project_path.clone();
                     let result = tokio::task::spawn_blocking(move || {
+                        // Set CWD to project path so relative paths resolve correctly.
+                        if tool_cwd.is_dir() {
+                            let _ = std::env::set_current_dir(&tool_cwd);
+                        }
                         tools::execute_tool(&name, &input_value)
                     })
                     .await

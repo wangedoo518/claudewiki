@@ -57,11 +57,20 @@ const COMMANDS: CommandDefinition[] = [
     type: "local",
     description: "Compact conversation to save context",
     execute: (_args, ctx) => {
-      const count = ctx.messages.length;
+      // Trigger backend compaction if session exists, otherwise local clear.
+      if (ctx.sessionId) {
+        void import("./api/client").then(({ compactSession }) =>
+          compactSession(ctx.sessionId!).catch(() => {
+            ctx.onInjectSystemMessage(
+              "Failed to compact session on the backend. Local display cleared."
+            );
+          })
+        );
+      }
       ctx.onClearMessages();
       return {
         type: "system_message",
-        message: `Compacted ${count} messages into summary. Context window freed.`,
+        message: "Compacting conversation — older messages will be summarized to free context window.",
       };
     },
   },

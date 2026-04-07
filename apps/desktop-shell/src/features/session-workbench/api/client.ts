@@ -75,6 +75,15 @@ export async function resumeSession(
   );
 }
 
+export async function compactSession(
+  sessionId: string
+): Promise<{ compacted: boolean }> {
+  return fetchJson<{ compacted: boolean }>(
+    `/api/desktop/sessions/${sessionId}/compact`,
+    { method: "POST", body: JSON.stringify({}) }
+  );
+}
+
 export async function forwardPermissionDecision(
   sessionId: string,
   payload: {

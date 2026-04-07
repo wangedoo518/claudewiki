@@ -97,17 +97,25 @@ export function extractSubagents(
         /* noop */
       }
 
+      // Normalize unknown subagent types to "general-purpose" to prevent
+      // silent misleading labels from AGENT_TYPE_META fallback.
+      const rawType = parsed.subagent_type as string | undefined;
+      const validType: SubagentType =
+        rawType && rawType in AGENT_TYPE_META
+          ? (rawType as SubagentType)
+          : "general-purpose";
+
+      const toolUseId = msg.toolUse.toolUseId ?? msg.id;
       const agent: SubagentInfo = {
-        id: msg.id,
-        type: (parsed.subagent_type as SubagentType) ?? "general-purpose",
-        description:
-          (parsed.description as string) ?? "Subagent task",
+        id: toolUseId,
+        type: validType,
+        description: (parsed.description as string) ?? "Subagent task",
         model: parsed.model as string | undefined,
         status: "running",
         background: parsed.run_in_background as boolean | undefined,
         isolation: parsed.isolation as string | undefined,
       };
-      agentToolUses.set(msg.id, agent);
+      agentToolUses.set(toolUseId, agent);
       agents.push(agent);
     }
 
@@ -115,7 +123,17 @@ export function extractSubagents(
       msg.type === "tool_result" &&
       msg.toolResult?.toolName === "Agent"
     ) {
-      // Match to an existing agent by scanning for the most recent unresolved one
+      // Match precisely by tool_use_id to support parallel agents correctly.
+      const targetId = msg.toolResult.toolUseId;
+      if (targetId) {
+        const target = agentToolUses.get(targetId);
+        if (target) {
+          target.status = msg.toolResult.isError ? "error" : "completed";
+          target.resultPreview = msg.toolResult.output;
+          continue;
+        }
+      }
+      // Fallback: most-recent-unresolved (demo/legacy data without ids).
       for (let i = agents.length - 1; i >= 0; i--) {
         if (agents[i].status === "running") {
           agents[i].status = msg.toolResult.isError ? "error" : "completed";

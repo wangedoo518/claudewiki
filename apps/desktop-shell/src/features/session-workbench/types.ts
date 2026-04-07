@@ -7,11 +7,15 @@ export type MessageType =
   | "error";
 
 export interface ToolUseData {
+  /** Unique tool_use id for precise matching with results. */
+  toolUseId?: string;
   toolName: string;
   toolInput: string;
 }
 
 export interface ToolResultData {
+  /** References the ToolUseData.toolUseId. Used for accurate result matching. */
+  toolUseId?: string;
   toolName: string;
   output: string;
   isError: boolean;

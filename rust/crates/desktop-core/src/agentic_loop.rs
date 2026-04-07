@@ -87,11 +87,16 @@ impl PermissionGate {
     }
 
     /// Check if the tool is allowed. If not, ask the user via SSE and wait.
+    ///
+    /// If `cancel_token` is cancelled while waiting for the user's
+    /// decision, the wait is aborted immediately and Deny is returned
+    /// (instead of blocking for the full PERMISSION_TIMEOUT_SECS).
     pub async fn check_permission(
         &self,
         tool_name: &str,
         tool_input: &Value,
         bypass_all: bool,
+        cancel_token: &CancellationToken,
     ) -> PermissionDecision {
         // Bypass mode: allow everything without asking.
         if bypass_all {
@@ -154,11 +159,22 @@ impl PermissionGate {
         // 4. User sees their Allow silently dropped → Deny
         //
         // Fix: only clean up in the failure paths.
-        let result = tokio::time::timeout(
-            Duration::from_secs(PERMISSION_TIMEOUT_SECS),
-            receiver,
-        )
-        .await;
+        //
+        // Additionally, race the wait against cancel_token so user cancel
+        // aborts the permission prompt immediately (instead of waiting 5
+        // minutes for the timeout). L-04.
+        let result = tokio::select! {
+            biased;
+            _ = cancel_token.cancelled() => {
+                // User cancelled — treat as Deny, clean up pending entry.
+                let mut pending = self.pending.lock().await;
+                pending.remove(&request_id);
+                return PermissionDecision::Deny {
+                    reason: "cancelled by user".into(),
+                };
+            }
+            r = tokio::time::timeout(Duration::from_secs(PERMISSION_TIMEOUT_SECS), receiver) => r
+        };
 
         match result {
             Ok(Ok(decision)) => {
@@ -393,6 +409,7 @@ pub async fn run_agentic_loop(
             &api_request,
             &event_sender,
             &session_id,
+            &cancel_token,
         )
         .await;
 
@@ -471,7 +488,12 @@ pub async fn run_agentic_loop(
 
             // Check permission.
             let permission = permission_gate
-                .check_permission(&tool_name, &tool_input_value, config.bypass_permissions)
+                .check_permission(
+                    &tool_name,
+                    &tool_input_value,
+                    config.bypass_permissions,
+                    &cancel_token,
+                )
                 .await;
 
             let tool_result_message = match permission {
@@ -664,19 +686,31 @@ async fn call_llm_api_streaming(
     request_body: &Value,
     event_sender: &broadcast::Sender<DesktopSessionEvent>,
     session_id: &str,
+    cancel_token: &CancellationToken,
 ) -> Result<(ConversationMessage, Option<String>, Option<String>), String> {
     let url = format!("{bridge_base_url}/v1/messages");
 
-    let response = client
+    // Fire the HTTP request. Wrap it in tokio::select! so that
+    // cancel_token fires → we abort immediately instead of waiting
+    // up to 300s for the reqwest timeout.
+    let send_future = client
         .post(&url)
         .header("Authorization", format!("Bearer {bearer_token}"))
         .header("Content-Type", "application/json")
         .header("anthropic-version", "2023-06-01")
         .json(request_body)
         .timeout(Duration::from_secs(300))
-        .send()
-        .await
-        .map_err(|e| format!("HTTP request failed: {e}"))?;
+        .send();
+
+    let response = tokio::select! {
+        biased;
+        _ = cancel_token.cancelled() => {
+            return Err("cancelled by user".to_string());
+        }
+        r = send_future => {
+            r.map_err(|e| format!("HTTP request failed: {e}"))?
+        }
+    };
 
     if !response.status().is_success() {
         let status = response.status();
@@ -696,13 +730,19 @@ async fn call_llm_api_streaming(
         .to_string();
 
     if content_type.contains("text/event-stream") {
-        parse_sse_stream(response, event_sender, session_id).await
+        parse_sse_stream(response, event_sender, session_id, cancel_token).await
     } else {
         // Fallback: non-streaming JSON response (upstream didn't support streaming).
-        let body = response
-            .json::<Value>()
-            .await
-            .map_err(|e| format!("failed to parse LLM response: {e}"))?;
+        let body_future = response.json::<Value>();
+        let body = tokio::select! {
+            biased;
+            _ = cancel_token.cancelled() => {
+                return Err("cancelled by user".to_string());
+            }
+            r = body_future => {
+                r.map_err(|e| format!("failed to parse LLM response: {e}"))?
+            }
+        };
         parse_json_response(&body)
     }
 }
@@ -720,6 +760,7 @@ async fn parse_sse_stream(
     response: Response,
     event_sender: &broadcast::Sender<DesktopSessionEvent>,
     session_id: &str,
+    cancel_token: &CancellationToken,
 ) -> Result<(ConversationMessage, Option<String>, Option<String>), String> {
     use futures_util::StreamExt;
 
@@ -738,7 +779,20 @@ async fn parse_sse_stream(
     // single-byte 0x0A and cannot appear inside a UTF-8 multi-byte sequence).
     let mut buffer: Vec<u8> = Vec::new();
 
-    while let Some(chunk_result) = stream.next().await {
+    loop {
+        // Race the next chunk against cancellation. If the user cancels
+        // mid-stream, we abort the HTTP read immediately instead of
+        // waiting up to 300s for the reqwest-level timeout.
+        let chunk_result = tokio::select! {
+            biased;
+            _ = cancel_token.cancelled() => {
+                return Err("cancelled by user".to_string());
+            }
+            next = stream.next() => match next {
+                Some(r) => r,
+                None => break, // Stream ended cleanly.
+            }
+        };
         let chunk = chunk_result.map_err(|e| format!("SSE stream error: {e}"))?;
         buffer.extend_from_slice(&chunk);
 
@@ -1181,12 +1235,15 @@ mod permission_gate_tests {
 
         // Spawn check_permission, it will wait for a decision.
         let gate_clone = Arc::clone(&gate);
+        let token = CancellationToken::new();
+        let token_clone = token.clone();
         let check_task = tokio::spawn(async move {
             gate_clone
                 .check_permission(
                     "bash",
                     &serde_json::json!({"command": "ls"}),
                     false, // not bypass
+                    &token_clone,
                 )
                 .await
         });
@@ -1218,12 +1275,14 @@ mod permission_gate_tests {
     #[tokio::test]
     async fn allow_always_remembers_tool() {
         let (gate, mut rx) = make_gate();
+        let token = CancellationToken::new();
 
         // First call: user chooses AllowAlways.
         let gate_clone = Arc::clone(&gate);
+        let token_clone = token.clone();
         let first = tokio::spawn(async move {
             gate_clone
-                .check_permission("bash", &serde_json::json!({}), false)
+                .check_permission("bash", &serde_json::json!({}), false, &token_clone)
                 .await
         });
         let event = rx.recv().await.unwrap();
@@ -1237,7 +1296,7 @@ mod permission_gate_tests {
 
         // Second call: should return Allow immediately without asking.
         let d2 = gate
-            .check_permission("bash", &serde_json::json!({}), false)
+            .check_permission("bash", &serde_json::json!({}), false, &token)
             .await;
         assert_eq!(d2, PermissionDecision::Allow);
     }
@@ -1245,9 +1304,10 @@ mod permission_gate_tests {
     #[tokio::test]
     async fn bypass_all_short_circuits() {
         let (gate, _rx) = make_gate();
+        let token = CancellationToken::new();
         // bypass=true should not require user input.
         let decision = gate
-            .check_permission("bash", &serde_json::json!({}), true)
+            .check_permission("bash", &serde_json::json!({}), true, &token)
             .await;
         assert_eq!(decision, PermissionDecision::Allow);
     }
@@ -1255,9 +1315,10 @@ mod permission_gate_tests {
     #[tokio::test]
     async fn read_only_tools_auto_allowed() {
         let (gate, _rx) = make_gate();
+        let token = CancellationToken::new();
         for name in ["read_file", "glob_search", "grep_search", "Read", "Glob", "Grep"] {
             let decision = gate
-                .check_permission(name, &serde_json::json!({}), false)
+                .check_permission(name, &serde_json::json!({}), false, &token)
                 .await;
             assert_eq!(decision, PermissionDecision::Allow, "tool {name}");
         }
@@ -1268,6 +1329,46 @@ mod permission_gate_tests {
         let (gate, _rx) = make_gate();
         let result = gate.resolve("nonexistent-id", PermissionDecision::Allow).await;
         assert!(!result, "resolve with unknown id should return false");
+    }
+
+    #[tokio::test]
+    async fn cancel_aborts_pending_permission_wait() {
+        // L-04: user cancel should abort the 5-min permission wait
+        // immediately instead of blocking for the full timeout.
+        let (gate, mut rx) = make_gate();
+        let token = CancellationToken::new();
+
+        let gate_clone = Arc::clone(&gate);
+        let token_clone = token.clone();
+        let check_task = tokio::spawn(async move {
+            gate_clone
+                .check_permission("bash", &serde_json::json!({}), false, &token_clone)
+                .await
+        });
+
+        // Drain the PermissionRequest event.
+        let _ = rx.recv().await;
+
+        // Cancel instead of resolving.
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        token.cancel();
+
+        // check_permission should return Deny quickly (not after 5 min).
+        let decision = tokio::time::timeout(Duration::from_secs(2), check_task)
+            .await
+            .expect("cancel should return within 2 seconds")
+            .expect("task should not panic");
+
+        match decision {
+            PermissionDecision::Deny { reason } => {
+                assert!(reason.contains("cancel"), "reason should mention cancel, got: {reason}");
+            }
+            other => panic!("expected Deny, got {other:?}"),
+        }
+
+        // Pending map should be empty.
+        let pending = gate.pending.lock().await;
+        assert!(pending.is_empty());
     }
 }
 

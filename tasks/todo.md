@@ -51,7 +51,7 @@
 - [x] L-01 PermissionGate 超时 vs resolve race (Phase 2.1)
 - [x] L-02 on_iteration_complete 乱序写 (Phase 6.1)
 - [x] L-03 Drop guard async spawn 失败 (Phase 4.2)
-- [ ] L-04 cancel_token 不中断 HTTP 请求 (deferred)
+- [x] L-04 cancel_token 不中断 HTTP 请求 (short-term fix)
 - [x] L-05 SSE multi-byte UTF-8 跨 chunk (Phase 1.1)
 
 ### 真相源分裂 (3)
@@ -63,7 +63,7 @@
 - [x] L-09 MCP init 只 discover 不 register (Phase 3.1 — marked honest, not fixed)
 - [x] L-10 fork_session 用 default() 丢失状态 (Phase 7.1)
 - [x] L-11 /compact 乐观 UI 无回滚 (Phase 1.3)
-- [ ] L-12 hooks 系统 config 源未接入 (deferred)
+- [x] L-12 hooks 系统 config 源未接入 (short-term fix)
 
 ### 边界条件 (3)
 - [x] L-13 tool_use input 非 object 类型 (Phase 1.2)

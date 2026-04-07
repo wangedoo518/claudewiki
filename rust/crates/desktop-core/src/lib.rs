@@ -2664,21 +2664,28 @@ impl DesktopState {
                     claude_md_discovery.as_ref(),
                 );
 
-                // Resolve real permission mode from .claude/settings.json.
-                // Defaults to WorkspaceWrite (not DangerFullAccess) so write
-                // operations trigger the permission dialog.
-                let bypass_permissions = {
+                // Load runtime config ONCE and extract both permission mode
+                // and hooks. Defaults to WorkspaceWrite (not DangerFullAccess)
+                // so write operations trigger the permission dialog.
+                let (bypass_permissions, hooks_config) = {
                     let loader = ConfigLoader::default_for(&project_path_buf);
                     match loader.load() {
-                        Ok(rc) => match rc
-                            .permission_mode()
-                            .map(permission_mode_from_config)
-                            .unwrap_or(PermissionMode::WorkspaceWrite)
-                        {
-                            PermissionMode::DangerFullAccess => true,
-                            _ => false,
-                        },
-                        Err(_) => false, // Safe default: prompt the user.
+                        Ok(rc) => {
+                            let bypass = match rc
+                                .permission_mode()
+                                .map(permission_mode_from_config)
+                                .unwrap_or(PermissionMode::WorkspaceWrite)
+                            {
+                                PermissionMode::DangerFullAccess => true,
+                                _ => false,
+                            };
+                            // L-12: load hooks from the runtime config.
+                            // RuntimeConfig has a feature_config.hooks field
+                            // of type RuntimeHookConfig.
+                            let hooks = rc.hooks().clone();
+                            (bypass, Some(hooks))
+                        }
+                        Err(_) => (false, None), // Safe default: prompt the user.
                     }
                 };
 
@@ -2730,7 +2737,7 @@ impl DesktopState {
                     bypass_permissions,
                     on_iteration_complete: Some(on_iteration_complete),
                     mcp_servers: Vec::new(), // TODO: populate from frontend settings
-                    hooks: None, // TODO: load from .claude/settings.json
+                    hooks: hooks_config,
                     http_client: self.http_client.clone(),
                 };
 

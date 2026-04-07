@@ -31,6 +31,7 @@ const DEFAULT_ORIGINATOR: &str = "codex_cli_rs";
 const DEFAULT_CALLBACK_BIND_ADDR: &str = "127.0.0.1:1455";
 const DEFAULT_CALLBACK_REDIRECT_URI: &str = "http://localhost:1455/auth/callback";
 const LOGIN_SESSION_TIMEOUT_SECONDS: u64 = 15 * 60;
+#[allow(dead_code)] // Referenced on macOS builds only.
 const MACOS_CODEX_APP_PATH: &str = "/Applications/Codex.app";
 
 static LOGIN_SESSIONS: LazyLock<Mutex<HashMap<String, Arc<LoginSessionRuntime>>>> =
@@ -773,6 +774,7 @@ fn detect_codex_installations(
         .to_string_lossy()
         .to_string();
     let cli_path = find_executable_in_path("codex");
+    #[allow(unused_mut)] // Only macOS adds further entries after this.
     let mut out = vec![DesktopCodexInstallationRecord {
         target_id: "cli".to_string(),
         target_label: "Codex CLI".to_string(),
@@ -798,6 +800,7 @@ fn detect_codex_installations(
 
 fn resolve_auth_paths(codex_home_override: Option<&str>) -> Vec<PathBuf> {
     let default_auth_path = resolve_default_auth_path(codex_home_override);
+    #[allow(unused_mut)] // Only macOS adds further entries below.
     let mut candidates = vec![default_auth_path];
     #[cfg(target_os = "macos")]
     {

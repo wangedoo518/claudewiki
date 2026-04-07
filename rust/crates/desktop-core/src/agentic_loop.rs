@@ -18,11 +18,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::sync::{broadcast, oneshot, Mutex};
 use tokio_util::sync::CancellationToken;
-use tools::GlobalToolRegistry;
 
-use crate::{
-    DesktopConversationMessage, DesktopSessionDetail, DesktopSessionEvent, SessionId,
-};
+use crate::{DesktopConversationMessage, DesktopSessionEvent, SessionId};
 
 // ── Constants ────────────────────────────────────────────────────────
 
@@ -31,9 +28,6 @@ const MAX_LOOP_ITERATIONS: usize = 50;
 
 /// Timeout for a single permission prompt response from the frontend (5 min).
 const PERMISSION_TIMEOUT_SECS: u64 = 300;
-
-/// Default model label when model cannot be determined.
-const DEFAULT_MODEL_LABEL: &str = "unknown";
 
 /// Maximum size of a single tool output before truncation (100 KB).
 const MAX_TOOL_OUTPUT_CHARS: usize = 100_000;
@@ -541,9 +535,9 @@ pub async fn run_agentic_loop(
                         // PostToolUse hook runs for MCP tools too.
                         if let Some(ref runner) = hook_runner {
                             if is_error {
-                                runner.run_post_tool_use_failure(&tool_name, &tool_input_str, &output);
+                                let _ = runner.run_post_tool_use_failure(&tool_name, &tool_input_str, &output);
                             } else {
-                                runner.run_post_tool_use(&tool_name, &tool_input_str, &output, false);
+                                let _ = runner.run_post_tool_use(&tool_name, &tool_input_str, &output, false);
                             }
                         }
 
@@ -573,9 +567,9 @@ pub async fn run_agentic_loop(
                         // Run PostToolUse hook (if configured).
                         if let Some(ref runner) = hook_runner {
                             if is_error {
-                                runner.run_post_tool_use_failure(&tool_name, &tool_input_str, &output);
+                                let _ = runner.run_post_tool_use_failure(&tool_name, &tool_input_str, &output);
                             } else {
-                                runner.run_post_tool_use(&tool_name, &tool_input_str, &output, false);
+                                let _ = runner.run_post_tool_use(&tool_name, &tool_input_str, &output, false);
                             }
                         }
 

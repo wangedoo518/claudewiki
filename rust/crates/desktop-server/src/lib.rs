@@ -267,6 +267,8 @@ pub fn app(state: AppState) -> Router {
         .route("/api/desktop/sessions/{id}/compact", post(compact_session))
         .route("/api/desktop/sessions/{id}/fork", post(fork_session))
         .route("/api/desktop/settings/permission-mode", post(set_permission_mode_handler).get(get_permission_mode_handler))
+        .route("/api/desktop/debug/mcp/probe", post(debug_mcp_probe_handler))
+        .route("/api/desktop/debug/mcp/call", post(debug_mcp_call_handler))
         .route("/api/desktop/sessions/{id}/permission", post(forward_permission))
         .route(
             "/api/desktop/sessions/{id}/events",
@@ -826,6 +828,77 @@ async fn fork_session(
         .await
         .map_err(into_api_error)?;
     Ok(Json(serde_json::json!({ "session": session })))
+}
+
+/// Debug endpoint: initialize MCP from `.claw/settings.json` at the given
+/// project path and return the list of discovered tools. Intended for E2E
+/// verification that our MCP manager actually connects to configured servers.
+async fn debug_mcp_probe_handler(
+    State(state): State<AppState>,
+    Json(body): Json<serde_json::Value>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let project_path = body
+        .get("project_path")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| {
+            (
+                axum::http::StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: "missing project_path".to_string(),
+                }),
+            )
+        })?;
+    let tools = state
+        .desktop
+        .ensure_mcp_initialized(std::path::Path::new(project_path))
+        .await;
+    let summary: Vec<serde_json::Value> = tools
+        .iter()
+        .map(|t| {
+            serde_json::json!({
+                "server": t.server_name,
+                "qualified_name": t.qualified_name,
+                "raw_name": t.raw_name,
+                "description": t.tool.description,
+            })
+        })
+        .collect();
+    Ok(Json(serde_json::json!({
+        "tool_count": tools.len(),
+        "tools": summary,
+    })))
+}
+
+/// Debug endpoint: call an MCP tool by qualified name.
+async fn debug_mcp_call_handler(
+    State(state): State<AppState>,
+    Json(body): Json<serde_json::Value>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let qualified_name = body
+        .get("qualified_name")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| {
+            (
+                axum::http::StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: "missing qualified_name".to_string(),
+                }),
+            )
+        })?;
+    let arguments = body
+        .get("arguments")
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!({}));
+    match state.desktop.mcp_call_tool(qualified_name, arguments).await {
+        Ok(result) => Ok(Json(serde_json::json!({
+            "ok": true,
+            "result": result,
+        }))),
+        Err(err) => Ok(Json(serde_json::json!({
+            "ok": false,
+            "error": err,
+        }))),
+    }
 }
 
 async fn set_permission_mode_handler(

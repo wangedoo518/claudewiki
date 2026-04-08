@@ -4,6 +4,7 @@ import { useTranslation } from "react-i18next";
 import {
   Settings,
   Key,
+  KeyRound,
   Plug,
   Shield,
   Keyboard,
@@ -16,6 +17,7 @@ import { Separator } from "@/components/ui/separator";
 import { cn } from "@/lib/utils";
 import { GeneralSettings } from "./sections/GeneralSettings";
 import { ProviderSettings } from "./sections/ProviderSettings";
+import { MultiProviderSettings } from "./sections/MultiProviderSettings";
 import { McpSettings } from "./sections/McpSettings";
 import { PermissionSettings } from "./sections/PermissionSettings";
 import { DataSettings } from "./sections/DataSettings";
@@ -35,6 +37,7 @@ import { useSettingsStore } from "@/state/settings-store";
 type SettingsSection =
   | "general"
   | "provider"
+  | "llm-providers"
   | "mcp"
   | "permissions"
   | "shortcuts"
@@ -45,11 +48,22 @@ interface MenuItem {
   id: SettingsSection;
   i18nKey: string;
   icon: typeof Settings;
+  labelOverride?: string;
 }
 
 const MENU_ITEMS: MenuItem[] = [
   { id: "general", i18nKey: "settings.general", icon: Settings },
   { id: "provider", i18nKey: "settings.provider", icon: Key },
+  // Phase 5: multi-provider registry (managed by .claw/providers.json).
+  // Distinct from the existing "provider" section which handles OAuth
+  // flows for Codex / managed auth providers. Label is hard-coded for
+  // now because the i18n bundle does not yet have a translation key.
+  {
+    id: "llm-providers",
+    i18nKey: "settings.llmProviders",
+    icon: KeyRound,
+    labelOverride: "LLM Providers",
+  },
   { id: "mcp", i18nKey: "settings.mcp", icon: Plug },
   { id: "permissions", i18nKey: "settings.permissions", icon: Shield },
   { id: "shortcuts", i18nKey: "settings.shortcuts", icon: Keyboard },
@@ -112,7 +126,7 @@ export function SettingsPage() {
               onClick={() => setActive(item.id)}
             >
               <item.icon className="size-3.5" />
-              {t(item.i18nKey)}
+              {item.labelOverride ?? t(item.i18nKey)}
             </button>
           ))}
         </nav>
@@ -126,7 +140,10 @@ export function SettingsPage() {
           )}
         >
           <h2 className="mb-3 text-head font-semibold text-foreground">
-            {t(MENU_ITEMS.find((m) => m.id === active)?.i18nKey ?? "")}
+            {(() => {
+              const current = MENU_ITEMS.find((m) => m.id === active);
+              return current?.labelOverride ?? t(current?.i18nKey ?? "");
+            })()}
           </h2>
 
           <SettingsContent
@@ -172,6 +189,9 @@ function SettingsContent({
   // GeneralSettings and ShortcutsSettings use Redux / static data — no backend needed
   if (section === "general") return <GeneralSettings />;
   if (section === "shortcuts") return <ShortcutsSettings />;
+  // Multi-provider registry has its own React Query hooks and is not
+  // blocked by the other settings queries.
+  if (section === "llm-providers") return <MultiProviderSettings />;
 
   // Other sections need backend data
   if (isLoading) return <SectionLoading />;

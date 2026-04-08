@@ -41,19 +41,39 @@ pub enum AccountError {
     InvalidId(String),
 }
 
-/// Resolve the root state directory `<HOME>/.warwolf/wechat/`.
+/// Resolve the root state directory for WeChat iLink credentials.
 ///
-/// Tests can override this via the `WARWOLF_WECHAT_DIR` environment variable
-/// to point at a tempdir without touching the user's real home.
+/// Resolution order:
+///   1. `WARWOLF_WECHAT_DIR` env var override (used by tests + power users)
+///   2. On Windows: `%LOCALAPPDATA%\warwolf\wechat\`
+///      (the standard per-user, non-roaming, always-writable location)
+///   3. On Unix: `$HOME/.warwolf/wechat/`
+///
+/// Why `LOCALAPPDATA` on Windows?
+///   - `~/.warwolf` (i.e. `%USERPROFILE%\.warwolf`) inherits the user-profile
+///     ACL which on some installations is RX-only for `BUILTIN\Users` if the
+///     directory was originally created by an elevated process. That makes
+///     a *non*-elevated `desktop-server` unable to write.
+///   - `%LOCALAPPDATA%` is the canonical Windows location for non-roaming
+///     per-user app state and is always full-control for the user.
 pub fn state_dir() -> Result<PathBuf, AccountError> {
     if let Ok(override_dir) = std::env::var("WARWOLF_WECHAT_DIR") {
         return Ok(PathBuf::from(override_dir));
     }
+
+    #[cfg(windows)]
+    {
+        if let Some(local) = std::env::var_os("LOCALAPPDATA") {
+            return Ok(PathBuf::from(local).join("warwolf").join("wechat"));
+        }
+    }
+
     let home = home_dir().ok_or(AccountError::NoHome)?;
     Ok(home.join(".warwolf").join("wechat"))
 }
 
-/// Cross-platform best-effort home directory lookup.
+/// Cross-platform best-effort home directory lookup. Used as the final
+/// fallback when neither the env var override nor `%LOCALAPPDATA%` is set.
 fn home_dir() -> Option<PathBuf> {
     #[cfg(windows)]
     {

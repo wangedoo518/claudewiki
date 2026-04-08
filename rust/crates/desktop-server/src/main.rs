@@ -1,14 +1,20 @@
 use std::env;
 use std::net::SocketAddr;
+use std::sync::Arc;
 use std::time::Duration;
 
 use desktop_core::wechat_ilink::{
-    account::{normalize_account_id, save_account},
+    account::{list_account_ids, load_account, normalize_account_id, save_account},
+    handlers::EchoHandler,
     login::{LoginStatus, QrLoginSession},
+    monitor::{run_monitor, MessageHandler, MonitorConfig, MonitorStatus},
     types::{WeixinAccountData, DEFAULT_BASE_URL},
+    IlinkClient,
 };
 use desktop_core::DesktopState;
 use desktop_server::{serve, AppState};
+use tokio::sync::watch;
+use tokio_util::sync::CancellationToken;
 
 const DEFAULT_ADDRESS: &str = "127.0.0.1:4357";
 
@@ -51,8 +57,90 @@ async fn run_server() -> Result<(), Box<dyn std::error::Error>> {
     let address = env::var("OPEN_CLAUDE_CODE_DESKTOP_ADDR")
         .unwrap_or_else(|_| DEFAULT_ADDRESS.to_string())
         .parse::<SocketAddr>()?;
+
+    // Spawn the WeChat iLink long-poll monitor for every persisted account
+    // before we start the HTTP server. The monitor task lives for the
+    // process lifetime; we keep its CancellationToken in scope so a future
+    // shutdown signal could trigger graceful teardown.
+    let _wechat_monitors = spawn_wechat_monitors_for_all_accounts().await;
+
     serve(AppState::new(DesktopState::live()), address).await?;
     Ok(())
+}
+
+/// Background tasks spawned for the WeChat monitor. Held in scope so the
+/// `CancellationToken` and the watch sender stay alive.
+struct SpawnedMonitor {
+    #[allow(dead_code)]
+    cancel: CancellationToken,
+    #[allow(dead_code)]
+    status_rx: watch::Receiver<MonitorStatus>,
+}
+
+/// Spawn one monitor per persisted WeChat account. Skips silently when
+/// no accounts exist (e.g. user hasn't run `wechat-login` yet).
+async fn spawn_wechat_monitors_for_all_accounts() -> Vec<SpawnedMonitor> {
+    let ids = match list_account_ids() {
+        Ok(ids) => ids,
+        Err(e) => {
+            eprintln!("[wechat] failed to list accounts: {e}");
+            return Vec::new();
+        }
+    };
+
+    if ids.is_empty() {
+        eprintln!("[wechat] no accounts persisted yet — skipping monitor startup");
+        eprintln!("[wechat]   run `desktop-server wechat-login` to bind a WeChat ClawBot");
+        return Vec::new();
+    }
+
+    let mut spawned = Vec::new();
+    for account_id in ids {
+        match spawn_monitor_for_account(&account_id).await {
+            Ok(handle) => spawned.push(handle),
+            Err(e) => eprintln!("[wechat] could not spawn monitor for {account_id}: {e}"),
+        }
+    }
+    spawned
+}
+
+/// Build the iLink client from a persisted account and spawn its monitor.
+async fn spawn_monitor_for_account(
+    account_id: &str,
+) -> Result<SpawnedMonitor, Box<dyn std::error::Error>> {
+    let data = load_account(account_id)?
+        .ok_or_else(|| format!("account {account_id} listed but file is missing"))?;
+
+    let token = data
+        .token
+        .clone()
+        .ok_or_else(|| format!("account {account_id} has no bot_token"))?;
+    let base_url = data
+        .base_url
+        .clone()
+        .unwrap_or_else(|| DEFAULT_BASE_URL.to_string());
+
+    let client = IlinkClient::new(base_url, token)?;
+    let cancel = CancellationToken::new();
+    let (status_tx, status_rx) = watch::channel(MonitorStatus::default());
+
+    // Phase 2a: echo handler. Will be replaced with the DesktopState bridge
+    // in Phase 2b once we plumb session management through.
+    let handler: Arc<dyn MessageHandler> = Arc::new(EchoHandler);
+
+    let config = MonitorConfig {
+        account_id: account_id.to_string(),
+        client,
+        handler,
+        cancel: cancel.clone(),
+    };
+
+    eprintln!("[wechat] starting monitor for account={account_id}");
+    tokio::spawn(async move {
+        run_monitor(config, status_tx).await;
+    });
+
+    Ok(SpawnedMonitor { cancel, status_rx })
 }
 
 /// One-shot QR-code login flow for the WeChat ClawBot iLink integration.
@@ -122,7 +210,12 @@ async fn run_wechat_login() -> Result<(), Box<dyn std::error::Error>> {
         println!("  saved at   : {saved_at}");
     }
     println!();
-    println!("  凭证已存储于 ~/.warwolf/wechat/accounts/{normalized_id}.json");
+    if let Ok(dir) = desktop_core::wechat_ilink::account::state_dir() {
+        println!(
+            "  凭证已存储于 {}\\accounts\\{normalized_id}.json",
+            dir.display()
+        );
+    }
     println!("──────────────────────────────────────────────────────────────");
 
     Ok(())

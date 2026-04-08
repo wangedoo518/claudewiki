@@ -16,7 +16,9 @@
 
 pub mod account;
 pub mod client;
+pub mod handlers;
 pub mod login;
+pub mod monitor;
 pub mod types;
 
 pub use account::{
@@ -24,7 +26,9 @@ pub use account::{
     save_account, save_sync_buf, upsert_context_token, AccountError,
 };
 pub use client::{IlinkClient, IlinkError, SESSION_EXPIRED_ERRCODE};
+pub use handlers::EchoHandler;
 pub use login::{LoginConfirmation, LoginError, LoginStatus, QrLoginSession};
+pub use monitor::{run_monitor, MessageHandler, MonitorConfig, MonitorError, MonitorStatus};
 pub use types::{
     BaseInfo, GetUpdatesResp, MessageItem, QrCodeResponse, QrStatusResponse, TextItem,
     WeixinAccountData, WeixinMessage, CHANNEL_VERSION, DEFAULT_BASE_URL,

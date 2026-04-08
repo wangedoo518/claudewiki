@@ -42,8 +42,10 @@ export function PermissionSettings({
                   style={mode.color ? { color: mode.color } : undefined}
                 />
                 <div className="flex-1">
-                  <div className="text-sm font-medium">{mode.label}</div>
-                  <div className="text-xs text-muted-foreground">
+                  <div className="text-body-sm font-semibold text-foreground">
+                    {mode.label}
+                  </div>
+                  <div className="text-caption text-muted-foreground">
                     {mode.desc}
                   </div>
                 </div>
@@ -55,7 +57,7 @@ export function PermissionSettings({
           })}
         </div>
         {customize?.permission_mode && (
-          <div className="text-xs text-muted-foreground">
+          <div className="text-caption text-muted-foreground">
             Runtime value: {customize.permission_mode}
           </div>
         )}
@@ -63,7 +65,7 @@ export function PermissionSettings({
 
       {error && (
         <SettingGroup title="Warnings">
-          <div className="text-xs text-muted-foreground">{error}</div>
+          <div className="text-caption text-muted-foreground">{error}</div>
         </SettingGroup>
       )}
     </div>

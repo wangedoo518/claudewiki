@@ -390,7 +390,9 @@ export function ProviderSettings({ error }: ProviderSettingsProps) {
   return (
     <div className="flex h-full min-h-0 gap-5">
       <aside className="w-[300px] shrink-0 rounded-2xl border border-border bg-background p-4">
-        <div className="mb-4 text-sm font-medium text-foreground">模型服务</div>
+        <div className="mb-4 text-subhead font-semibold text-foreground">
+          模型服务
+        </div>
         <ScrollArea className="h-[calc(100vh-260px)] pr-3">
           <div className="space-y-3">
             <ProviderSummaryCard
@@ -671,7 +673,7 @@ function ProviderSummaryCard({
       <div className="flex items-start gap-3">
         <div
           className={cn(
-            "flex size-11 shrink-0 items-center justify-center rounded-full text-sm font-semibold text-white",
+            "flex size-11 shrink-0 items-center justify-center rounded-full text-body-sm font-semibold text-white",
             accent === "qwen" ? "bg-[#FF6A00]" : "bg-black"
           )}
         >
@@ -679,7 +681,7 @@ function ProviderSummaryCard({
         </div>
         <div className="min-w-0 flex-1">
           <div className="text-base font-semibold text-foreground">{title}</div>
-          <div className="mt-1 text-sm text-muted-foreground">{subtitle}</div>
+          <div className="mt-1 text-body-sm text-muted-foreground">{subtitle}</div>
           <div className="mt-3 flex flex-wrap gap-1.5">
             {badges.map((badge) => (
               <Badge key={badge} variant="outline">
@@ -712,7 +714,7 @@ function SectionCard({
             <h3 className="text-2xl font-semibold text-foreground">{title}</h3>
             <Badge variant="outline">官方 OAuth</Badge>
           </div>
-          <p className="mt-2 max-w-3xl text-sm leading-6 text-muted-foreground">
+          <p className="mt-2 max-w-3xl text-body-sm leading-6 text-muted-foreground">
             {description}
           </p>
         </div>
@@ -727,7 +729,7 @@ function NoticeBanner({ tone, message }: Notice) {
   return (
     <div
       className={cn(
-        "rounded-xl border px-4 py-3 text-sm",
+        "rounded-xl border px-4 py-3 text-body-sm",
         tone === "success" &&
           "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300",
         tone === "info" &&
@@ -754,7 +756,7 @@ function InfoField({
 }) {
   return (
     <div className="rounded-2xl border border-border bg-muted/20 p-4">
-      <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+      <div className="text-caption font-semibold uppercase tracking-wide text-muted-foreground">
         {label}
       </div>
       <div
@@ -767,7 +769,9 @@ function InfoField({
       >
         {value}
       </div>
-      {hint ? <div className="mt-1 text-sm text-muted-foreground">{hint}</div> : null}
+      {hint ? (
+        <div className="mt-1 text-body-sm text-muted-foreground">{hint}</div>
+      ) : null}
     </div>
   );
 }
@@ -784,10 +788,10 @@ function LoginSessionCard({
   return (
     <div className="mt-4 rounded-2xl border border-border bg-muted/20 p-4">
       <div className="flex items-center gap-2">
-        <div className="text-sm font-semibold text-foreground">{title}</div>
+        <div className="text-body-sm font-semibold text-foreground">{title}</div>
         <Badge variant="outline">{status}</Badge>
       </div>
-      <div className="mt-3 space-y-1.5 text-sm text-muted-foreground">
+      <div className="mt-3 space-y-1.5 text-body-sm text-muted-foreground">
         {lines.filter(Boolean).map((line) => (
           <div key={line}>{line}</div>
         ))}
@@ -822,8 +826,10 @@ function CodexProfileCard({
               <Badge variant="outline">{profile.chatgpt_plan_type}</Badge>
             ) : null}
           </div>
-          <div className="mt-2 text-sm text-muted-foreground">{profile.email}</div>
-          <div className="mt-1 text-xs text-muted-foreground">
+          <div className="mt-2 text-body-sm text-muted-foreground">
+            {profile.email}
+          </div>
+          <div className="mt-1 text-caption text-muted-foreground">
             更新时间：{formatTimestamp(profile.updated_at_epoch)}
           </div>
         </div>
@@ -874,8 +880,10 @@ function ManagedAuthAccountCard({
             {account.plan_label ? <Badge variant="outline">{account.plan_label}</Badge> : null}
             <Badge variant="outline">{formatManagedAuthStatus(account.status)}</Badge>
           </div>
-          <div className="mt-2 text-sm text-muted-foreground">{account.email ?? "未提供邮箱"}</div>
-          <div className="mt-1 text-xs text-muted-foreground">
+          <div className="mt-2 text-body-sm text-muted-foreground">
+            {account.email ?? "未提供邮箱"}
+          </div>
+          <div className="mt-1 text-caption text-muted-foreground">
             更新时间：{formatTimestamp(account.updated_at_epoch)}
           </div>
         </div>
@@ -903,7 +911,7 @@ function ManagedAuthAccountCard({
 
 function EmptyBlock({ label }: { label: string }) {
   return (
-    <div className="rounded-2xl border border-dashed border-border bg-muted/20 p-6 text-sm text-muted-foreground">
+    <div className="rounded-2xl border border-dashed border-border bg-muted/20 p-6 text-body-sm text-muted-foreground">
       {label}
     </div>
   );

@@ -34,7 +34,7 @@ export function GeneralSettings() {
                 key={t.value}
                 variant={theme === t.value ? "default" : "outline"}
                 size="sm"
-                className="text-xs"
+                className="text-caption"
                 onClick={() => setTheme(t.value)}
               >
                 {t.label}
@@ -49,7 +49,7 @@ export function GeneralSettings() {
                 key={size}
                 variant={fontSize === size ? "default" : "outline"}
                 size="sm"
-                className={cn("w-10 text-xs")}
+                className={cn("w-10 text-caption")}
                 onClick={() => setFontSize(size)}
               >
                 {size}
@@ -70,7 +70,7 @@ export function GeneralSettings() {
                 key={lang.value}
                 variant={language === lang.value ? "default" : "outline"}
                 size="sm"
-                className="text-xs"
+                className="text-caption"
                 onClick={() => setLanguage(lang.value)}
               >
                 {lang.label}

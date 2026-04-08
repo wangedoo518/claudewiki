@@ -22,10 +22,12 @@ export function AboutSection({
             <Sparkles className="size-6 text-primary" />
           </div>
           <div>
-            <div className="text-sm font-semibold">
+            <div className="text-subhead font-semibold text-foreground">
               {productName ?? "Warwolf"}
             </div>
-            <div className="text-xs text-muted-foreground">Desktop shell</div>
+            <div className="text-caption text-muted-foreground">
+              Desktop shell
+            </div>
             <div className="mt-1 flex gap-1">
               <Badge variant="secondary" className="text-caption">
                 Tauri 2
@@ -42,7 +44,7 @@ export function AboutSection({
       </SettingGroup>
 
       <SettingGroup title="Runtime Paths">
-        <div className="space-y-1.5 text-sm">
+        <div className="space-y-1.5 text-body-sm">
           <div className="flex justify-between gap-4">
             <span className="text-muted-foreground">Project</span>
             <span className="max-w-[360px] truncate text-right">
@@ -66,7 +68,7 @@ export function AboutSection({
 
       {error && (
         <SettingGroup title="Warnings">
-          <div className="text-xs text-muted-foreground">{error}</div>
+          <div className="text-caption text-muted-foreground">{error}</div>
         </SettingGroup>
       )}
     </div>

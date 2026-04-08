@@ -17,9 +17,11 @@ export function SettingGroup({
   return (
     <div className={cn("rounded-lg border border-border p-4", className)}>
       <div className="mb-3">
-        <h3 className="text-sm font-medium text-foreground">{title}</h3>
+        <h3 className="text-subhead font-semibold text-foreground">{title}</h3>
         {description && (
-          <p className="mt-0.5 text-xs text-muted-foreground">{description}</p>
+          <p className="mt-0.5 text-caption text-muted-foreground">
+            {description}
+          </p>
         )}
       </div>
       <div className="space-y-3">{children}</div>
@@ -48,9 +50,9 @@ export function SettingRow({
       )}
     >
       <div className="flex-1">
-        <div className="text-sm text-foreground">{label}</div>
+        <div className="text-body-sm text-foreground">{label}</div>
         {description && (
-          <div className="text-xs text-muted-foreground">{description}</div>
+          <div className="text-caption text-muted-foreground">{description}</div>
         )}
       </div>
       <div className="shrink-0">{children}</div>

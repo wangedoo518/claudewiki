@@ -1,0 +1,20 @@
+[package]
+name = "api"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+publish = false
+
+# Standalone vendored copy of `api` from claw-code-parity. Patched locally
+# to omit empty `tool_calls` arrays in `translate_message` (DeepSeek/strict
+# OpenAI-compat providers reject the empty array). The original sibling
+# path dependencies (`runtime`, `telemetry`) are remapped to the same
+# upstream git rev so we don't need to vendor those crates as well.
+
+[dependencies]
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+runtime = { git = "https://github.com/wangedoo518/claw-code-parity.git", rev = "736069f1ab45a4e90703130188732b7e5ac13620" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+telemetry = { git = "https://github.com/wangedoo518/claw-code-parity.git", rev = "736069f1ab45a4e90703130188732b7e5ac13620" }
+tokio = { version = "1", features = ["io-util", "macros", "net", "rt-multi-thread", "time"] }

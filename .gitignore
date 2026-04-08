@@ -14,3 +14,18 @@ apps/*/src-tauri/target/
 .claude/settings.local.json
 .claude/sessions/
 .port_sessions/
+
+# Project-local runtime state — may contain API keys / secrets, never commit.
+# These are per-user configuration read by desktop-server at runtime:
+#   settings.json      — active model, permission mode, etc.
+#   providers.json     — multi-provider registry (Phase 3; will include
+#                        api_key fields for DeepSeek/Qwen/Kimi/GLM/...)
+#   plugins/installed/ — plugin manager working copy
+#   desktop/           — persistence of sessions/scheduled tasks/dispatch
+.claw/settings.json
+.claw/settings.local.json
+.claw/providers.json
+.claw/plugins/installed/
+.claw/desktop/
+# Stale debugging file from earlier credential-routing experiments
+.claude/settings.json

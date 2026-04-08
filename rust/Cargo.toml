@@ -31,3 +31,22 @@ pedantic = { level = "warn", priority = -1 }
 module_name_repetitions = "allow"
 missing_panics_doc = "allow"
 missing_errors_doc = "allow"
+
+# ── Vendored crate patches ──────────────────────────────────────────
+#
+# Override the upstream `api` crate from `claw-code-parity` with a local
+# copy under `../vendor/api/`. This lets us land protocol-level fixes
+# without waiting for upstream merges.
+#
+# Current patches applied in the local copy:
+#  * `openai_compat.rs::translate_message` — omit empty `tool_calls`
+#    field for assistant messages instead of emitting `tool_calls: []`.
+#    Strict OpenAI-compat providers (DeepSeek, some DashScope variants)
+#    return `400 Invalid 'messages[N].tool_calls': empty array` when
+#    they see the empty list. The OpenAI canonical client also omits
+#    the field; we now match that behaviour.
+#
+# To add another patched crate from the same git source: just copy the
+# crate dir under `../vendor/<name>/` and add a corresponding line below.
+[patch."https://github.com/wangedoo518/claw-code-parity.git"]
+api = { path = "../vendor/api" }

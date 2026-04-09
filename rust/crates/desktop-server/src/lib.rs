@@ -421,6 +421,13 @@ pub fn app(state: AppState) -> Router {
             "/api/wiki/inbox/{id}/resolve",
             post(resolve_wiki_inbox_handler),
         )
+        // ── ClawWiki S6 schema layer (read-only) ───────────────────
+        // Returns the text of `schema/CLAUDE.md` so the SchemaEditorPage
+        // can render the maintainer agent's rule book. Per canonical
+        // §8 / §10, schema/ is human-owned: the maintainer agent may
+        // PROPOSE changes via the Inbox but never writes here directly,
+        // and neither does this HTTP route (no PUT/POST).
+        .route("/api/wiki/schema", get(get_wiki_schema_handler))
         // ── Phase 6C: WeChat account management ────────────────────
         .route(
             "/api/desktop/wechat/accounts",
@@ -1793,6 +1800,40 @@ async fn list_wiki_inbox_handler() -> Result<Json<serde_json::Value>, ApiError> 
         "entries": entries,
         "pending_count": pending,
         "total_count": entries.len(),
+    })))
+}
+
+/// `GET /api/wiki/schema`
+///
+/// Return the current `schema/CLAUDE.md` content plus its filesystem
+/// metadata (path, byte size, mtime). Used by `SchemaEditorPage` to
+/// render the maintainer rule book as read-only markdown. Falls back
+/// to the canonical template bytes when the file is missing (e.g.
+/// fresh install before `init_wiki` has run at least once).
+async fn get_wiki_schema_handler() -> Result<Json<serde_json::Value>, ApiError> {
+    let paths = resolve_wiki_root_for_handler()?;
+    let claude_md = paths.schema_claude_md.clone();
+    let (content, source, byte_size) = if claude_md.is_file() {
+        let bytes = std::fs::read_to_string(&claude_md).map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: format!("read CLAUDE.md failed: {e}"),
+                }),
+            )
+        })?;
+        let size = bytes.len();
+        (bytes, "disk", size)
+    } else {
+        let template = wiki_store::canonical_claude_md_template().to_string();
+        let size = template.len();
+        (template, "canonical-template", size)
+    };
+    Ok(Json(serde_json::json!({
+        "path": claude_md.display().to_string(),
+        "content": content,
+        "source": source,
+        "byte_size": byte_size,
     })))
 }
 

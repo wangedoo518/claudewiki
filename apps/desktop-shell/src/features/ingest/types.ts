@@ -67,3 +67,12 @@ export interface InboxListResponse {
 }
 
 export type InboxResolveAction = "approve" | "reject";
+
+// ── S6 Schema layer ──────────────────────────────────────────────
+
+export interface SchemaResponse {
+  path: string;
+  content: string;
+  source: "disk" | "canonical-template";
+  byte_size: number;
+}

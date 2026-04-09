@@ -15,6 +15,7 @@ import type {
   RawDetailResponse,
   RawEntry,
   RawListResponse,
+  SchemaResponse,
 } from "./types";
 
 /**
@@ -74,4 +75,9 @@ export async function resolveInboxEntry(
     },
   );
   return response.entry;
+}
+
+/** GET `/api/wiki/schema` — read `schema/CLAUDE.md` verbatim. */
+export async function getWikiSchema(): Promise<SchemaResponse> {
+  return fetchJson<SchemaResponse>("/api/wiki/schema");
 }

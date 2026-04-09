@@ -1940,6 +1940,53 @@ pub fn append_new_raw_task(
     )
 }
 
+/// Append a `Conflict` inbox task. Canonical §8 Triggers row 4:
+/// when the maintainer LLM detects that a new raw source contradicts
+/// or significantly diverges from an existing concept page, it must
+/// emit `mark_conflict` (instead of silently rewriting the page),
+/// queueing a human-review task in the Inbox.
+///
+/// MVP: this function is called by future feat(P/Q) update-affected
+/// passes once the maintainer can compare two pages. The wiring
+/// already exists for the human side: list_inbox_entries returns
+/// these entries, the resolve flow accepts them. The detection
+/// half is intentionally NOT here — wiki_maintainer is the only
+/// component that knows when two semantic units conflict.
+///
+/// `affected_slugs` are the wiki page slugs that the new source
+/// might contradict. They are joined into the description so the
+/// frontend (and the user) can see at a glance which pages need
+/// review.
+pub fn mark_conflict(
+    paths: &WikiPaths,
+    title: &str,
+    affected_slugs: &[String],
+    source_raw_id: Option<u32>,
+    reason: &str,
+) -> Result<InboxEntry> {
+    let slugs_str = if affected_slugs.is_empty() {
+        "no specific page".to_string()
+    } else {
+        affected_slugs
+            .iter()
+            .map(|s| format!("`{s}`"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let description = format!(
+        "Conflict detected with {slugs_str}.\n\nReason: {reason}\n\n\
+         Proposed action: human review required to pick the canonical \
+         version or mark one of the pages as deprecated."
+    );
+    append_inbox_pending(
+        paths,
+        InboxKind::Conflict,
+        title,
+        &description,
+        source_raw_id,
+    )
+}
+
 /// Hand-rolled UTC ISO-8601 timestamp formatter, second precision.
 /// We use `std::time` rather than pulling `chrono` for one function.
 fn now_iso8601() -> String {
@@ -2746,6 +2793,78 @@ mod tests {
         // Falls back to slug as title; no " — summary" suffix.
         assert!(content.contains("- [bare-page](concepts/bare-page.md)\n"));
         assert!(!content.contains("bare-page.md — "));
+    }
+
+    // ── R mark_conflict tests ────────────────────────────────────
+
+    #[test]
+    fn mark_conflict_creates_conflict_inbox_entry() {
+        let tmp = tempdir().unwrap();
+        init_wiki(tmp.path()).unwrap();
+        let paths = WikiPaths::resolve(tmp.path());
+
+        let affected = vec!["agentic-loop".to_string(), "rag-vs-llm-wiki".to_string()];
+        let entry = mark_conflict(
+            &paths,
+            "Conflict: Agentic Loop v1 vs v2",
+            &affected,
+            Some(42),
+            "v2 changes the loop termination semantics",
+        )
+        .unwrap();
+
+        assert_eq!(entry.kind, InboxKind::Conflict);
+        assert_eq!(entry.status, InboxStatus::Pending);
+        assert_eq!(entry.title, "Conflict: Agentic Loop v1 vs v2");
+        assert_eq!(entry.source_raw_id, Some(42));
+        assert!(entry.description.contains("agentic-loop"));
+        assert!(entry.description.contains("rag-vs-llm-wiki"));
+        assert!(entry.description.contains("v2 changes the loop termination"));
+    }
+
+    #[test]
+    fn mark_conflict_handles_empty_affected_slugs() {
+        let tmp = tempdir().unwrap();
+        init_wiki(tmp.path()).unwrap();
+        let paths = WikiPaths::resolve(tmp.path());
+
+        let entry = mark_conflict(
+            &paths,
+            "Generic conflict",
+            &[],
+            None,
+            "ambient signal mismatch",
+        )
+        .unwrap();
+        assert_eq!(entry.kind, InboxKind::Conflict);
+        assert!(entry.description.contains("no specific page"));
+    }
+
+    #[test]
+    fn mark_conflict_co_exists_with_new_raw_in_inbox() {
+        let tmp = tempdir().unwrap();
+        init_wiki(tmp.path()).unwrap();
+        let paths = WikiPaths::resolve(tmp.path());
+
+        // Append one of each kind.
+        let raw = write_raw_entry(
+            &paths,
+            "paste",
+            "First",
+            "body",
+            &RawFrontmatter::for_paste("paste", None),
+        )
+        .unwrap();
+        append_new_raw_task(&paths, &raw, "paste").unwrap();
+        mark_conflict(&paths, "Conflict A", &["alpha".to_string()], Some(raw.id), "x")
+            .unwrap();
+
+        let all = list_inbox_entries(&paths).unwrap();
+        assert_eq!(all.len(), 2);
+        assert_eq!(all[0].kind, InboxKind::NewRaw);
+        assert_eq!(all[1].kind, InboxKind::Conflict);
+        // IDs are sequential — both share the inbox monotonic counter.
+        assert_eq!(all[0].id + 1, all[1].id);
     }
 
     // ── T wiki graph tests ───────────────────────────────────────

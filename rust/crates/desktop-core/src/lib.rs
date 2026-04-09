@@ -11,9 +11,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use api::{
     detect_provider_kind, max_tokens_for_model, read_base_url as read_claw_base_url,
-    read_xai_base_url, resolve_model_alias, resolve_startup_auth_source, AnthropicClient,
+    read_xai_base_url, resolve_model_alias, resolve_startup_auth_source,
     AuthSource, ContentBlockDelta, InputContentBlock, InputMessage, MessageRequest,
-    MessageResponse, OpenAiCompatClient, OpenAiCompatConfig, OutputContentBlock, ProviderClient,
+    MessageResponse, OutputContentBlock, ProviderClient,
     ProviderKind, StreamEvent as ApiStreamEvent, ToolChoice, ToolResultContentBlock,
 };
 use plugins::{PluginManager, PluginManagerConfig};
@@ -42,7 +42,9 @@ mod codex_auth;
 mod managed_auth;
 mod oauth_runtime;
 pub mod protocol_codegen;
-pub mod providers_config;
+// S0.4 cut day: providers_config (Phase 3-5 multi-provider registry)
+// is gone. ClawWiki canonical §11.1 cut #6 — users do not pick a
+// provider; the Codex pool (S2 codex_broker) is the single source.
 pub mod secure_storage;
 pub mod system_prompt;
 pub mod wechat_ilink;
@@ -4318,22 +4320,13 @@ fn execute_live_turn(session: RuntimeSession, request: DesktopTurnRequest) -> De
         }
     };
 
-    // Phase 3: load the multi-provider registry from `.claw/providers.json`.
-    // If an active provider is set, it takes precedence over both the
-    // runtime_config.model() setting AND the env-var credential chain.
-    // This is the hook that lets users register multiple LLM providers
-    // side-by-side and switch via `POST /api/desktop/providers/{id}/activate`
-    // without editing env vars or restarting the shell.
-    let providers_cfg = providers_config::load(&cwd).ok();
-    let active_provider = providers_cfg
-        .as_ref()
-        .and_then(|c| c.active_entry())
-        .cloned();
-
-    let resolved_model = match &active_provider {
-        Some(entry) => entry.model.clone(),
-        None => resolve_model_alias(runtime_config.model().unwrap_or(DEFAULT_MODEL_ID)),
-    };
+    // S0.4 cut day: Phase 3-5 multi-provider override is gone. The
+    // active model now comes solely from the runtime_config (which the
+    // S2 codex_broker will populate from the managed Codex pool). The
+    // canonical resolver below collapses to the legacy env-var credential
+    // chain until S2 lands.
+    let resolved_model =
+        resolve_model_alias(runtime_config.model().unwrap_or(DEFAULT_MODEL_ID));
     let model_label = humanize_model_label(&resolved_model);
     let system_prompt = match load_system_prompt(
         &cwd,
@@ -4365,42 +4358,26 @@ fn execute_live_turn(session: RuntimeSession, request: DesktopTurnRequest) -> De
             }
         };
 
-    // When providers.json has an active entry, build the ProviderClient
-    // directly from it and skip the env-var-based default_auth_source
-    // path entirely. Otherwise fall through to the legacy chain so older
-    // users with only ANTHROPIC_API_KEY / codex OAuth keep working.
-    let (default_auth, client_override) = match &active_provider {
-        Some(entry) => match build_provider_client_from_entry(entry) {
-            Ok(client) => (None, Some(client)),
-            Err(error) => {
-                return fallback_turn_result(
-                    session,
-                    &request.message,
-                    model_label.clone(),
-                    format!(
-                        "providers.json active entry is misconfigured: {error}"
-                    ),
-                )
-            }
-        },
-        None => match default_auth_source(&resolved_model, &runtime_config) {
-            Ok(auth) => (auth, None),
-            Err(error) => {
-                return fallback_turn_result(
-                    session,
-                    &request.message,
-                    model_label.clone(),
-                    format!("failed to resolve model authentication: {error}"),
-                )
-            }
-        },
+    // S0.4 cut day: there is no provider override anymore. Everything
+    // flows through the legacy env-var / codex auth chain until the S2
+    // codex_broker takes over the resolution.
+    let default_auth = match default_auth_source(&resolved_model, &runtime_config) {
+        Ok(auth) => auth,
+        Err(error) => {
+            return fallback_turn_result(
+                session,
+                &request.message,
+                model_label.clone(),
+                format!("failed to resolve model authentication: {error}"),
+            )
+        }
     };
 
     let api_client = match DesktopRuntimeClient::new(
         resolved_model.to_string(),
         default_auth,
         tool_registry.clone(),
-        client_override,
+        None,
     ) {
         Ok(client) => client,
         Err(error) => {
@@ -4628,144 +4605,11 @@ fn direct_anthropic_client(api_key: String) -> DesktopManagedAuthRuntimeClient {
     }
 }
 
-/// Construct a `ProviderClient` directly from a [`providers_config::ProviderEntry`],
-/// bypassing `ProviderClient::from_model_with_anthropic_auth`'s env-var based
-/// auto-detection.
-///
-/// This is the glue that lets Phase 3's `.claw/providers.json` config drive
-/// the runtime client without stuffing values into process-wide env vars.
-/// The legacy env-var path (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, ...) is
-/// still honored as a fallback when there's no active provider.
-fn build_provider_client_from_entry(
-    entry: &providers_config::ProviderEntry,
-) -> Result<ProviderClient, String> {
-    use providers_config::ProviderKind as CfgKind;
-    match entry.kind {
-        CfgKind::Anthropic => {
-            if entry.api_key.trim().is_empty() {
-                return Err("anthropic provider has empty api_key".to_string());
-            }
-            // The upstream AnthropicClient::from_auth accepts an
-            // AuthSource (bearer or api key). We use ApiKey so the
-            // downstream code adds the `x-api-key` header.
-            let client = AnthropicClient::from_auth(AuthSource::ApiKey(
-                entry.api_key.clone(),
-            ));
-            // NOTE: Anthropic does not currently expose a public
-            // `with_base_url` setter in our vendored crate. For
-            // DashScope's `/apps/anthropic` compat endpoint we'd need
-            // to extend AnthropicClient. Until then, Anthropic-kind
-            // entries always talk to api.anthropic.com. OpenAI-compat
-            // is the recommended mode for anything non-native.
-            Ok(ProviderClient::Anthropic(client))
-        }
-        CfgKind::OpenAiCompat => {
-            let base_url = entry.effective_base_url();
-            if base_url.is_empty() {
-                return Err(
-                    "openai_compat provider has empty base_url".to_string()
-                );
-            }
-            if entry.api_key.trim().is_empty() {
-                return Err(
-                    "openai_compat provider has empty api_key".to_string()
-                );
-            }
-            // OpenAiCompatConfig has `&'static str` fields so we use
-            // the `openai()` template as a base and override the
-            // `base_url` at runtime via the client's `with_base_url`
-            // builder. The template's `api_key_env` / `base_url_env`
-            // fields are only used by `from_env`, which we do NOT
-            // call, so providing a non-matching template here is
-            // harmless.
-            let client = OpenAiCompatClient::new(
-                entry.api_key.clone(),
-                OpenAiCompatConfig::openai(),
-            )
-            .with_base_url(base_url);
-            Ok(ProviderClient::OpenAi(client))
-        }
-    }
-}
-
-/// Result of a "ping" style connection test against a `ProviderEntry`.
-///
-/// Returned by [`probe_provider_entry`]. Used by the
-/// `POST /api/desktop/providers/{id}/test` HTTP route to give users
-/// immediate feedback on whether their api_key / base_url / model
-/// combination works without having to start a real session.
-#[derive(Debug, Clone)]
-pub struct ProviderProbeResult {
-    pub ok: bool,
-    pub latency_ms: u64,
-    pub error: Option<String>,
-    /// Echo of the model name returned by the provider response, if any.
-    pub model_echo: Option<String>,
-}
-
-/// Fire a minimal non-streaming request at a [`providers_config::ProviderEntry`]
-/// to validate that the client is well-formed (authentication, network
-/// reachability, model name accepted by the backend).
-///
-/// The request is deliberately tiny — a single `"ping"` user message
-/// capped at 8 output tokens — so it burns ~20 tokens of the user's
-/// quota at most. Errors are captured as an `Err` variant in the
-/// returned `ProviderProbeResult` rather than propagated, so callers
-/// can always render a badge regardless of outcome.
-///
-/// This function does NOT touch `DesktopState`, does NOT create any
-/// persisted session, and does NOT mutate `.claw/providers.json`. It
-/// is safe to call concurrently from HTTP handlers.
-pub async fn probe_provider_entry(
-    entry: &providers_config::ProviderEntry,
-) -> ProviderProbeResult {
-    let started = std::time::Instant::now();
-
-    let client = match build_provider_client_from_entry(entry) {
-        Ok(c) => c,
-        Err(err) => {
-            return ProviderProbeResult {
-                ok: false,
-                latency_ms: started.elapsed().as_millis() as u64,
-                error: Some(err),
-                model_echo: None,
-            };
-        }
-    };
-
-    let request = MessageRequest {
-        model: entry.model.clone(),
-        max_tokens: 8,
-        messages: vec![InputMessage::user_text("ping")],
-        system: None,
-        tools: None,
-        tool_choice: None,
-        stream: false,
-    };
-
-    // Overall safety net so a hung backend can never lock the UI button.
-    let send_fut = client.send_message(&request);
-    match tokio::time::timeout(std::time::Duration::from_secs(20), send_fut).await {
-        Ok(Ok(response)) => ProviderProbeResult {
-            ok: true,
-            latency_ms: started.elapsed().as_millis() as u64,
-            error: None,
-            model_echo: Some(response.model),
-        },
-        Ok(Err(err)) => ProviderProbeResult {
-            ok: false,
-            latency_ms: started.elapsed().as_millis() as u64,
-            error: Some(err.to_string()),
-            model_echo: None,
-        },
-        Err(_) => ProviderProbeResult {
-            ok: false,
-            latency_ms: started.elapsed().as_millis() as u64,
-            error: Some("request timed out after 20s".to_string()),
-            model_echo: None,
-        },
-    }
-}
+// S0.4 cut day: `build_provider_client_from_entry` + `ProviderProbeResult`
+// + `probe_provider_entry` were removed along with `providers_config`.
+// They were the runtime glue for the Phase 3-5 multi-provider registry
+// (`.claw/providers.json`). ClawWiki canonical §11.1 cut #6 — users no
+// longer pick a provider; the S2 codex_broker will own this surface.
 
 /// Resolve the default project path that newly-created WeChat sessions
 /// should be associated with. Precedence:

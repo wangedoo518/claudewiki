@@ -1,9 +1,10 @@
 import { invoke } from "@tauri-apps/api/core";
 export { getDesktopApiBase } from "@/lib/desktop/bootstrap";
-export * from "@/features/workbench/api/client";
-export * from "@/features/session-workbench/api/client";
+// S0.4 cut day: workbench / session-workbench / code-tools api clients
+// were deleted along with their feature dirs. The post-cut session
+// lifecycle ops live under features/ask/api/client.ts now.
+export * from "@/features/ask/api/client";
 export * from "@/features/settings/api/client";
-export * from "@/features/code-tools/api/client";
 
 export type DesktopTabKind =
   | "home"

@@ -1,18 +1,35 @@
 import { Keyboard } from "lucide-react";
 import { SettingGroup } from "../components/SettingGroup";
-import { getShortcutsList } from "@/features/session-workbench/useKeyboardShortcuts";
+
+// S0.4: shortcut list is inlined here. The original `getShortcutsList`
+// helper lived in `features/session-workbench/useKeyboardShortcuts.ts`
+// (deleted on cut day). S3 will rebuild a smaller Ask-specific
+// keyboard-shortcut hook and this list can be re-derived from it.
+
+interface ShortcutEntry {
+  keys: string;
+  description: string;
+}
+
+const ASK_SHORTCUTS: readonly ShortcutEntry[] = [
+  { keys: "Esc", description: "Stop streaming / close dialogs" },
+  { keys: "Ctrl+L", description: "Clear messages" },
+  { keys: "Ctrl+N", description: "New session" },
+  { keys: "Ctrl+K", description: "Focus input" },
+  { keys: "Ctrl+,", description: "Open settings" },
+  { keys: "Ctrl+Shift+S", description: "Toggle sidebar" },
+  { keys: "Ctrl+Shift+B", description: "Toggle Maintainer Task Tree" },
+];
 
 export function ShortcutsSettings() {
-  const shortcuts = getShortcutsList();
-
   return (
     <div className="space-y-4">
       <SettingGroup
         title="Keyboard Shortcuts"
-        description="Global shortcuts available in the session workbench"
+        description="Shortcuts active inside the Ask page (CCD work-bench layer)"
       >
         <div className="divide-y divide-border/50">
-          {shortcuts.map((shortcut) => (
+          {ASK_SHORTCUTS.map((shortcut) => (
             <div
               key={shortcut.keys}
               className="flex items-center justify-between py-2"
@@ -35,9 +52,9 @@ export function ShortcutsSettings() {
             style={{ color: "var(--claude-blue)" }}
           />
           <div className="text-body-sm leading-relaxed text-muted-foreground">
-            Shortcuts are active when the session workbench is focused.
-            Press <kbd className="rounded border border-border/50 bg-muted/30 px-1 py-0.5 font-mono text-caption">/</kbd> in
-            the input bar to access slash commands.
+            Shortcuts will become live once S3 rewires the Ask page to
+            the ask_runtime backend. They are listed here as a reference
+            so the canonical key-bindings stay documented through S0–S3.
           </div>
         </div>
       </div>

@@ -1,6 +1,6 @@
 import { SettingGroup } from "../components/SettingGroup";
 import { cn } from "@/lib/utils";
-import { PERMISSION_MODES } from "@/features/session-workbench/InputBar";
+import { PERMISSION_MODES } from "@/features/permission/permission-config";
 import type { DesktopCustomizeState } from "@/lib/tauri";
 import { useSettingsStore } from "@/state/settings-store";
 

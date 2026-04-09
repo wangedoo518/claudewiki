@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import type {
   PermissionRequest,
-} from "@/features/session-workbench/permission-types";
+} from "@/features/permission/permission-types";
 
 export interface PermissionsState {
   pendingRequest: PermissionRequest | null;

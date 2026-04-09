@@ -1,5 +1,4 @@
 import { SettingGroup, SettingRow } from "../components/SettingGroup";
-import { ProjectPathSelector } from "@/features/session-workbench/ProjectPathSelector";
 import type { DesktopSettingsState } from "@/lib/tauri";
 
 interface DataSettingsProps {
@@ -10,15 +9,10 @@ interface DataSettingsProps {
 export function DataSettings({ settings, error }: DataSettingsProps) {
   return (
     <div className="space-y-4">
-      <SettingGroup title="Project">
-        <SettingRow
-          label="Default Project Path"
-          description="Select the default working directory for new sessions"
-        >
-          <div className="w-full max-w-[420px]">
-            <ProjectPathSelector persistToSettings />
-          </div>
-        </SettingRow>
+      <SettingGroup
+        title="ClawWiki Root"
+        description="The single canonical wiki directory. Per ClawWiki §10 there is only one path; the project-path selector from the legacy session workbench has been removed."
+      >
         <SettingRow
           label="Current Runtime Path"
           description="Working directory used by the desktop runtime"

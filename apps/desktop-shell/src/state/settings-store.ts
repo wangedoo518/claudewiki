@@ -29,22 +29,6 @@ export interface UserMcpServer {
 export interface SettingsState {
   theme: ThemeMode;
   warwolfTheme: boolean;
-  /**
-   * ClawWiki canonical shell flag (S0.2).
-   *
-   * - `false` (default) → the legacy `AppShell` with TabBar, Workbench,
-   *   AppsGallery, CodeToolsPage. Preserves 100 % of Phase 6 behavior.
-   * - `true` → the new `ClawWikiShell` with Sidebar + 9 routes
-   *   (Dashboard / Ask / Inbox / Raw / Wiki / Graph / Schema / WeChat /
-   *   Settings) and the DeepTutor warm theme. Most pages are still
-   *   stubs at S0.2 — they fill in across S0.3 → S6.
-   *
-   * Toggling this flag at runtime swaps the shell without reloading
-   * the process. Coexistence is intentional: S0 is a gradual cut-over
-   * that ends at S0.4 when legacy surfaces get deleted and this flag
-   * becomes the only supported mode.
-   */
-  clawwikiShell: boolean;
   language: string;
   fontSize: number;
   defaultModel: string;
@@ -55,7 +39,6 @@ export interface SettingsState {
   mcpServers: UserMcpServer[];
   setTheme: (theme: ThemeMode) => void;
   setWarwolfTheme: (enabled: boolean) => void;
-  setClawwikiShell: (enabled: boolean) => void;
   setLanguage: (language: string) => void;
   setFontSize: (fontSize: number) => void;
   setDefaultModel: (model: string) => void;
@@ -71,7 +54,6 @@ export interface SettingsState {
         SettingsState,
         | "theme"
         | "warwolfTheme"
-        | "clawwikiShell"
         | "language"
         | "fontSize"
         | "defaultModel"
@@ -96,7 +78,6 @@ type PersistedSettingsState = Pick<
   SettingsState,
   | "theme"
   | "warwolfTheme"
-  | "clawwikiShell"
   | "language"
   | "fontSize"
   | "defaultModel"
@@ -110,9 +91,6 @@ type PersistedSettingsState = Pick<
 const defaultSettingsState: PersistedSettingsState = {
   theme: "system",
   warwolfTheme: true,
-  // S0.2: default OFF so existing users land on the Phase 6 shell.
-  // Flip to `true` once S0.4 executes the legacy delete.
-  clawwikiShell: false,
   language: "en",
   fontSize: 14,
   defaultModel: "claude-opus-4-6",
@@ -166,7 +144,6 @@ export const useSettingsStore = create<SettingsState>()(
       ...createInitialSettingsState(),
       setTheme: (theme) => set({ theme }),
       setWarwolfTheme: (warwolfTheme) => set({ warwolfTheme }),
-      setClawwikiShell: (clawwikiShell) => set({ clawwikiShell }),
       setLanguage: (language) => set({ language }),
       setFontSize: (fontSize) => set({ fontSize }),
       setDefaultModel: (defaultModel) => set({ defaultModel }),
@@ -181,7 +158,7 @@ export const useSettingsStore = create<SettingsState>()(
           // No project yet — Zustand-only update is fine.
           return;
         }
-        void import("@/features/session-workbench/api/client")
+        void import("@/features/permission/permission-mode-client")
           .then(({ writePermissionModeToDisk }) =>
             writePermissionModeToDisk(projectPath, permissionMode),
           )
@@ -196,7 +173,7 @@ export const useSettingsStore = create<SettingsState>()(
       hydratePermissionModeFromDisk: async (projectPath: string) => {
         try {
           const { readPermissionModeFromDisk } = await import(
-            "@/features/session-workbench/api/client"
+            "@/features/permission/permission-mode-client"
           );
           const { mode } = await readPermissionModeFromDisk(projectPath);
           // Only update if mode is a valid value.
@@ -269,7 +246,6 @@ export const useSettingsStore = create<SettingsState>()(
       partialize: (state) => ({
         theme: state.theme,
         warwolfTheme: state.warwolfTheme,
-        clawwikiShell: state.clawwikiShell,
         language: state.language,
         fontSize: state.fontSize,
         defaultModel: state.defaultModel,

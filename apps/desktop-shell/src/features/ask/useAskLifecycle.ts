@@ -1,14 +1,11 @@
 /**
- * S0.3 extraction target: Ask session lifecycle hook.
+ * Ask session lifecycle hook (S0.3 extraction, S0.4 self-contained).
  *
- * Original: features/session-workbench/useSessionLifecycle.ts. Verbatim
- * port; only the query-key imports are rewritten to their new path:
- *   - `./api/query` → `../session-workbench/api/query`
- *
- * The `session-workbench/api/query` module will be deleted in S0.4. At
- * that point, S3 (ask_runtime) will replace these imports with
- * `features/ask/api/query`. Until then this hook bridges the old query
- * keys so the extracted Ask page stays wired to the current backend.
+ * History: extracted from features/session-workbench/useSessionLifecycle.ts.
+ * S0.4 inlines the React Query keys (formerly imported from
+ * `features/{workbench,session-workbench}/api/query`, both deleted on
+ * the cut day). The askKeys / workbenchKeys constants live here now so
+ * this hook has zero external deps on the killed feature trees.
  *
  * Wraps Tauri API calls with React Query mutations and provides error
  * handling + query cache invalidation.
@@ -16,7 +13,6 @@
 
 import { useCallback } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { workbenchKeys } from "@/features/workbench/api/query";
 import {
   cancelSession,
   deleteSession,
@@ -24,7 +20,26 @@ import {
   resumeSession,
   type DesktopSessionDetail,
 } from "@/lib/tauri";
-import { sessionWorkbenchKeys } from "../session-workbench/api/query";
+
+/**
+ * React Query keys for the Ask page session cache. Inlined here during
+ * S0.4 — the original `sessionWorkbenchKeys` lived in the deleted
+ * session-workbench/api/query module. Keep the same key shape so any
+ * cache entries written by the legacy hook (during the dual-track
+ * period) still resolve.
+ */
+const askKeys = {
+  all: ["desktop-session"] as const,
+  detail: (sessionId: string | null | undefined) =>
+    ["desktop-session", sessionId ?? "missing"] as const,
+};
+
+/**
+ * React Query root key for workbench-level invalidation. Same value as
+ * the deleted `workbenchRootKey` so existing cache entries from
+ * neighbouring hooks (e.g. `useSession`) stay coherent.
+ */
+const workbenchRootKey = ["desktop-workbench"] as const;
 
 interface UseAskLifecycleOptions {
   activeSessionId?: string | null;
@@ -43,8 +58,8 @@ export function useAskLifecycle({
   const cancelMutation = useMutation({
     mutationFn: (sessionId: string) => cancelSession(sessionId),
     onSuccess: (session) => {
-      queryClient.setQueryData(sessionWorkbenchKeys.detail(session.id), session);
-      void queryClient.invalidateQueries({ queryKey: workbenchKeys.root() });
+      queryClient.setQueryData(askKeys.detail(session.id), session);
+      void queryClient.invalidateQueries({ queryKey: workbenchRootKey });
       onSessionCancelled?.(session);
     },
   });
@@ -54,9 +69,9 @@ export function useAskLifecycle({
     mutationFn: (sessionId: string) => deleteSession(sessionId),
     onSuccess: (_result, sessionId) => {
       queryClient.removeQueries({
-        queryKey: sessionWorkbenchKeys.detail(sessionId),
+        queryKey: askKeys.detail(sessionId),
       });
-      void queryClient.invalidateQueries({ queryKey: workbenchKeys.root() });
+      void queryClient.invalidateQueries({ queryKey: workbenchRootKey });
       onSessionDeleted?.(sessionId);
     },
   });
@@ -66,8 +81,8 @@ export function useAskLifecycle({
     mutationFn: ({ sessionId, title }: { sessionId: string; title: string }) =>
       renameSession(sessionId, title),
     onSuccess: (session) => {
-      queryClient.setQueryData(sessionWorkbenchKeys.detail(session.id), session);
-      void queryClient.invalidateQueries({ queryKey: workbenchKeys.root() });
+      queryClient.setQueryData(askKeys.detail(session.id), session);
+      void queryClient.invalidateQueries({ queryKey: workbenchRootKey });
     },
   });
 
@@ -75,8 +90,8 @@ export function useAskLifecycle({
   const resumeMutation = useMutation({
     mutationFn: (sessionId: string) => resumeSession(sessionId),
     onSuccess: (session) => {
-      queryClient.setQueryData(sessionWorkbenchKeys.detail(session.id), session);
-      void queryClient.invalidateQueries({ queryKey: workbenchKeys.root() });
+      queryClient.setQueryData(askKeys.detail(session.id), session);
+      void queryClient.invalidateQueries({ queryKey: workbenchRootKey });
     },
   });
 

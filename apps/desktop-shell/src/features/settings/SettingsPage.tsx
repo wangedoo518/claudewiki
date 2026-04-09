@@ -4,7 +4,6 @@ import { useTranslation } from "react-i18next";
 import {
   Settings,
   Key,
-  KeyRound,
   MessageCircle,
   Plug,
   Shield,
@@ -18,7 +17,6 @@ import { Separator } from "@/components/ui/separator";
 import { cn } from "@/lib/utils";
 import { GeneralSettings } from "./sections/GeneralSettings";
 import { ProviderSettings } from "./sections/ProviderSettings";
-import { MultiProviderSettings } from "./sections/MultiProviderSettings";
 import { WeChatSettings } from "./sections/WeChatSettings";
 import { McpSettings } from "./sections/McpSettings";
 import { PermissionSettings } from "./sections/PermissionSettings";
@@ -39,7 +37,6 @@ import { useSettingsStore } from "@/state/settings-store";
 type SettingsSection =
   | "general"
   | "provider"
-  | "llm-providers"
   | "wechat"
   | "mcp"
   | "permissions"
@@ -57,16 +54,9 @@ interface MenuItem {
 const MENU_ITEMS: MenuItem[] = [
   { id: "general", i18nKey: "settings.general", icon: Settings },
   { id: "provider", i18nKey: "settings.provider", icon: Key },
-  // Phase 5: multi-provider registry (managed by .claw/providers.json).
-  // Distinct from the existing "provider" section which handles OAuth
-  // flows for Codex / managed auth providers. Label is hard-coded for
-  // now because the i18n bundle does not yet have a translation key.
-  {
-    id: "llm-providers",
-    i18nKey: "settings.llmProviders",
-    icon: KeyRound,
-    labelOverride: "LLM Providers",
-  },
+  // S0.4 cut day: the Phase 5 "LLM Providers" entry is gone. ClawWiki
+  // canonical §11.1 cut #6 — users do not pick a provider; the Codex
+  // pool (S2) is the single source.
   // Phase 6C: WeChat account management (list + QR login + delete).
   // Sits between multi-provider (backend config) and MCP (tool config)
   // because it's a per-user "which channels do you talk through" setting.
@@ -203,7 +193,6 @@ function SettingsContent({
   if (section === "shortcuts") return <ShortcutsSettings />;
   // Multi-provider registry has its own React Query hooks and is not
   // blocked by the other settings queries.
-  if (section === "llm-providers") return <MultiProviderSettings />;
   // Same story for WeChat accounts — fully self-contained React Query +
   // polling, never blocked on bootstrap/settings/customize.
   if (section === "wechat") return <WeChatSettings />;

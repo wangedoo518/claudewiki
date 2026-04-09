@@ -35,6 +35,8 @@
 //! outside world (HTTP, ffmpeg, whisper, ...); `wiki_store` knows how
 //! to LAY OUT a file on disk. Neither knows about the other.
 
+pub mod extractor;
+pub mod html_to_md;
 pub mod url;
 
 /// Common output shape for every adapter. Carries the pieces the

@@ -19,6 +19,17 @@ publish.workspace = true
 
 [dependencies]
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+# H: HTML → clean markdown extraction (canonical §7.3 row 1).
+#
+# scraper wraps html5ever + selectors for a stable, maintained
+# HTML parser with CSS-selector querying. We use it for both the
+# mp.weixin.qq.com-specific extractor (selects `.rich_media_content`
+# and friends) and the generic fallback. Alternative readability-*
+# crates were considered but rejected — scraper gives us full
+# control over site-specific tweaks without black-box heuristics,
+# and the 400 lines of custom extractor code is easier to audit
+# than a third-party readability port.
+scraper = "0.20"
 thiserror = "2"
 wiki_store = { path = "../wiki_store" }
 

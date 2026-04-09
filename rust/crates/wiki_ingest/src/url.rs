@@ -28,6 +28,7 @@ use std::time::Duration;
 
 use reqwest::header::{HeaderMap, CONTENT_TYPE};
 
+use crate::extractor::{extract_from_html, ExtractedArticle};
 use crate::{IngestError, IngestResult, Result};
 
 /// Hard cap on body bytes we'll load into memory. 2 MiB is enough
@@ -87,8 +88,7 @@ pub async fn fetch_and_body(url: &str) -> Result<IngestResult> {
     }
 
     let content_type = extract_content_type(&headers_snapshot);
-    let title = derive_title_from_url(url);
-    let body = body_for_content_type(url, &bytes, content_type.as_deref())?;
+    let (title, body) = shape_ingest_output(url, &bytes, content_type.as_deref())?;
 
     Ok(IngestResult {
         title,
@@ -96,6 +96,94 @@ pub async fn fetch_and_body(url: &str) -> Result<IngestResult> {
         source_url: Some(url.to_string()),
         source: "url".to_string(),
     })
+}
+
+/// Turn the raw response bytes + content-type into the
+/// `(title, body)` pair that `fetch_and_body` ultimately returns.
+///
+/// For `text/html`: run the [`extract_from_html`] extractor.
+/// The extractor returns title + clean markdown body + metadata.
+/// If it successfully pulls a title we use THAT; otherwise fall
+/// back to the URL-derived hostname title. Metadata (author /
+/// published) is prepended to the body as italic lines so the
+/// maintainer agent sees provenance without needing a separate
+/// frontmatter channel.
+///
+/// For `text/markdown` / `text/plain`: verbatim body, hostname title.
+///
+/// For anything else: opaque stub body, hostname title.
+///
+/// Errors: same as `body_for_content_type` — propagates UTF-8
+/// decode failures for text-ish bodies.
+fn shape_ingest_output(
+    url: &str,
+    bytes: &[u8],
+    content_type: Option<&str>,
+) -> Result<(String, String)> {
+    let fallback_title = derive_title_from_url(url);
+
+    let is_html = matches!(content_type, Some(ct) if ct == "text/html" || ct.starts_with("text/html"));
+
+    if is_html {
+        // Decode UTF-8 first so the extractor receives a &str.
+        // If decoding fails the error propagates as NotUtf8.
+        let html = decode_utf8(bytes)?;
+        let article = extract_from_html(html.as_ref(), url);
+        let title = article
+            .title
+            .clone()
+            .filter(|t| !t.trim().is_empty())
+            .unwrap_or(fallback_title);
+        let body = format_extracted_body(url, &article, bytes.len());
+        Ok((title, body))
+    } else {
+        // Non-HTML paths unchanged — delegate to the content-type
+        // dispatch that pre-H was the only code path.
+        let body = body_for_content_type(url, bytes, content_type)?;
+        Ok((fallback_title, body))
+    }
+}
+
+/// Render an `ExtractedArticle` to the markdown body that lands in
+/// the raw entry file. The layout is deliberately boring so the
+/// LLM maintainer doesn't waste tokens parsing decorative structure:
+///
+/// ```text
+/// # <title>
+///
+/// _Source: <url>_
+/// _Author: <author>_            ← only when present
+/// _Published: <published>_      ← only when present
+/// _Extractor: wechat | generic_
+///
+/// <body_md>
+/// ```
+///
+/// The `_Extractor: ..._` hint is a cheap debug breadcrumb that
+/// helps us tell "wechat extractor fired and got nothing" from
+/// "we never even tried wechat" in bug reports.
+fn format_extracted_body(url: &str, article: &ExtractedArticle, byte_size: usize) -> String {
+    let mut out = String::new();
+
+    if let Some(title) = &article.title {
+        out.push_str(&format!("# {title}\n\n"));
+    }
+
+    out.push_str(&format!("_Source: <{url}>_\n"));
+    if let Some(author) = &article.author {
+        out.push_str(&format!("_Author: {author}_\n"));
+    }
+    if let Some(published) = &article.published {
+        out.push_str(&format!("_Published: {published}_\n"));
+    }
+    out.push_str(&format!("_Extractor: {}_\n", article.extractor_used));
+    out.push_str(&format!("_Size: {byte_size} bytes_\n\n"));
+
+    out.push_str(&article.body_md);
+    if !out.ends_with('\n') {
+        out.push('\n');
+    }
+    out
 }
 
 /// Reject URLs the ingest layer doesn't want to touch.
@@ -406,39 +494,67 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn fetch_and_body_wraps_html_response_in_code_fence() {
-        // Full end-to-end for the text/html path. The unit test
-        // `body_for_html_wraps_in_code_fence_with_header` exercises
-        // `body_for_content_type` in isolation; this one proves that
-        // `fetch_and_body` correctly threads Content-Type through
-        // `extract_content_type` and into `body_for_content_type` for
-        // a real HTTP response. Without this, a refactor that breaks
-        // the content-type plumbing could silently fall through to
-        // the "opaque mime stub" branch and only a regression test
-        // of the full pipeline would catch it.
-        let response = b"HTTP/1.1 200 OK\r\n\
-                         Content-Type: text/html; charset=utf-8\r\n\
-                         Content-Length: 28\r\n\
-                         Connection: close\r\n\
-                         \r\n\
-                         <html><body>Hi</body></html>";
-        let (addr, server) = one_shot_server(response).await;
+    async fn fetch_and_body_runs_extractor_on_html() {
+        // feat(H): `fetch_and_body` used to wrap text/html bodies in
+        // a code fence as a placeholder. This commit replaces that
+        // path with a real HTML→markdown extractor. Verify that a
+        // live HTTP response with an `<article>` tag comes back as
+        // clean markdown, not as a raw-html dump.
+        //
+        // The fixture has nav + footer noise that the generic
+        // extractor MUST drop, plus an `<article>` tag with the
+        // content we want to keep.
+        let body_html = b"<html>\
+            <head><title>Test Article</title></head>\
+            <body>\
+            <nav><a href=\"/\">Home</a></nav>\
+            <article>\
+            <h1>Real Content Heading</h1>\
+            <p>First paragraph with <strong>bold</strong> text.</p>\
+            <p>Second paragraph.</p>\
+            </article>\
+            <footer>Footer stuff</footer>\
+            </body></html>";
+        let response = [
+            b"HTTP/1.1 200 OK\r\n\
+              Content-Type: text/html; charset=utf-8\r\n\
+              Content-Length: 239\r\n\
+              Connection: close\r\n\
+              \r\n" as &[u8],
+            body_html,
+        ]
+        .concat();
+        // Leak the response into a static buffer so one_shot_server
+        // can accept `&'static [u8]` — our helper requires that.
+        let response_static: &'static [u8] = Box::leak(response.into_boxed_slice());
+        let (addr, server) = one_shot_server(response_static).await;
         let url = format!("http://{addr}/page");
 
         let result = fetch_and_body(&url)
             .await
             .expect("fetch should succeed for text/html");
         assert_eq!(result.source, "url");
-        assert!(result.body.starts_with("# Fetched from <http://"));
-        assert!(result.body.contains("```html\n<html><body>Hi</body></html>\n```"));
-        // Byte count in the header annotation must match the raw body
-        // length (28 bytes for the literal above).
-        assert!(result.body.contains("28 bytes"));
-        // And the Content-Type parameter (`; charset=utf-8`) must be
-        // stripped by `extract_content_type` before it lands in the
-        // body header.
-        assert!(result.body.contains("Content-Type: text/html"));
-        assert!(!result.body.contains("charset=utf-8,"));
+
+        // Extractor metadata header must be present.
+        assert!(result.body.contains("_Extractor: generic_"));
+        assert!(result.body.contains("_Source: <http://"));
+
+        // Title comes from <h1> (priority) — so it's in both the
+        // IngestResult.title AND the body header.
+        assert_eq!(result.title, "Real Content Heading");
+        assert!(result.body.starts_with("# Real Content Heading"));
+
+        // Article content survives in rendered markdown
+        assert!(result.body.contains("First paragraph with **bold** text."));
+        assert!(result.body.contains("Second paragraph."));
+
+        // Nav + footer noise dropped
+        assert!(!result.body.contains("Home"));
+        assert!(!result.body.contains("Footer stuff"));
+
+        // No raw HTML tags in the output
+        assert!(!result.body.contains("<article>"));
+        assert!(!result.body.contains("<nav>"));
 
         server.await.unwrap();
     }

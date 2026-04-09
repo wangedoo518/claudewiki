@@ -166,3 +166,27 @@ export interface WikiSpecialFileResponse {
   byte_size: number;
   exists: boolean;
 }
+
+/**
+ * One hit in a wiki search result. Mirrors Rust's `WikiSearchHit`.
+ * `score` is the computed relevance score (higher = more relevant);
+ * `snippet` is a short excerpt around the first body match, or
+ * empty string when the match was only in slug/title/summary.
+ */
+export interface WikiSearchHit {
+  page: WikiPageSummary;
+  score: number;
+  snippet: string;
+}
+
+/**
+ * Response shape for `GET /api/wiki/search?q=&limit=`.
+ * `total_matches` is the count BEFORE limit truncation,
+ * `hits.length` is at most `limit`.
+ */
+export interface WikiSearchResponse {
+  query: string;
+  hits: WikiSearchHit[];
+  total_matches: number;
+  limit: number;
+}

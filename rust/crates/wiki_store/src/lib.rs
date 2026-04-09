@@ -1019,6 +1019,226 @@ pub fn read_wiki_page(paths: &WikiPaths, slug: &str) -> Result<(WikiPageSummary,
     Ok((summary, body))
 }
 
+/// One hit in a [`search_wiki_pages`] result. Carries the matching
+/// page's summary, the computed relevance score, and a short text
+/// snippet centered on the first body-level match (if any). The
+/// frontend uses `snippet` to render the search result card's
+/// "excerpt" line without re-fetching the full body.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WikiSearchHit {
+    /// The matched page's summary (slug / title / summary / etc.).
+    pub page: WikiPageSummary,
+    /// Relevance score — higher is better. See `search_wiki_pages`
+    /// for the scoring rubric.
+    pub score: u32,
+    /// Short excerpt around the first body-level hit, capped at
+    /// ~200 chars. Empty when the match was only in frontmatter.
+    pub snippet: String,
+}
+
+/// Search every concept page under `wiki/concepts/` and return the
+/// pages that match `query`, sorted by relevance descending.
+///
+/// ## Scoring
+///
+/// Matches are case-insensitive substring matches, with fixed
+/// weights per field so the most "entity-level" signals outrank
+/// body noise:
+///
+///   * slug match       → +8
+///   * title match      → +5
+///   * summary match    → +3
+///   * body match       → +1 per occurrence, up to +10
+///
+/// A page with query in its slug and 3 body occurrences scores
+/// `8 + 3 = 11`; a page with only body occurrences can cap at 10.
+/// This keeps "Karpathy"-slug pages above "mentions Karpathy once"
+/// pages without needing full BM25 / embeddings.
+///
+/// ## Rationale (no tantivy, no embeddings)
+///
+/// Karpathy's llm-wiki.md §"Optional CLI tools" explicitly says
+/// "at small scale the index file is enough". Until we hit the
+/// low-hundreds-of-pages regime, a substring match with weighted
+/// fields gives us: zero new deps, deterministic results, and
+/// sub-millisecond query time on a few hundred pages. When we
+/// outgrow it, this function is a clean swap point — same
+/// signature, same return type, different implementation.
+///
+/// Empty query returns an empty result (not all pages).
+/// Missing wiki dir returns an empty result (not an error).
+pub fn search_wiki_pages(paths: &WikiPaths, query: &str) -> Result<Vec<WikiSearchHit>> {
+    let q = query.trim().to_lowercase();
+    if q.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let concepts_dir = paths.wiki.join(WIKI_CONCEPTS_SUBDIR);
+    if !concepts_dir.is_dir() {
+        return Ok(Vec::new());
+    }
+
+    let mut hits: Vec<WikiSearchHit> = Vec::new();
+    let dir =
+        fs::read_dir(&concepts_dir).map_err(|e| WikiStoreError::io(concepts_dir.clone(), e))?;
+    for entry in dir.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|s| s.to_str()) != Some("md") {
+            continue;
+        }
+        let slug = match path.file_stem().and_then(|s| s.to_str()) {
+            Some(s) => s.to_string(),
+            None => continue,
+        };
+        if validate_wiki_slug(&slug).is_err() {
+            continue;
+        }
+
+        // Read the full file once — cheaper than two separate reads
+        // via parse_wiki_file + read_wiki_page.
+        let content = match fs::read_to_string(&path) {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+        let metadata = match fs::metadata(&path) {
+            Ok(m) => m,
+            Err(_) => continue,
+        };
+        let (title, summary, source_raw_id, created_at) =
+            parse_wiki_frontmatter_fields(&content);
+        let body = strip_frontmatter(&content);
+
+        // Compute scores per field.
+        let slug_lc = slug.to_lowercase();
+        let title_lc = title.to_lowercase();
+        let summary_lc = summary.to_lowercase();
+        let body_lc = body.to_lowercase();
+
+        let mut score: u32 = 0;
+        if slug_lc.contains(&q) {
+            score += 8;
+        }
+        if title_lc.contains(&q) {
+            score += 5;
+        }
+        if summary_lc.contains(&q) {
+            score += 3;
+        }
+        // Body: +1 per occurrence, capped at +10.
+        let body_occurrences = body_lc.matches(&q).count().min(10) as u32;
+        score += body_occurrences;
+
+        if score == 0 {
+            continue;
+        }
+
+        let snippet = extract_snippet(body, &q);
+
+        hits.push(WikiSearchHit {
+            page: WikiPageSummary {
+                slug,
+                title,
+                summary,
+                source_raw_id,
+                created_at,
+                byte_size: metadata.len(),
+            },
+            score,
+            snippet,
+        });
+    }
+
+    // Sort by score descending, then by slug ascending for stable
+    // tie-breaking (so repeated queries return the same order).
+    hits.sort_by(|a, b| b.score.cmp(&a.score).then(a.page.slug.cmp(&b.page.slug)));
+    Ok(hits)
+}
+
+/// Extract a ~200-char snippet centered on the first body occurrence
+/// of `query_lc` (expected lowercased). Returns an empty string when
+/// the query doesn't appear in the body (frontmatter-only match).
+///
+/// The snippet is taken from `body` (the original-case body) so the
+/// user sees the actual text; we only use the lowercased copy for
+/// locating the match position.
+fn extract_snippet(body: &str, query_lc: &str) -> String {
+    let body_lc = body.to_lowercase();
+    let Some(mut pos) = body_lc.find(query_lc) else {
+        return String::new();
+    };
+
+    // Walk `pos` back to a char boundary in the original (case-sensitive)
+    // body. `find` on the lowercased string can land on a position that
+    // isn't a valid char boundary in the original (CJK / ligatures /
+    // Unicode case folding change byte widths). We fix this by stepping
+    // backward until we find a boundary.
+    while pos > 0 && !body.is_char_boundary(pos) {
+        pos -= 1;
+    }
+
+    // Take ~80 chars before the hit and ~120 after for a total of ~200.
+    // Walk backward char-by-char to avoid slicing mid-codepoint.
+    const BEFORE: usize = 80;
+    const AFTER: usize = 120;
+    let start = nth_char_boundary_back(body, pos, BEFORE);
+    let end = nth_char_boundary_forward(body, pos, AFTER + query_lc.chars().count());
+    let raw = &body[start..end];
+
+    // Collapse internal whitespace runs so the snippet is one line
+    // and won't break the result card layout.
+    let collapsed: String = raw
+        .chars()
+        .map(|c| if c.is_whitespace() { ' ' } else { c })
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+
+    // Prepend / append ellipsis hints when we clipped the body.
+    let mut out = String::new();
+    if start > 0 {
+        out.push_str("… ");
+    }
+    out.push_str(&collapsed);
+    if end < body.len() {
+        out.push_str(" …");
+    }
+    out
+}
+
+/// Step backward from `from` in `body` by at most `max_chars`
+/// characters, landing on a valid char boundary. Returns 0 if we hit
+/// the start.
+fn nth_char_boundary_back(body: &str, from: usize, max_chars: usize) -> usize {
+    let mut pos = from;
+    let mut count = 0usize;
+    while pos > 0 && count < max_chars {
+        pos -= 1;
+        while pos > 0 && !body.is_char_boundary(pos) {
+            pos -= 1;
+        }
+        count += 1;
+    }
+    pos
+}
+
+/// Step forward from `from` in `body` by at most `max_chars`
+/// characters, landing on a valid char boundary. Returns `body.len()`
+/// if we hit the end.
+fn nth_char_boundary_forward(body: &str, from: usize, max_chars: usize) -> usize {
+    let mut pos = from;
+    let mut count = 0usize;
+    let len = body.len();
+    while pos < len && count < max_chars {
+        pos += 1;
+        while pos < len && !body.is_char_boundary(pos) {
+            pos += 1;
+        }
+        count += 1;
+    }
+    pos
+}
+
 /// Parse a single wiki file into a `WikiPageSummary`. The body
 /// itself is not returned — use [`read_wiki_page`] for that.
 fn parse_wiki_file(path: &Path, slug: &str) -> Result<WikiPageSummary> {
@@ -2292,6 +2512,232 @@ mod tests {
         // Falls back to slug as title; no " — summary" suffix.
         assert!(content.contains("- [bare-page](concepts/bare-page.md)\n"));
         assert!(!content.contains("bare-page.md — "));
+    }
+
+    // ── G search_wiki_pages tests ────────────────────────────────
+
+    fn seed_three_wiki_pages(paths: &WikiPaths) {
+        write_wiki_page(
+            paths,
+            "llm-wiki",
+            "LLM Wiki",
+            "Karpathy three-layer cognitive asset architecture.",
+            "# LLM Wiki\n\nA persistent wiki maintained by an LLM agent.\n\n\
+             Karpathy describes three layers: raw sources, the wiki, and the schema.\n",
+            Some(1),
+        )
+        .unwrap();
+        write_wiki_page(
+            paths,
+            "rag-vs-llm-wiki",
+            "RAG vs LLM Wiki",
+            "Compare retrieval-augmented generation to persistent LLM wiki.",
+            "# RAG vs LLM Wiki\n\nRAG retrieves raw chunks per query. \
+             An LLM wiki compiles knowledge once and keeps it current.\n",
+            Some(2),
+        )
+        .unwrap();
+        write_wiki_page(
+            paths,
+            "engram",
+            "Engram",
+            "One-pass maintainer flavor.",
+            "# Engram\n\nSingle LLM call per ingest. \
+             Cheap and fast. No multi-pass compilation.\n",
+            Some(3),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn search_wiki_pages_empty_query_returns_empty() {
+        let tmp = tempdir().unwrap();
+        init_wiki(tmp.path()).unwrap();
+        let paths = WikiPaths::resolve(tmp.path());
+        seed_three_wiki_pages(&paths);
+
+        assert!(search_wiki_pages(&paths, "").unwrap().is_empty());
+        assert!(search_wiki_pages(&paths, "   ").unwrap().is_empty());
+    }
+
+    #[test]
+    fn search_wiki_pages_slug_match_outranks_body_only_match() {
+        // Design: two pages that both contain "engram" in their body
+        // once (score +1 each), but only one has "engram" in its
+        // slug (score +8). The slug-match page must sort first.
+        // This isolates the slug weight from title/summary/body
+        // weights so the test doesn't depend on lexicographic
+        // content overlap.
+        let tmp = tempdir().unwrap();
+        init_wiki(tmp.path()).unwrap();
+        let paths = WikiPaths::resolve(tmp.path());
+
+        // Page 1: slug contains "engram" + body mentions it once
+        write_wiki_page(
+            &paths,
+            "engram-style",
+            "Engram Style",
+            "Single-pass maintainer pattern.",
+            "A short body that mentions the concept once here.",
+            Some(1),
+        )
+        .unwrap();
+
+        // Page 2: slug doesn't contain "engram",only body does
+        write_wiki_page(
+            &paths,
+            "maintainer-patterns",
+            "Maintainer Patterns",
+            "Overview of maintainer flavors.",
+            "This page compares different flavors: engram, sage-wiki, and others.",
+            Some(2),
+        )
+        .unwrap();
+
+        let hits = search_wiki_pages(&paths, "engram").unwrap();
+        assert_eq!(hits.len(), 2, "both pages should match");
+
+        // Expected scores:
+        //   engram-style       : slug +8 + title +5 + summary 0 + body 0 = 13
+        //     (body has "concept once here", no "engram" — 0)
+        //     actually wait: title "Engram Style" contains "engram" -> +5
+        //     summary "Single-pass maintainer pattern" -> no +0
+        //     body "...mentions the concept once here" -> no +0
+        //     total: 8 + 5 = 13
+        //   maintainer-patterns: slug 0 + title 0 + summary 0 + body 1 (one "engram" in body)
+        //     total: 1
+        assert_eq!(hits[0].page.slug, "engram-style");
+        assert_eq!(hits[1].page.slug, "maintainer-patterns");
+        assert!(
+            hits[0].score > hits[1].score,
+            "slug-match score {} must exceed body-only score {}",
+            hits[0].score,
+            hits[1].score
+        );
+        // Explicit values so a future refactor of the weights is
+        // caught loudly.
+        assert_eq!(hits[0].score, 13); // 8 slug + 5 title
+        assert_eq!(hits[1].score, 1); // 1 body
+    }
+
+    #[test]
+    fn search_wiki_pages_case_insensitive() {
+        let tmp = tempdir().unwrap();
+        init_wiki(tmp.path()).unwrap();
+        let paths = WikiPaths::resolve(tmp.path());
+        seed_three_wiki_pages(&paths);
+
+        let a = search_wiki_pages(&paths, "KARPATHY").unwrap();
+        let b = search_wiki_pages(&paths, "karpathy").unwrap();
+        let c = search_wiki_pages(&paths, "Karpathy").unwrap();
+        assert_eq!(a.len(), 1);
+        assert_eq!(a.len(), b.len());
+        assert_eq!(a.len(), c.len());
+        // All should point at the same page.
+        assert_eq!(a[0].page.slug, b[0].page.slug);
+        assert_eq!(a[0].page.slug, c[0].page.slug);
+        assert_eq!(a[0].page.slug, "llm-wiki");
+    }
+
+    #[test]
+    fn search_wiki_pages_snippet_contains_query_with_context() {
+        let tmp = tempdir().unwrap();
+        init_wiki(tmp.path()).unwrap();
+        let paths = WikiPaths::resolve(tmp.path());
+        seed_three_wiki_pages(&paths);
+
+        let hits = search_wiki_pages(&paths, "retrieves").unwrap();
+        assert_eq!(hits.len(), 1);
+        let snippet = &hits[0].snippet;
+        assert!(
+            snippet.to_lowercase().contains("retrieves"),
+            "snippet missing query: {snippet}"
+        );
+        // Snippet should contain some context, not just the query alone.
+        assert!(snippet.len() > "retrieves".len());
+    }
+
+    #[test]
+    fn search_wiki_pages_zero_matches_returns_empty() {
+        let tmp = tempdir().unwrap();
+        init_wiki(tmp.path()).unwrap();
+        let paths = WikiPaths::resolve(tmp.path());
+        seed_three_wiki_pages(&paths);
+
+        let hits = search_wiki_pages(&paths, "nonexistent-term-xyz-123").unwrap();
+        assert!(hits.is_empty());
+    }
+
+    #[test]
+    fn search_wiki_pages_stable_tiebreak_by_slug() {
+        // When two pages have the same score, they should always
+        // appear in the same order across calls (sorted by slug
+        // ascending). This is what lets the UI avoid flicker on
+        // repeated queries.
+        let tmp = tempdir().unwrap();
+        init_wiki(tmp.path()).unwrap();
+        let paths = WikiPaths::resolve(tmp.path());
+
+        // Two pages with the query only in their body (+1 each).
+        write_wiki_page(
+            &paths,
+            "zulu",
+            "Zulu",
+            "zulu desc",
+            "body mentions flavor once.",
+            None,
+        )
+        .unwrap();
+        write_wiki_page(
+            &paths,
+            "alpha",
+            "Alpha",
+            "alpha desc",
+            "body mentions flavor once.",
+            None,
+        )
+        .unwrap();
+
+        for _ in 0..3 {
+            let hits = search_wiki_pages(&paths, "flavor").unwrap();
+            assert_eq!(hits.len(), 2);
+            // Both score 1; alpha sorts before zulu.
+            assert_eq!(hits[0].page.slug, "alpha");
+            assert_eq!(hits[1].page.slug, "zulu");
+        }
+    }
+
+    #[test]
+    fn search_wiki_pages_missing_wiki_dir_returns_empty() {
+        let tmp = tempdir().unwrap();
+        // Intentionally do NOT call init_wiki — wiki/concepts/ missing.
+        let paths = WikiPaths::resolve(tmp.path());
+        let hits = search_wiki_pages(&paths, "anything").unwrap();
+        assert!(hits.is_empty());
+    }
+
+    #[test]
+    fn search_wiki_pages_handles_cjk_query() {
+        // Defensive: CJK characters are multi-byte; the snippet
+        // extractor's `is_char_boundary` walk must not panic.
+        let tmp = tempdir().unwrap();
+        init_wiki(tmp.path()).unwrap();
+        let paths = WikiPaths::resolve(tmp.path());
+        write_wiki_page(
+            &paths,
+            "test",
+            "测试页面",
+            "一个测试页面",
+            "这是正文内容,包含中文字符。",
+            None,
+        )
+        .unwrap();
+
+        let hits = search_wiki_pages(&paths, "中文").unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].page.slug, "test");
+        // Snippet should include "中文" without panicking.
+        assert!(hits[0].snippet.contains("中文"));
     }
 
     // ── F3 git init + .gitignore tests ───────────────────────────

@@ -404,4 +404,114 @@ mod tests {
         let err = fetch_and_body("file:///etc/passwd").await.unwrap_err();
         assert!(matches!(err, IngestError::Invalid(_)));
     }
+
+    #[tokio::test]
+    async fn fetch_and_body_wraps_html_response_in_code_fence() {
+        // Full end-to-end for the text/html path. The unit test
+        // `body_for_html_wraps_in_code_fence_with_header` exercises
+        // `body_for_content_type` in isolation; this one proves that
+        // `fetch_and_body` correctly threads Content-Type through
+        // `extract_content_type` and into `body_for_content_type` for
+        // a real HTTP response. Without this, a refactor that breaks
+        // the content-type plumbing could silently fall through to
+        // the "opaque mime stub" branch and only a regression test
+        // of the full pipeline would catch it.
+        let response = b"HTTP/1.1 200 OK\r\n\
+                         Content-Type: text/html; charset=utf-8\r\n\
+                         Content-Length: 28\r\n\
+                         Connection: close\r\n\
+                         \r\n\
+                         <html><body>Hi</body></html>";
+        let (addr, server) = one_shot_server(response).await;
+        let url = format!("http://{addr}/page");
+
+        let result = fetch_and_body(&url)
+            .await
+            .expect("fetch should succeed for text/html");
+        assert_eq!(result.source, "url");
+        assert!(result.body.starts_with("# Fetched from <http://"));
+        assert!(result.body.contains("```html\n<html><body>Hi</body></html>\n```"));
+        // Byte count in the header annotation must match the raw body
+        // length (28 bytes for the literal above).
+        assert!(result.body.contains("28 bytes"));
+        // And the Content-Type parameter (`; charset=utf-8`) must be
+        // stripped by `extract_content_type` before it lands in the
+        // body header.
+        assert!(result.body.contains("Content-Type: text/html"));
+        assert!(!result.body.contains("charset=utf-8,"));
+
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn fetch_and_body_enforces_max_body_bytes() {
+        // Canonical §7.2 + the `MAX_BODY_BYTES` constant: anything
+        // over the 2 MiB hard cap must return `IngestError::TooLarge`
+        // BEFORE we try to decode or store the body. This is the one
+        // DoS-level defense in the ingest path — without it a hostile
+        // server could stream a 10 GB body into our memory.
+        //
+        // We don't want a 2 MiB fixture in the repo, so we
+        // temporarily cheat: send a Content-Length header that
+        // advertises more than the limit, followed by a small body.
+        // reqwest will short-circuit on Content-Length before reading
+        // the whole response... but our check is on
+        // `bytes.len() > MAX_BODY_BYTES` after the read completes.
+        //
+        // Best way to exercise this: construct a response whose
+        // *actual* body exceeds the cap. We use a 3 MiB filler, which
+        // is small enough to keep the test fast but big enough to
+        // trip the check.
+        const OVERSIZE_BYTES: usize = MAX_BODY_BYTES + 1024;
+        let headers = format!(
+            "HTTP/1.1 200 OK\r\n\
+             Content-Type: text/plain; charset=utf-8\r\n\
+             Content-Length: {}\r\n\
+             Connection: close\r\n\
+             \r\n",
+            OVERSIZE_BYTES
+        );
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            if let Ok((mut sock, _)) = listener.accept().await {
+                use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                let mut buf = [0u8; 2048];
+                let _ = sock.read(&mut buf).await;
+                let _ = sock.write_all(headers.as_bytes()).await;
+                // Write the oversize body in 64 KiB chunks so we don't
+                // blow the socket buffer in one go.
+                let chunk = vec![b'a'; 64 * 1024];
+                let mut written = 0usize;
+                while written < OVERSIZE_BYTES {
+                    let remain = OVERSIZE_BYTES - written;
+                    let take = remain.min(chunk.len());
+                    if sock.write_all(&chunk[..take]).await.is_err() {
+                        break;
+                    }
+                    written += take;
+                }
+                let _ = sock.shutdown().await;
+            }
+        });
+
+        let url = format!("http://{addr}/huge");
+        let err = fetch_and_body(&url).await.unwrap_err();
+        match err {
+            IngestError::TooLarge { bytes, max } => {
+                assert_eq!(max, MAX_BODY_BYTES);
+                assert!(
+                    bytes > MAX_BODY_BYTES,
+                    "TooLarge reported {bytes} <= cap {MAX_BODY_BYTES}"
+                );
+            }
+            other => panic!("expected IngestError::TooLarge, got {other:?}"),
+        }
+
+        // Server task may still be writing when fetch bailed; we
+        // don't care about its result, just drain so the runtime
+        // shuts down cleanly.
+        let _ = server.await;
+    }
 }

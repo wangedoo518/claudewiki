@@ -452,6 +452,12 @@ pub fn app(state: AppState) -> Router {
         // seed — that's a follow-up sprint).
         .route("/api/wiki/pages", get(list_wiki_pages_handler))
         .route("/api/wiki/pages/{slug}", get(get_wiki_page_handler))
+        // ── ClawWiki G: wiki page search (canonical §9.3 + Karpathy §"CLI tools") ─
+        // Simple substring search with weighted per-field scoring.
+        // No BM25, no embeddings, no index — Karpathy explicitly says
+        // "at small scale the index file is enough" and we're well
+        // inside that regime. Swap point for when we outgrow it.
+        .route("/api/wiki/search", get(search_wiki_pages_handler))
         // ── ClawWiki F: index + log special files (Karpathy §Indexing and logging) ─
         // These two live at the top of `wiki/`, not under
         // `wiki/concepts/`, so they need dedicated routes — the
@@ -2222,6 +2228,52 @@ async fn list_wiki_pages_handler() -> Result<Json<serde_json::Value>, ApiError> 
     Ok(Json(serde_json::json!({
         "pages": pages,
         "total_count": pages.len(),
+    })))
+}
+
+/// Query parameters for `GET /api/wiki/search`. `q` is the search
+/// query (required non-empty), `limit` caps result count (default
+/// 20, hard max 100 so a runaway frontend can't drag down the
+/// server).
+#[derive(Debug, Deserialize)]
+struct WikiSearchQuery {
+    q: Option<String>,
+    #[serde(default)]
+    limit: Option<usize>,
+}
+
+/// `GET /api/wiki/search?q=&limit=`
+///
+/// Substring search over all concept pages with weighted field
+/// scoring. Empty/missing `q` returns an empty result set (not
+/// 400) so the frontend can debounce without error flicker.
+///
+/// Canonical §9.3 lists this route; Karpathy llm-wiki.md
+/// §"Optional CLI tools" justifies the substring-first approach
+/// at MVP scale.
+async fn search_wiki_pages_handler(
+    Query(params): Query<WikiSearchQuery>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let paths = resolve_wiki_root_for_handler()?;
+    let query = params.q.unwrap_or_default();
+    let limit = params.limit.unwrap_or(20).min(100);
+
+    let mut hits = wiki_store::search_wiki_pages(&paths, &query).map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("search_wiki_pages failed: {e}"),
+            }),
+        )
+    })?;
+
+    let total_matches = hits.len();
+    hits.truncate(limit);
+    Ok(Json(serde_json::json!({
+        "query": query,
+        "hits": hits,
+        "total_matches": total_matches,
+        "limit": limit,
     })))
 }
 

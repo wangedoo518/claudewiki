@@ -57,14 +57,17 @@ import {
   Inbox,
   ListTree,
   ScrollText,
+  Search,
+  X as XIcon,
 } from "lucide-react";
 import {
   getWikiIndex,
   getWikiLog,
   getWikiPage,
   listWikiPages,
+  searchWikiPages,
 } from "@/features/ingest/persist";
-import type { WikiPageSummary } from "@/features/ingest/types";
+import type { WikiPageSummary, WikiSearchHit } from "@/features/ingest/types";
 
 /**
  * Selection state for the left pane. Concept pages are identified
@@ -132,11 +135,28 @@ const wikiKeys = {
   detail: (slug: string) => ["wiki", "pages", "detail", slug] as const,
   index: () => ["wiki", "index"] as const,
   log: () => ["wiki", "log"] as const,
+  search: (q: string) => ["wiki", "search", q] as const,
 };
+
+/**
+ * Debounce a string value. Used so the search query only fires a
+ * request once the user has stopped typing for `delay` ms. Saves
+ * one request per keystroke on short queries.
+ */
+function useDebouncedValue<T>(value: T, delay: number): T {
+  const [debounced, setDebounced] = useState(value);
+  useEffect(() => {
+    const t = setTimeout(() => setDebounced(value), delay);
+    return () => clearTimeout(t);
+  }, [value, delay]);
+  return debounced;
+}
 
 export function WikiExplorerPage() {
   const queryClient = useQueryClient();
   const [selected, setSelected] = useState<Selection | null>(null);
+  const [searchInput, setSearchInput] = useState("");
+  const debouncedQuery = useDebouncedValue(searchInput.trim(), 250);
 
   const listQuery = useQuery({
     queryKey: wikiKeys.list(),
@@ -144,6 +164,18 @@ export function WikiExplorerPage() {
     staleTime: 10_000,
     refetchInterval: 30_000,
   });
+
+  // Search fires on the debounced query. Empty query is a no-op
+  // (returns an empty WikiSearchResponse from the backend).
+  const searchQuery = useQuery({
+    queryKey: wikiKeys.search(debouncedQuery),
+    queryFn: () => searchWikiPages(debouncedQuery, 30),
+    enabled: debouncedQuery.length > 0,
+    staleTime: 5_000,
+  });
+
+  const isSearching = debouncedQuery.length > 0;
+  const searchHits: WikiSearchHit[] = searchQuery.data?.hits ?? [];
 
   const pages: WikiPageSummary[] = useMemo(
     () => listQuery.data?.pages ?? [],
@@ -175,56 +207,98 @@ export function WikiExplorerPage() {
   return (
     <div className="flex h-full flex-col overflow-hidden">
       {/* Page head */}
-      <div className="flex shrink-0 items-start gap-3 border-b border-border/50 px-6 py-4">
-        <div className="text-xl">📖</div>
-        <div className="flex-1">
-          <h1
-            className="text-head font-semibold text-foreground"
-            style={{ fontFamily: "var(--font-serif, Lora, serif)" }}
-          >
-            Wiki Pages · LLM 主笔层
-          </h1>
-          <p className="mt-0.5 text-label text-muted-foreground">
-            AI 帮我长出了什么 · concept pages 由 wiki_maintainer 从 raw 层自动维护 · Lora 衬线正文
-          </p>
-        </div>
-        <div className="flex items-center gap-1.5 text-caption text-muted-foreground">
-          <span
-            className="rounded-md border border-border bg-background px-1.5 py-0.5"
-            style={{ color: "var(--claude-orange)" }}
-          >
-            {totalCount} {totalCount === 1 ? "page" : "pages"}
-          </span>
-          <button
-            type="button"
-            onClick={() =>
-              void queryClient.invalidateQueries({ queryKey: wikiKeys.list() })
-            }
-            className="flex items-center gap-1 rounded-md border border-border bg-background px-1.5 py-0.5 text-caption text-muted-foreground transition-colors hover:bg-muted/30"
-            title="Refresh"
-          >
-            <RefreshCw
-              className={
-                "size-3 " + (listQuery.isFetching ? "animate-spin" : "")
+      <div className="shrink-0 border-b border-border/50 px-6 py-4">
+        <div className="flex items-start gap-3">
+          <div className="text-xl">📖</div>
+          <div className="flex-1">
+            <h1
+              className="text-head font-semibold text-foreground"
+              style={{ fontFamily: "var(--font-serif, Lora, serif)" }}
+            >
+              Wiki Pages · LLM 主笔层
+            </h1>
+            <p className="mt-0.5 text-label text-muted-foreground">
+              AI 帮我长出了什么 · concept pages 由 wiki_maintainer 从 raw 层自动维护 · Lora 衬线正文
+            </p>
+          </div>
+          <div className="flex items-center gap-1.5 text-caption text-muted-foreground">
+            <span
+              className="rounded-md border border-border bg-background px-1.5 py-0.5"
+              style={{ color: "var(--claude-orange)" }}
+            >
+              {totalCount} {totalCount === 1 ? "page" : "pages"}
+            </span>
+            <button
+              type="button"
+              onClick={() =>
+                void queryClient.invalidateQueries({ queryKey: wikiKeys.list() })
               }
-            />
-          </button>
+              className="flex items-center gap-1 rounded-md border border-border bg-background px-1.5 py-0.5 text-caption text-muted-foreground transition-colors hover:bg-muted/30"
+              title="Refresh"
+            >
+              <RefreshCw
+                className={
+                  "size-3 " + (listQuery.isFetching ? "animate-spin" : "")
+                }
+              />
+            </button>
+          </div>
+        </div>
+
+        {/* Search bar — always visible in the head. Empty input
+            falls back to the normal list; non-empty triggers the
+            debounced search and swaps the left pane. */}
+        <div className="relative mt-3">
+          <Search
+            className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground"
+            aria-hidden="true"
+          />
+          <input
+            type="search"
+            value={searchInput}
+            onChange={(e) => setSearchInput(e.target.value)}
+            placeholder="Search wiki pages — slug, title, summary, or body…"
+            className="h-8 w-full rounded-md border border-border bg-background pl-8 pr-8 text-body-sm text-foreground placeholder:text-muted-foreground/60 focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary/30"
+          />
+          {searchInput && (
+            <button
+              type="button"
+              onClick={() => setSearchInput("")}
+              className="absolute right-1 top-1/2 flex size-6 -translate-y-1/2 items-center justify-center rounded-md text-muted-foreground hover:bg-muted/40 hover:text-foreground"
+              title="Clear search"
+            >
+              <XIcon className="size-3" />
+            </button>
+          )}
         </div>
       </div>
 
       {/* Body: split pane. Pinned index/log are always visible even
           when there are no concept pages yet, because they give the
           user a way to see "nothing has been maintained" explicitly
-          rather than staring at a generic empty state. */}
+          rather than staring at a generic empty state. When searching,
+          the left pane swaps to search results ranked by score. */}
       <div className="flex min-h-0 flex-1">
         <aside className="flex w-[280px] shrink-0 flex-col overflow-hidden border-r border-border/50">
-          <PageList
-            pages={pages}
-            isLoading={listQuery.isLoading}
-            error={listQuery.error}
-            selected={selected}
-            onSelect={setSelected}
-          />
+          {isSearching ? (
+            <SearchResultsList
+              query={debouncedQuery}
+              hits={searchHits}
+              isLoading={searchQuery.isLoading || searchQuery.isFetching}
+              error={searchQuery.error as Error | null}
+              selected={selected}
+              onSelect={setSelected}
+              totalMatches={searchQuery.data?.total_matches ?? 0}
+            />
+          ) : (
+            <PageList
+              pages={pages}
+              isLoading={listQuery.isLoading}
+              error={listQuery.error}
+              selected={selected}
+              onSelect={setSelected}
+            />
+          )}
         </aside>
         <main className="flex min-w-0 flex-1 flex-col overflow-hidden">
           {selected === null ? (
@@ -439,6 +513,133 @@ function PageList({
                     )}
                     <span>{formatRelative(page.created_at)}</span>
                   </div>
+                </button>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+/* ─── Search results list (replaces PageList when searching) ──── */
+
+function SearchResultsList({
+  query,
+  hits,
+  isLoading,
+  error,
+  selected,
+  onSelect,
+  totalMatches,
+}: {
+  query: string;
+  hits: WikiSearchHit[];
+  isLoading: boolean;
+  error: Error | null;
+  selected: Selection | null;
+  onSelect: (sel: Selection) => void;
+  totalMatches: number;
+}) {
+  const selectedKey = selected ? selectionKey(selected) : null;
+
+  return (
+    <div className="flex-1 overflow-y-auto">
+      <div className="flex items-center gap-2 border-b border-border/40 bg-muted/10 px-4 py-2">
+        <Search className="size-3 text-muted-foreground" />
+        <span className="flex-1 truncate text-caption text-muted-foreground">
+          {isLoading ? (
+            "Searching…"
+          ) : (
+            <>
+              <span className="font-semibold text-foreground">{hits.length}</span>
+              {totalMatches > hits.length ? (
+                <>
+                  {" "}of {totalMatches}
+                </>
+              ) : null}{" "}
+              {hits.length === 1 ? "hit" : "hits"} for &ldquo;{query}&rdquo;
+            </>
+          )}
+        </span>
+      </div>
+
+      {error ? (
+        <div
+          className="m-3 rounded-md border px-3 py-2 text-caption"
+          style={{
+            borderColor:
+              "color-mix(in srgb, var(--color-error) 30%, transparent)",
+            backgroundColor:
+              "color-mix(in srgb, var(--color-error) 5%, transparent)",
+            color: "var(--color-error)",
+          }}
+        >
+          Search failed: {error.message}
+        </div>
+      ) : hits.length === 0 && !isLoading ? (
+        <div className="px-4 py-6 text-center text-caption text-muted-foreground">
+          <Search className="mx-auto mb-1.5 size-5 opacity-40" />
+          <div className="text-body-sm text-foreground/80">No matches</div>
+          <div className="mt-0.5 text-caption text-muted-foreground/70">
+            Nothing in slug, title, summary, or body matches
+            <br />
+            &ldquo;{query}&rdquo;.
+          </div>
+        </div>
+      ) : (
+        <ul className="divide-y divide-border/40">
+          {hits.map((hit) => {
+            const isActive =
+              selectedKey === `concept:${hit.page.slug}`;
+            return (
+              <li key={hit.page.slug}>
+                <button
+                  type="button"
+                  onClick={() =>
+                    onSelect({ kind: "concept", slug: hit.page.slug })
+                  }
+                  className={
+                    "w-full px-4 py-2.5 text-left transition-colors " +
+                    (isActive ? "bg-primary/10" : "hover:bg-accent/40")
+                  }
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <Brain
+                      className="size-3 shrink-0"
+                      style={{ color: "var(--claude-orange)" }}
+                    />
+                    <span
+                      className="flex-1 truncate text-body-sm font-medium text-foreground"
+                      style={{ fontFamily: "var(--font-serif, Lora, serif)" }}
+                    >
+                      {hit.page.title || hit.page.slug}
+                    </span>
+                    <span
+                      className="shrink-0 rounded-sm px-1 font-mono text-caption"
+                      style={{
+                        color: "var(--claude-orange)",
+                        backgroundColor:
+                          "color-mix(in srgb, var(--claude-orange) 10%, transparent)",
+                      }}
+                      title={`Relevance score: ${hit.score}`}
+                    >
+                      {hit.score}
+                    </span>
+                  </div>
+                  <div className="mt-0.5 truncate pl-5 font-mono text-caption text-muted-foreground/70">
+                    {hit.page.slug}
+                  </div>
+                  {hit.snippet ? (
+                    <div className="mt-0.5 line-clamp-2 pl-5 text-caption text-muted-foreground/80">
+                      {hit.snippet}
+                    </div>
+                  ) : hit.page.summary ? (
+                    <div className="mt-0.5 line-clamp-2 pl-5 text-caption text-muted-foreground/80">
+                      {hit.page.summary}
+                    </div>
+                  ) : null}
                 </button>
               </li>
             );

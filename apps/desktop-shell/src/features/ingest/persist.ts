@@ -21,6 +21,7 @@ import type {
   WikiPageProposal,
   WikiPagesListResponse,
   WikiProposalResponse,
+  WikiSearchResponse,
   WikiSpecialFileResponse,
 } from "./types";
 
@@ -157,4 +158,24 @@ export async function getWikiIndex(): Promise<WikiSpecialFileResponse> {
  */
 export async function getWikiLog(): Promise<WikiSpecialFileResponse> {
   return fetchJson<WikiSpecialFileResponse>("/api/wiki/log");
+}
+
+/**
+ * GET `/api/wiki/search?q=&limit=` — substring search with
+ * weighted field scoring. Empty/whitespace query is valid and
+ * returns `{ hits: [], total_matches: 0 }` — the frontend can
+ * call it unguarded during debouncing.
+ *
+ * Results are pre-sorted by score desc, then slug asc for stable
+ * tiebreak. `total_matches` is the count BEFORE limit truncation
+ * (useful for "X of Y" display).
+ */
+export async function searchWikiPages(
+  query: string,
+  limit = 20,
+): Promise<WikiSearchResponse> {
+  const params = new URLSearchParams();
+  if (query) params.set("q", query);
+  params.set("limit", String(limit));
+  return fetchJson<WikiSearchResponse>(`/api/wiki/search?${params.toString()}`);
 }

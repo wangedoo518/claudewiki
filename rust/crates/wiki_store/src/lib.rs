@@ -113,6 +113,16 @@ pub const WIKI_INDEX_FILENAME: &str = "index.md";
 /// the history without any structured store.
 pub const WIKI_LOG_FILENAME: &str = "log.md";
 
+/// Subdirectory under `wiki/` for per-day changelog files.
+/// Canonical §8 Triggers row 5 + §10 layout: every maintainer
+/// action also gets appended to `wiki/changelog/YYYY-MM-DD.md`
+/// (one file per day) so users can see "what happened today" in a
+/// single view without scrolling through the global log. The day
+/// file shares the same `## [HH:MM] verb | title` line format as
+/// the global log so a simple `cat changelog/2026-04-10.md` reads
+/// naturally.
+pub const WIKI_CHANGELOG_SUBDIR: &str = "changelog";
+
 /// Subdirectory under the wiki root that holds human-curated rules
 /// (`CLAUDE.md`, `AGENTS.md`, templates, policies). The maintainer
 /// agent may PROPOSE changes via Inbox but never writes here directly.
@@ -1465,17 +1475,101 @@ pub fn rebuild_wiki_index(paths: &WikiPaths) -> Result<PathBuf> {
 /// space-separated (per canonical §8 Triggers example) so greps
 /// look clean in shell output.
 fn log_timestamp_now() -> String {
+    let (date, hhmm) = current_date_and_hhmm();
+    format!("{date} {hhmm}")
+}
+
+/// Returns `(date, hhmm)` for the current UTC time, e.g.
+/// `("2026-04-10", "14:22")`. Shared by `log_timestamp_now` (which
+/// joins them with a space) and `append_changelog_entry` (which uses
+/// `date` to pick the destination file and `hhmm` for the entry
+/// prefix).
+fn current_date_and_hhmm() -> (String, String) {
     use std::time::{SystemTime, UNIX_EPOCH};
     let secs = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
     let iso = format_iso8601(secs);
-    // Input: 2026-04-09T14:22:33Z
-    // Output: 2026-04-09 14:22
     let (date, rest) = iso.split_once('T').unwrap_or((&iso, ""));
     let hhmm = rest.get(..5).unwrap_or("00:00");
-    format!("{date} {hhmm}")
+    (date.to_string(), hhmm.to_string())
+}
+
+/// Absolute path to `wiki/changelog/{date}.md`. Pure — does not
+/// touch the filesystem.
+#[must_use]
+pub fn changelog_path_for_date(paths: &WikiPaths, date: &str) -> PathBuf {
+    paths
+        .wiki
+        .join(WIKI_CHANGELOG_SUBDIR)
+        .join(format!("{date}.md"))
+}
+
+/// Append a single line to today's `wiki/changelog/YYYY-MM-DD.md`.
+/// Canonical §8 Triggers row 5: every maintainer action also lands
+/// in a per-day file so users get a "today's activity" view without
+/// scrolling through the all-time `log.md`.
+///
+/// Format matches `append_wiki_log` but with HH:MM instead of full
+/// `YYYY-MM-DD HH:MM` (the date is already in the filename):
+///
+/// ```text
+/// ## [HH:MM] <verb> | <title>
+/// ```
+///
+/// Behavior:
+///   * Creates `wiki/changelog/` and the day file if missing.
+///   * Seeds a header on first write of the day:
+///     `# Changelog YYYY-MM-DD`.
+///   * Atomic write via tmp + rename.
+///   * Thread-safe via the same `WIKI_WRITE_GUARD` as
+///     `append_wiki_log` and `rebuild_wiki_index`.
+///
+/// Returns the resolved path so callers can echo it.
+pub fn append_changelog_entry(
+    paths: &WikiPaths,
+    verb: &str,
+    title: &str,
+) -> Result<PathBuf> {
+    let _guard = lock_wiki_writes();
+    let (date, hhmm) = current_date_and_hhmm();
+
+    let changelog_dir = paths.wiki.join(WIKI_CHANGELOG_SUBDIR);
+    fs::create_dir_all(&changelog_dir)
+        .map_err(|e| WikiStoreError::io(changelog_dir.clone(), e))?;
+    let path = changelog_path_for_date(paths, &date);
+
+    let existing = if path.is_file() {
+        fs::read_to_string(&path).map_err(|e| WikiStoreError::io(path.clone(), e))?
+    } else {
+        String::new()
+    };
+
+    let header = format!(
+        "# Changelog {date}\n\n\
+         Per-day audit trail of maintainer and ingest actions. \
+         See `../log.md` for the all-time log. Canonical §8 row 5.\n\n"
+    );
+
+    let verb_clean = verb.trim();
+    let title_clean = title.trim();
+    let entry = format!("## [{hhmm}] {verb_clean} | {title_clean}\n");
+
+    let mut new_content = if existing.is_empty() {
+        header
+    } else {
+        existing
+    };
+    if !new_content.ends_with('\n') {
+        new_content.push('\n');
+    }
+    new_content.push_str(&entry);
+
+    let tmp = path.with_extension("md.tmp");
+    fs::write(&tmp, new_content.as_bytes()).map_err(|e| WikiStoreError::io(tmp.clone(), e))?;
+    fs::rename(&tmp, &path).map_err(|e| WikiStoreError::io(path.clone(), e))?;
+    Ok(path)
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -2512,6 +2606,113 @@ mod tests {
         // Falls back to slug as title; no " — summary" suffix.
         assert!(content.contains("- [bare-page](concepts/bare-page.md)\n"));
         assert!(!content.contains("bare-page.md — "));
+    }
+
+    // ── S per-day changelog tests ────────────────────────────────
+
+    #[test]
+    fn append_changelog_entry_creates_dated_file_with_header() {
+        let tmp = tempdir().unwrap();
+        init_wiki(tmp.path()).unwrap();
+        let paths = WikiPaths::resolve(tmp.path());
+
+        let path = append_changelog_entry(&paths, "write-concept", "First entry").unwrap();
+        assert!(path.is_file());
+        assert!(path.starts_with(tmp.path().join(WIKI_DIR).join(WIKI_CHANGELOG_SUBDIR)));
+        // Filename matches YYYY-MM-DD.md (10 + 3 chars stem)
+        let stem = path.file_stem().unwrap().to_str().unwrap();
+        assert_eq!(stem.len(), 10);
+        assert_eq!(stem.chars().nth(4), Some('-'));
+        assert_eq!(stem.chars().nth(7), Some('-'));
+
+        let content = fs::read_to_string(&path).unwrap();
+        assert!(content.starts_with("# Changelog "));
+        assert!(content.contains("Per-day audit trail"));
+        assert!(content.contains("] write-concept | First entry"));
+    }
+
+    #[test]
+    fn append_changelog_entry_appends_to_existing_day_file() {
+        let tmp = tempdir().unwrap();
+        init_wiki(tmp.path()).unwrap();
+        let paths = WikiPaths::resolve(tmp.path());
+
+        append_changelog_entry(&paths, "write-concept", "First").unwrap();
+        append_changelog_entry(&paths, "write-concept", "Second").unwrap();
+        append_changelog_entry(&paths, "resolve-inbox", "Third").unwrap();
+
+        // All three entries should land in the same file (today's
+        // date). Read whatever file exists in changelog/.
+        let dir = tmp.path().join(WIKI_DIR).join(WIKI_CHANGELOG_SUBDIR);
+        let files: Vec<_> = fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .collect();
+        assert_eq!(files.len(), 1, "expected single day file, got {}", files.len());
+
+        let content = fs::read_to_string(files[0].path()).unwrap();
+        // Header only seeded once.
+        assert_eq!(content.matches("# Changelog ").count(), 1);
+        // All three entries present.
+        assert!(content.contains("write-concept | First"));
+        assert!(content.contains("write-concept | Second"));
+        assert!(content.contains("resolve-inbox | Third"));
+    }
+
+    #[test]
+    fn append_changelog_entry_uses_short_hhmm_prefix() {
+        // The day file uses HH:MM (no date) since the date is in
+        // the filename. This is different from log.md which uses
+        // YYYY-MM-DD HH:MM.
+        let tmp = tempdir().unwrap();
+        init_wiki(tmp.path()).unwrap();
+        let paths = WikiPaths::resolve(tmp.path());
+
+        let path = append_changelog_entry(&paths, "write-concept", "Test").unwrap();
+        let content = fs::read_to_string(&path).unwrap();
+        let entry_line = content.lines().find(|l| l.starts_with("## [")).unwrap();
+        // Format: "## [HH:MM] verb | title"
+        // Slice between [ and ] should be exactly 5 chars (HH:MM).
+        let between = &entry_line[entry_line.find('[').unwrap() + 1
+            ..entry_line.find(']').unwrap()];
+        assert_eq!(between.len(), 5);
+        assert_eq!(between.chars().nth(2), Some(':'));
+    }
+
+    #[test]
+    fn append_changelog_entry_thread_safe() {
+        use std::sync::Arc;
+        use std::thread;
+
+        let tmp = tempdir().unwrap();
+        init_wiki(tmp.path()).unwrap();
+        let paths = Arc::new(WikiPaths::resolve(tmp.path()));
+
+        let mut handles = Vec::with_capacity(15);
+        for i in 0..15u32 {
+            let paths = Arc::clone(&paths);
+            handles.push(thread::spawn(move || {
+                append_changelog_entry(&paths, "write-concept", &format!("entry-{i}"))
+                    .expect("append must succeed under contention")
+            }));
+        }
+        for h in handles {
+            h.join().expect("thread panic");
+        }
+
+        // All 15 entries must be in the file (no lost writes).
+        let dir = tmp.path().join(WIKI_DIR).join(WIKI_CHANGELOG_SUBDIR);
+        let files: Vec<_> = fs::read_dir(&dir).unwrap().filter_map(|r| r.ok()).collect();
+        assert_eq!(files.len(), 1);
+        let content = fs::read_to_string(files[0].path()).unwrap();
+        let entries: Vec<&str> = content.lines().filter(|l| l.starts_with("## [")).collect();
+        assert_eq!(entries.len(), 15);
+        for i in 0..15u32 {
+            assert!(
+                content.contains(&format!("entry-{i}")),
+                "lost entry-{i}"
+            );
+        }
     }
 
     // ── G search_wiki_pages tests ────────────────────────────────

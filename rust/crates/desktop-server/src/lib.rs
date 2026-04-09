@@ -2259,6 +2259,14 @@ async fn approve_wiki_inbox_with_write_handler(
             "approve-with-write: wiki page written but log append failed: {e}"
         );
     }
+    // feat(S): also append to per-day changelog file (canonical §8
+    // Triggers row 5). Same soft-fail policy as the log: missing
+    // entries are recoverable, the page is already persisted.
+    if let Err(e) = wiki_store::append_changelog_entry(&paths, "write-concept", &log_title) {
+        eprintln!(
+            "approve-with-write: wiki page written but changelog append failed: {e}"
+        );
+    }
     if let Err(e) = wiki_store::rebuild_wiki_index(&paths) {
         eprintln!(
             "approve-with-write: wiki page written but index rebuild failed: {e}"

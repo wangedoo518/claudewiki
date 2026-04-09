@@ -325,6 +325,7 @@ dependencies = [
  "tools",
  "url",
  "uuid",
+ "wiki_store",
 ]
 
 [[package]]

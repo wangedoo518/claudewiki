@@ -79,6 +79,15 @@ pub struct DesktopAgentHandler {
     /// on construction. Wrapped in a Mutex so concurrent message handlers
     /// for different users serialize their reads-and-writes safely.
     mapping: Arc<Mutex<std::collections::HashMap<String, String>>>,
+    /// Optional ClawWiki raw-ingest sink (S5 — D2 override).
+    ///
+    /// When `Some`, every inbound text message is also written to
+    /// `~/.clawwiki/raw/NNNNN_wechat-text_{slug}_{date}.md` and an
+    /// `append_inbox_pending` task is appended, making the WeChat funnel
+    /// the canonical ingestion path per ClawWiki §7. When `None` the
+    /// handler falls back to Phase 2b behavior (chat only, no wiki
+    /// persistence) — useful for unit tests and backward-compat CLI.
+    wiki_paths: Option<wiki_store::WikiPaths>,
 }
 
 impl DesktopAgentHandler {
@@ -100,7 +109,21 @@ impl DesktopAgentHandler {
             account_id,
             default_project_path: default_project_path.into(),
             mapping: Arc::new(Mutex::new(mapping)),
+            wiki_paths: None,
         })
+    }
+
+    /// Attach a ClawWiki raw-ingest sink. Every subsequent inbound text
+    /// message will also be written to `~/.clawwiki/raw/` and appended
+    /// to the Inbox. Idempotent — replaces any previously attached sink.
+    ///
+    /// S5 wires this at desktop-server startup by passing the wiki root
+    /// resolved via `wiki_store::default_root()`. Tests can bypass the
+    /// sink by simply not calling this method.
+    #[must_use]
+    pub fn with_wiki_paths(mut self, paths: wiki_store::WikiPaths) -> Self {
+        self.wiki_paths = Some(paths);
+        self
     }
 
     /// Find an existing desktop session for `openid`, or create a fresh one
@@ -280,6 +303,59 @@ impl MessageHandler for DesktopAgentHandler {
                 return Ok(());
             }
         };
+
+        // S5 ClawWiki ingest (D2 override): if the handler is wired with
+        // a wiki root, persist the raw text message to `~/.clawwiki/raw/`
+        // BEFORE triggering the agentic turn. Failures here are logged
+        // but NEVER block the chat response — the user's WeChat
+        // experience is the contract and the wiki ingest is best-effort.
+        //
+        // This is the one place in the whole codebase where personal
+        // WeChat traffic becomes ClawWiki raw data. S6+ can layer richer
+        // adapters (voice transcription, image captioning) by moving
+        // the text-handling branch above into an adapter dispatch.
+        if let Some(paths) = self.wiki_paths.clone() {
+            let raw_title = format!("WeChat · {}", short_openid(&from_user_id));
+            let frontmatter = wiki_store::RawFrontmatter::for_paste("wechat-text", None);
+            match wiki_store::write_raw_entry(
+                &paths,
+                "wechat-text",
+                &raw_title,
+                &user_text,
+                &frontmatter,
+            ) {
+                Ok(entry) => {
+                    // Enqueue an inbox task so the user sees the
+                    // ingestion event in ClawWiki's Inbox page.
+                    let inbox_desc = format!(
+                        "Raw entry `{}` was ingested from WeChat user `{}`.",
+                        entry.filename,
+                        short_openid(&from_user_id)
+                    );
+                    if let Err(err) = wiki_store::append_inbox_pending(
+                        &paths,
+                        "new-raw",
+                        &format!("WeChat ingest #{:05}", entry.id),
+                        &inbox_desc,
+                        Some(entry.id),
+                    ) {
+                        eprintln!(
+                            "[wechat agent] raw written but inbox append failed: {err}"
+                        );
+                    }
+                    eprintln!(
+                        "[wechat agent] wrote raw entry #{:05} ({})",
+                        entry.id, entry.filename
+                    );
+                }
+                Err(err) => {
+                    eprintln!(
+                        "[wechat agent] wiki_store::write_raw_entry failed: {err} \
+                         (chat reply path still proceeds)"
+                    );
+                }
+            }
+        }
 
         // Spawn the actual work in a background task so the long-poll loop
         // in monitor.rs returns to fetch the next message immediately.

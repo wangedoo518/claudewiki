@@ -3885,9 +3885,24 @@ impl DesktopState {
             tokio::sync::watch::channel(MonitorStatus::default());
 
         let project_path = self.wechat_default_project_path.read().await.clone();
+
+        // S5 D2 override: attach the canonical wiki paths so every
+        // inbound WeChat text message is also written to
+        // `~/.clawwiki/raw/` and queued into the Inbox. We resolve the
+        // root on each spawn so tests that manipulate CLAWWIKI_HOME
+        // between spawns see the current value.
+        let wiki_root = wiki_store::default_root();
+        if let Err(err) = wiki_store::init_wiki(&wiki_root) {
+            eprintln!(
+                "[wechat] warn: wiki_store::init_wiki({:?}) failed: {err}",
+                wiki_root
+            );
+        }
+        let wiki_paths = wiki_store::WikiPaths::resolve(&wiki_root);
         let handler: Arc<dyn MessageHandler> = Arc::new(
             DesktopAgentHandler::new(self.clone(), account_id, project_path)
-                .map_err(|e| format!("DesktopAgentHandler::new failed: {e}"))?,
+                .map_err(|e| format!("DesktopAgentHandler::new failed: {e}"))?
+                .with_wiki_paths(wiki_paths),
         );
 
         let config = MonitorConfig {

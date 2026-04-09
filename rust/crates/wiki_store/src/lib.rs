@@ -1053,6 +1053,122 @@ pub fn read_wiki_page(paths: &WikiPaths, slug: &str) -> Result<(WikiPageSummary,
     Ok((summary, body))
 }
 
+/// A node in the wiki graph (`build_wiki_graph` output).
+/// Carries enough metadata for the frontend to render labels and
+/// distinguish raw entries from wiki pages by color/shape.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WikiGraphNode {
+    /// Stable identifier within the graph: `raw-{id}` for raw
+    /// entries, `wiki-{slug}` for concept pages.
+    pub id: String,
+    /// Display label — title for raw entries (or filename if title
+    /// is missing), title or slug for concept pages.
+    pub label: String,
+    /// Node category: "raw" or "concept". Drives node coloring on
+    /// the frontend (Karpathy three-layer visualization).
+    pub kind: String,
+}
+
+/// A directed edge in the wiki graph: `from` references `to`.
+/// Today the only edge type is `derived-from` (a concept page that
+/// was generated from a raw entry via the maintainer flow). Future
+/// edge types: `references` (concept-to-concept link in body),
+/// `mentions` (named entity overlap), `conflicts-with` (conflict
+/// detection from canonical §8 Triggers row 4).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WikiGraphEdge {
+    pub from: String,
+    pub to: String,
+    /// Edge category: "derived-from" for raw->concept,
+    /// "references" for concept->concept (future), etc.
+    pub kind: String,
+}
+
+/// Full wiki graph: nodes + edges + summary counts.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WikiGraph {
+    pub nodes: Vec<WikiGraphNode>,
+    pub edges: Vec<WikiGraphEdge>,
+    pub raw_count: usize,
+    pub concept_count: usize,
+    pub edge_count: usize,
+}
+
+/// Build a graph view over the current `~/.clawwiki/raw` and
+/// `~/.clawwiki/wiki/concepts` directories. Designed for the
+/// frontend Graph page (`GET /api/wiki/graph`) to render a node-
+/// edge force layout without doing its own filesystem walks.
+///
+/// Edge construction (today):
+///   * For every concept page with a `source_raw_id` in its
+///     frontmatter, emit a `derived-from` edge from
+///     `wiki-{slug}` to `raw-{id}`. This is the only edge kind
+///     in the MVP — future feat(Q) backlinks pass adds
+///     `references` edges between concept pages.
+///
+/// Empty wiki returns an empty graph (`raw_count = concept_count
+/// = edge_count = 0`). Missing wiki dir returns the same empty
+/// graph (not an error).
+pub fn build_wiki_graph(paths: &WikiPaths) -> Result<WikiGraph> {
+    let raws = list_raw_entries(paths).unwrap_or_default();
+    let concepts = list_wiki_pages(paths).unwrap_or_default();
+
+    let raw_count = raws.len();
+    let concept_count = concepts.len();
+    let mut nodes: Vec<WikiGraphNode> =
+        Vec::with_capacity(raw_count + concept_count);
+    let mut edges: Vec<WikiGraphEdge> = Vec::new();
+
+    // Raw nodes — id is `raw-{id}`, label is slug (with source as
+    // a prefix hint for users). RawEntry doesn't carry a separate
+    // title field; the slug is the closest human-readable handle
+    // and matches what the Raw Library shows.
+    for raw in &raws {
+        let label = if raw.slug.is_empty() {
+            raw.filename.clone()
+        } else {
+            format!("{}: {}", raw.source, raw.slug)
+        };
+        nodes.push(WikiGraphNode {
+            id: format!("raw-{}", raw.id),
+            label,
+            kind: "raw".to_string(),
+        });
+    }
+
+    // Concept nodes — id is `wiki-{slug}`, label is title || slug.
+    for concept in &concepts {
+        let label = if concept.title.is_empty() {
+            concept.slug.clone()
+        } else {
+            concept.title.clone()
+        };
+        nodes.push(WikiGraphNode {
+            id: format!("wiki-{}", concept.slug),
+            label,
+            kind: "concept".to_string(),
+        });
+
+        // Edge: concept → raw via source_raw_id frontmatter.
+        if let Some(raw_id) = concept.source_raw_id {
+            edges.push(WikiGraphEdge {
+                from: format!("wiki-{}", concept.slug),
+                to: format!("raw-{raw_id}"),
+                kind: "derived-from".to_string(),
+            });
+        }
+    }
+
+    let edge_count = edges.len();
+    Ok(WikiGraph {
+        nodes,
+        edges,
+        raw_count,
+        concept_count,
+        edge_count,
+    })
+}
+
 /// One hit in a [`search_wiki_pages`] result. Carries the matching
 /// page's summary, the computed relevance score, and a short text
 /// snippet centered on the first body-level match (if any). The
@@ -2630,6 +2746,124 @@ mod tests {
         // Falls back to slug as title; no " — summary" suffix.
         assert!(content.contains("- [bare-page](concepts/bare-page.md)\n"));
         assert!(!content.contains("bare-page.md — "));
+    }
+
+    // ── T wiki graph tests ───────────────────────────────────────
+
+    #[test]
+    fn build_wiki_graph_empty_wiki_returns_zero_counts() {
+        let tmp = tempdir().unwrap();
+        init_wiki(tmp.path()).unwrap();
+        let paths = WikiPaths::resolve(tmp.path());
+
+        let g = build_wiki_graph(&paths).unwrap();
+        assert_eq!(g.raw_count, 0);
+        assert_eq!(g.concept_count, 0);
+        assert_eq!(g.edge_count, 0);
+        assert!(g.nodes.is_empty());
+        assert!(g.edges.is_empty());
+    }
+
+    #[test]
+    fn build_wiki_graph_emits_raw_and_concept_nodes() {
+        let tmp = tempdir().unwrap();
+        init_wiki(tmp.path()).unwrap();
+        let paths = WikiPaths::resolve(tmp.path());
+
+        let raw = write_raw_entry(
+            &paths,
+            "paste",
+            "Karpathy LLM Wiki",
+            "Source body.",
+            &RawFrontmatter::for_paste("paste", None),
+        )
+        .unwrap();
+        write_wiki_page(
+            &paths,
+            "llm-wiki",
+            "LLM Wiki",
+            "Summary.",
+            "Body.",
+            Some(raw.id),
+        )
+        .unwrap();
+
+        let g = build_wiki_graph(&paths).unwrap();
+        assert_eq!(g.raw_count, 1);
+        assert_eq!(g.concept_count, 1);
+        assert_eq!(g.nodes.len(), 2);
+
+        // Find raw node
+        let raw_node = g
+            .nodes
+            .iter()
+            .find(|n| n.kind == "raw")
+            .expect("raw node");
+        assert_eq!(raw_node.id, format!("raw-{}", raw.id));
+        // Label is "{source}: {slug}". Slug is slugified,
+        // lowercased — "karpathy-llm-wiki" or similar.
+        assert!(raw_node.label.starts_with("paste:"));
+        assert!(raw_node.label.to_lowercase().contains("karpathy"));
+
+        // Find concept node
+        let concept_node = g
+            .nodes
+            .iter()
+            .find(|n| n.kind == "concept")
+            .expect("concept node");
+        assert_eq!(concept_node.id, "wiki-llm-wiki");
+        assert_eq!(concept_node.label, "LLM Wiki");
+    }
+
+    #[test]
+    fn build_wiki_graph_emits_derived_from_edges() {
+        let tmp = tempdir().unwrap();
+        init_wiki(tmp.path()).unwrap();
+        let paths = WikiPaths::resolve(tmp.path());
+
+        let raw1 = write_raw_entry(
+            &paths,
+            "paste",
+            "Source A",
+            "body",
+            &RawFrontmatter::for_paste("paste", None),
+        )
+        .unwrap();
+        let raw2 = write_raw_entry(
+            &paths,
+            "paste",
+            "Source B",
+            "body",
+            &RawFrontmatter::for_paste("paste", None),
+        )
+        .unwrap();
+        write_wiki_page(&paths, "alpha", "Alpha", "summary", "body", Some(raw1.id))
+            .unwrap();
+        write_wiki_page(&paths, "bravo", "Bravo", "summary", "body", Some(raw2.id))
+            .unwrap();
+        // One concept WITHOUT source_raw_id — should still get a node
+        // but no derived-from edge.
+        write_wiki_page(&paths, "orphan", "Orphan", "summary", "body", None).unwrap();
+
+        let g = build_wiki_graph(&paths).unwrap();
+        assert_eq!(g.raw_count, 2);
+        assert_eq!(g.concept_count, 3);
+        assert_eq!(g.edge_count, 2);
+
+        // Edge for alpha → raw1
+        assert!(g.edges.iter().any(|e| {
+            e.from == "wiki-alpha"
+                && e.to == format!("raw-{}", raw1.id)
+                && e.kind == "derived-from"
+        }));
+        // Edge for bravo → raw2
+        assert!(g.edges.iter().any(|e| {
+            e.from == "wiki-bravo"
+                && e.to == format!("raw-{}", raw2.id)
+                && e.kind == "derived-from"
+        }));
+        // No edge for orphan
+        assert!(!g.edges.iter().any(|e| e.from == "wiki-orphan"));
     }
 
     // ── M schema overwrite tests ─────────────────────────────────

@@ -485,6 +485,11 @@ pub fn app(state: AppState) -> Router {
             "/api/wiki/schema",
             get(get_wiki_schema_handler).put(put_wiki_schema_handler),
         )
+        // ── ClawWiki T: graph data (canonical §9.3) ────────────────
+        // GET /api/wiki/graph — returns nodes (raw + concept) and
+        // edges (derived-from) for the Graph page. Frontend uses
+        // this to render the Karpathy three-layer cognitive web.
+        .route("/api/wiki/graph", get(get_wiki_graph_handler))
         // ── Phase 6C: WeChat account management ────────────────────
         .route(
             "/api/desktop/wechat/accounts",
@@ -2067,6 +2072,30 @@ async fn put_wiki_schema_handler(
 #[derive(Debug, serde::Deserialize)]
 struct PutSchemaRequest {
     content: String,
+}
+
+/// `GET /api/wiki/graph` (canonical §9.3 · feat T)
+///
+/// Return the wiki graph: nodes (raw + concept) and edges
+/// (`derived-from` for now; future feat(Q) adds backlink edges).
+/// The Graph page consumes this to render a cognitive web with
+/// raw entries on one layer and concept pages on the other,
+/// connected by derivation arrows.
+///
+/// Empty wiki returns `{ nodes: [], edges: [], raw_count: 0,
+/// concept_count: 0, edge_count: 0 }` so the frontend can render
+/// an explicit "no data yet" state instead of an error.
+async fn get_wiki_graph_handler() -> Result<Json<serde_json::Value>, ApiError> {
+    let paths = resolve_wiki_root_for_handler()?;
+    let graph = wiki_store::build_wiki_graph(&paths).map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("build_wiki_graph failed: {e}"),
+            }),
+        )
+    })?;
+    Ok(Json(serde_json::to_value(&graph).unwrap_or(serde_json::Value::Null)))
 }
 
 async fn resolve_wiki_inbox_handler(

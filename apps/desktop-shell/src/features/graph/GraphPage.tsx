@@ -27,8 +27,8 @@
 import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
-import { Loader2, Network } from "lucide-react";
-import { listRawEntries } from "@/features/ingest/persist";
+import { ArrowRight, Brain, Loader2, Network } from "lucide-react";
+import { getWikiGraph, listRawEntries } from "@/features/ingest/persist";
 import type { RawEntry } from "@/features/ingest/types";
 
 // SVG layout constants — all coordinates are relative to the
@@ -79,6 +79,14 @@ export function GraphPage() {
     staleTime: 30_000,
   });
 
+  // feat T: pull the wiki graph data so we can render the
+  // concept connections sidebar without rewriting the SVG layout.
+  const graphQuery = useQuery({
+    queryKey: ["wiki", "graph"] as const,
+    queryFn: () => getWikiGraph(),
+    staleTime: 30_000,
+  });
+
   const entries = rawQuery.data?.entries ?? [];
   const layout = useMemo(() => computeLayout(entries), [entries]);
 
@@ -96,30 +104,146 @@ export function GraphPage() {
           </h1>
         </div>
         <p className="mt-1 text-label text-muted-foreground">
-          我的脑子里都连起来没 — S6 MVP：按 source 分环聚类 raw 层 · wiki 页的 force-directed 图等 maintainer 上线
+          我的脑子里都连起来没 — feat(T) 后接入真实的 wiki/graph 端点 · 右侧 Concept Connections 显示概念页与 raw 之间的派生边
         </p>
       </div>
 
-      {/* Body */}
-      <div className="relative min-h-0 flex-1 overflow-hidden">
-        {rawQuery.isLoading ? (
-          <div className="flex h-full items-center justify-center gap-2 text-caption text-muted-foreground">
-            <Loader2 className="size-3 animate-spin" />
-            Loading graph…
-          </div>
-        ) : rawQuery.error ? (
-          <GraphError message={(rawQuery.error as Error).message} />
-        ) : entries.length === 0 ? (
-          <GraphEmpty />
-        ) : (
-          <GraphCanvas
-            layout={layout}
-            total={entries.length}
-            onNodeClick={() => navigate("/raw")}
-          />
-        )}
+      {/* Body: SVG canvas + concept connections sidebar */}
+      <div className="relative flex min-h-0 flex-1 overflow-hidden">
+        <div className="relative min-h-0 flex-1 overflow-hidden">
+          {rawQuery.isLoading ? (
+            <div className="flex h-full items-center justify-center gap-2 text-caption text-muted-foreground">
+              <Loader2 className="size-3 animate-spin" />
+              Loading graph…
+            </div>
+          ) : rawQuery.error ? (
+            <GraphError message={(rawQuery.error as Error).message} />
+          ) : entries.length === 0 ? (
+            <GraphEmpty />
+          ) : (
+            <GraphCanvas
+              layout={layout}
+              total={entries.length}
+              onNodeClick={() => navigate("/raw")}
+            />
+          )}
+        </div>
+        <ConceptConnectionsSidebar
+          isLoading={graphQuery.isLoading}
+          error={(graphQuery.error as Error | null)?.message ?? null}
+          data={graphQuery.data ?? null}
+          onNavigateRaw={() => navigate("/raw")}
+          onNavigateWiki={() => navigate("/wiki")}
+        />
       </div>
     </div>
+  );
+}
+
+/* ─── Concept Connections sidebar (feat T) ──────────────────────── */
+
+function ConceptConnectionsSidebar({
+  isLoading,
+  error,
+  data,
+  onNavigateRaw,
+  onNavigateWiki,
+}: {
+  isLoading: boolean;
+  error: string | null;
+  data: import("@/features/ingest/types").WikiGraphResponse | null;
+  onNavigateRaw: () => void;
+  onNavigateWiki: () => void;
+}) {
+  return (
+    <aside className="flex w-[280px] shrink-0 flex-col overflow-hidden border-l border-border/50 bg-muted/5">
+      <div className="shrink-0 border-b border-border/50 px-4 py-3">
+        <div className="mb-1 flex items-center gap-2 text-caption uppercase tracking-wide text-muted-foreground">
+          <Network className="size-3" />
+          Concept Connections
+        </div>
+        {data ? (
+          <div className="text-caption text-muted-foreground">
+            {data.concept_count} concept{data.concept_count === 1 ? "" : "s"} ·{" "}
+            {data.edge_count} edge{data.edge_count === 1 ? "" : "s"} ·{" "}
+            {data.raw_count} raw
+          </div>
+        ) : null}
+      </div>
+
+      <div className="min-h-0 flex-1 overflow-y-auto px-3 py-2">
+        {isLoading ? (
+          <div className="flex items-center gap-2 py-4 text-caption text-muted-foreground">
+            <Loader2 className="size-3 animate-spin" />
+            Loading…
+          </div>
+        ) : error ? (
+          <div
+            className="rounded-md border px-3 py-2 text-caption"
+            style={{
+              borderColor:
+                "color-mix(in srgb, var(--color-error) 30%, transparent)",
+              backgroundColor:
+                "color-mix(in srgb, var(--color-error) 5%, transparent)",
+              color: "var(--color-error)",
+            }}
+          >
+            {error}
+          </div>
+        ) : !data || data.edges.length === 0 ? (
+          <div className="px-2 py-3 text-caption text-muted-foreground">
+            No concept→raw edges yet. Approve a maintainer proposal in
+            the{" "}
+            <a
+              href="#/inbox"
+              className="text-primary hover:underline"
+            >
+              Inbox
+            </a>{" "}
+            to grow the graph.
+          </div>
+        ) : (
+          <ul className="space-y-1.5">
+            {data.edges.map((edge, idx) => {
+              const fromLabel =
+                data.nodes.find((n) => n.id === edge.from)?.label ??
+                edge.from;
+              const toLabel =
+                data.nodes.find((n) => n.id === edge.to)?.label ?? edge.to;
+              return (
+                <li
+                  key={`${edge.from}->${edge.to}-${idx}`}
+                  className="rounded-md border border-border/40 bg-background px-2.5 py-1.5"
+                >
+                  <button
+                    type="button"
+                    onClick={onNavigateWiki}
+                    className="block w-full truncate text-left text-body-sm font-medium text-foreground hover:underline"
+                    style={{
+                      fontFamily: "var(--font-serif, Lora, serif)",
+                    }}
+                  >
+                    <Brain
+                      className="mr-1 inline size-3"
+                      style={{ color: "var(--claude-orange)" }}
+                    />
+                    {fromLabel}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={onNavigateRaw}
+                    className="mt-0.5 flex w-full items-center gap-1 text-left text-caption text-muted-foreground hover:text-foreground"
+                  >
+                    <ArrowRight className="size-3 shrink-0" />
+                    <span className="truncate">{toLabel}</span>
+                  </button>
+                </li>
+              );
+            })}
+          </ul>
+        )}
+      </div>
+    </aside>
   );
 }
 

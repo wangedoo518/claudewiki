@@ -151,6 +151,31 @@ export interface WikiPageDetailResponse {
 }
 
 /**
+ * Shape returned by `GET /api/wiki/graph` (feat T). Nodes are raw
+ * entries + concept pages; edges are derived-from links from
+ * concept pages to their source raws.
+ */
+export interface WikiGraphNode {
+  id: string;
+  label: string;
+  kind: "raw" | "concept";
+}
+
+export interface WikiGraphEdge {
+  from: string;
+  to: string;
+  kind: "derived-from" | "references";
+}
+
+export interface WikiGraphResponse {
+  nodes: WikiGraphNode[];
+  edges: WikiGraphEdge[];
+  raw_count: number;
+  concept_count: number;
+  edge_count: number;
+}
+
+/**
  * Shape returned by `GET /api/wiki/index` and `GET /api/wiki/log`.
  * Both special files (`wiki/index.md`, `wiki/log.md`) are plain
  * markdown with no frontmatter — the backend hands them back

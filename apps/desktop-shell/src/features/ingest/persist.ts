@@ -17,6 +17,7 @@ import type {
   RawListResponse,
   SchemaResponse,
   WikiApproveWithWriteResponse,
+  WikiGraphResponse,
   WikiPageDetailResponse,
   WikiPageProposal,
   WikiPagesListResponse,
@@ -177,6 +178,15 @@ export async function getWikiIndex(): Promise<WikiSpecialFileResponse> {
  */
 export async function getWikiLog(): Promise<WikiSpecialFileResponse> {
   return fetchJson<WikiSpecialFileResponse>("/api/wiki/log");
+}
+
+/**
+ * GET `/api/wiki/graph` (feat T) — read the wiki graph (raw +
+ * concept nodes + derived-from edges). Used by the Graph page to
+ * render the cognitive web.
+ */
+export async function getWikiGraph(): Promise<WikiGraphResponse> {
+  return fetchJson<WikiGraphResponse>("/api/wiki/graph");
 }
 
 /**

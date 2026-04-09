@@ -1,214 +1,380 @@
-# Open Claude Code
+# ClawWiki · 你的"外脑"
 
-![OpenClaudeCode](open-claude-code.png)
+> 产品哲学：**放弃做"瑞士军刀"，打造一把"手术刀"。**
+>
+> **ClawWiki = 你的外脑。微信喂料 → AI 审阅 → 认知资产沉淀。**
 
-> **0.2.0** — 15 个审计漏洞全部修复 + 5 项 craft-agents-oss 借鉴功能
-> （会话工作流、Workspace Skills、加密凭据、`ocl` CLI、拖拽附件）。
-> 详见 [`CHANGELOG.md`](CHANGELOG.md) 与 [`docs/getting-started.md`](docs/getting-started.md)。
+你在微信里的每一次随手转发、每一段语音、每一份 PPT，都会经过 AI 审阅和你的权限确认，
+被结构化进一个由 Karpathy 式三层架构（Raw / Wiki / Schema）组成的认知资产库。
 
-`open-claude-code` 当前是一个围绕桌面壳层与 Rust 本地服务构建的工作区，而不再是单纯的”还原后的 Claude Code CLI 源码快照”。
+这个库不是工具箱。它是你未来两年里提问、写作、决策时，AI 能直接调用的"长期记忆"。
 
-目前仓库的主线实现主要分成两部分：
+📖 完整 canonical 设计：[`docs/clawwiki/product-design.md`](docs/clawwiki/product-design.md)
+🎨 10 屏线框图：[`docs/clawwiki/wireframes.html`](docs/clawwiki/wireframes.html)
 
-- `apps/desktop-shell`：Tauri + React 桌面应用壳层
-- `rust/`：桌面壳层依赖的本地 Rust 服务与集成层
+---
 
-其中 Rust 核心能力已经不再 vendored 在本仓库中，而是固定依赖 [`claw-code-parity`](https://github.com/wangedoo518/claw-code-parity)。
-此前仓库里保留的本地 Python 镜像/恢复代码和浏览器态 `desktop-web` 镜像前端都已经清理完成，当前只保留 `desktop-shell` 这一条产品前端主线。
+## 核心用户故事
 
-## 当前状态
+**周二下午** — changpeng 在地铁上刷微信。
 
-- 桌面壳层主路由已包含：
-  - `/home`：Workbench 首页
-  - `/apps`：应用画廊
-  - `/apps/:id`：MinApp 详情页
-  - `/code`：独立的 Code Tools 页面
-- `Code` 已从旧的 MinApp 模式提升为一级页面，并引入独立的 `code-tools` 状态与页面结构
-- 模型服务主链路现已收敛为本机托管的 `Codex OAuth` 与 `Qwen OAuth`
-- `Code Tools` 当前只消费这两条 OAuth 模型目录，不再支持第三方/API Key provider hub
-- `rust/` 只保留 `desktop-core`、`desktop-server`、`server` 三个本地 crate
-- `desktop-server` 会为桌面前端提供本地 HTTP API，默认地址为 `http://127.0.0.1:4357`
-- 旧的 vendored Rust core 已从仓库移除，当前实现以 parity 作为唯一上游
+- **2:14 PM** 看到 Karpathy 的 LLM Wiki 方法论 · 长按 → 转发 → "ClawWiki 小助手" · 3 秒后机器人回 "✓ 已入库，正在维护 5 个相关页面"
+- **2:15 PM** 同事发来 47 秒语音，讨论 RAG 局限 · 转发 · "✓ 已转写 420 字，已跟 concept/rag 对齐"
+- **2:16 PM** 群里有人发 PPT `AI Products 2026 Q2 Roadmap.pptx` · 转发 · "✓ 已抽取 32 slides，正在跟 topic/ai-products 合并"
 
-## 仓库结构
+**7:30 PM** — 到家打开 ClawWiki 桌面端：
 
-```text
-open-claude-code/
-├── apps/
-│   └── desktop-shell/        # 当前主桌面应用（Tauri + React）
-├── rust/                     # Rust 集成层 workspace
-│   └── crates/
-│       ├── desktop-core/     # 会话、OAuth 模型服务、本地持久化、调度等桌面 domain
-│       ├── desktop-server/   # 提供 /api/desktop/* 的本地 HTTP 服务
-│       └── server/           # 更轻量的服务层
-├── docs/                     # 设计评审与迁移文档
-└── assets/                   # 仓库说明与界面资源
+- **Dashboard**：今日进账 14 条 · 维护了 23 个页面 · 3 个需要你审阅
+- **Inbox**：点开 "合并冲突：Agentic Loop v1 ↔ v2"，看到 Maintainer AI 完整的 tool call 树、每步 diff、一个 approve/reject 按钮
+- **Ask**：问 "结合今天的三份材料写一段 AI Wiki vs RAG 的判断"，AI 流式吐答案，写 `compare/rag-vs-llm-wiki` 时弹出权限确认窗
+
+**两周后** — 要给 CEO 汇报 "AI memory 这块最近的认知"。打开 Ask 问一句 → AI 基于**你自己 14 天里喂进去的 60 份材料**给出结构化回答。
+
+这就是 **Karpathy 说的认知复利**：过去两周的微信随手转发 → 现在 30 秒就能调用。
+
+完整用户故事见 [`product-design.md §2`](docs/clawwiki/product-design.md)。
+
+---
+
+## 手术刀的三刃
+
+### 🗡 刃一 · 定位刃 · Token 100% 内部消化
+
+> 用户买的不是"Codex 代理服务"，是"一个会替自己长大的外脑"。
+> Codex 账号是订阅附赠的燃料，不是产品本身。
+
+- 平台分配的 Codex 账号进入 `rust/desktop-core::managed_auth` 的 `CloudManaged` source
+- `CodexBroker` 是一个 **Rust struct**，**不是**一个 HTTP 服务
+- 只有两个消费者：`AskSession`（用户提问）和 `WikiMaintainer`（后台自动维护）
+- 前端拿不到 `access_token`，只能看到"池子还剩多少配额"这个数字
+- 外部应用（Cursor / CLI / CCD / 第三方）**无法**从 127.0.0.1:4357 拿到任何 token
+
+### 🗡 刃二 · 交互刃 · CCD 是模式库不是外壳
+
+扒开 Claude Code Desktop，只留 **4 件套交互灵魂**，注入到 Wiki-native 界面里：
+
+| CCD 灵魂 | 原组件 | 注入点 | 新组件 |
+|---|---|---|---|
+| 🧰 **工作台**<br>(sidebar + main + status 三段式) | `SessionWorkbenchTerminal` | `/ask` 骨架 | `features/ask/AskWorkbench.tsx` |
+| 🌊 **流式会话**<br>(消息列表 + tool call card) | `VirtualizedMessageList` + `MessageItem` | `/ask` 主流 + `/inbox` 任务流 | `features/ask/AskStream.tsx` + `features/inbox/MaintainerStream.tsx` |
+| 🛡 **权限确认**<br>(low/medium/high + "always allow") | `PermissionDialog` | 每个 `write_page`/`patch_page`/`deprecate_page` 前必过 | `features/permission/WikiPermissionDialog.tsx` |
+| 🌲 **任务审阅**<br>(task tree + 展开 + diff 预览) | `SubagentPanel` | `/inbox` 选中任务的详情 | `features/inbox/MaintainerTaskTree.tsx` |
+
+皮肤全部重上 **DeepTutor 暖色**：`#FAF9F6` 背景 + `#C35A2C` 烧陶橙 + Lora 衬线。
+
+### 🗡 刃三 · 价值刃 · Karpathy 三层 + WeChat 漏斗
+
+```
+微信（中国最强信息输入流）
+      │
+      ▼  随手转发 / 发语音 / 扔 PPT / 上传视频
+ClawWiki 漏斗
+      │
+┌─────┴─────┐
+▼           ▼
+Raw 层    Schema 层
+(只读)    (CLAUDE.md / AGENTS.md / templates / policies)
+└─────┬─────┘
+      ▼
+   Wiki 层（LLM 持续维护）
+      │
+┌─────┼─────┐
+▼     ▼     ▼
+概念页 人物页 对比/变更日志
 ```
 
-## 关键模块
+**Maintainer AI 的 5 件维护动作**（每次 ingest 必做）：
 
-### 1. `apps/desktop-shell`
+1. Summarise（≤ 200 words · quote ≤ 15 words · 版权安全）
+2. Update affected concept / people / topic / compare pages
+3. Add / update bidirectional backlinks
+4. Detect conflicts → `mark_conflict` → Inbox（要人来审）
+5. Append to `changelog/YYYY-MM-DD.md` + 重建 `wiki/index.md`
 
-当前主产品入口。
+---
 
-技术栈：
+## 战略断腕清单 · 我们**不**做什么
 
-- React
-- React Router
-- Redux Toolkit + redux-persist
-- TanStack Query
-- Tauri 2
-- Tailwind
-- Ant Design
-- styled-components
+**团队评审的第一议题**。没有对这 11 条共识，后面都不成立。
 
-主要页面：
+| # | 砍掉的 | 为什么 |
+|---|---|---|
+| ❌ 1 | Claude Code Desktop 的完整外壳（双行 TabBar / session tab row 2） | 用户不需要第二个 CCD |
+| ❌ 2 | `/apps` MinApps 画廊 + MinAppDetailPage | 不是我们的叙事 |
+| ❌ 3 | `/code` CLI 启动器 + `runCodeTool` + 终端选择器 | 我们不拉起外部 CLI |
+| ❌ 4 | 对外暴露的 Token Broker `/v1` HTTP 路由 | Broker 只在 Rust 层 |
+| ❌ 5 | "Launch Claude Code Desktop" 按钮 | 砍 #4 的直接后果 |
+| ❌ 6 | Provider 目录管理（用户自己添加 API key） | 订阅用户只看 "Codex Pool" |
+| ❌ 7 | Obsidian Vault overlay / 双向同步 | 我们就是 wiki 本身 |
+| ❌ 8 | 团队多用户 / 共享工作区 | MVP 只做单人 |
+| ❌ 9 | 移动端 app | 手机上已经有微信了 |
+| ❌ 10 | "能总结 / 能转录 / 能记笔记" 的工具箱叙事 | 不讲工具话术 |
+| ❌ 11 | 手动 ingestion 作为主流程（桌面"上传"按钮） | 主流量必须从微信来 |
 
-- `HomePage`：工作台总览
-- `AppsGalleryPage`：应用画廊
-- `MinAppDetailPage`：内置/自定义应用承载页
-- `CodeToolsPage`：Cherry Studio 风格的 Code 工具入口
-- `session-workbench/*`：原 `code/*` 会话工作台组件迁移后的承载区
+> **ClawWiki 不是 "一个带 Wiki 功能的 AI 客户端"，而是 "微信转发的归宿"。**
+>
+> 所有的交互动词里，用户做得最多的只有一个——**在微信里按"转发"**。其他一切都是这个动作的后果。
 
-### 2. `rust/`
+---
 
-当前 Rust workspace 是下游集成层，不是完整 CLI 仓库。
+## 信息架构 · 7 个一级导航
 
-本地 crate：
+```
+ClawWiki 桌面壳 (Tauri)
+│
+├── 顶部 chrome (28px, 只有 traffic light + "ClawWiki")
+│
+├── 左侧 Sidebar (220px, 可折叠到 56px, DeepTutor 风格)
+│   ├── ─ PRIMARY ─
+│   ├── 📊 Dashboard          /dashboard
+│   ├── 💬 Ask                /ask[/:sessionId]   ← CCD 工作台+流式会话注入点
+│   ├── 📨 Inbox  [badge]     /inbox              ← CCD 权限确认+任务审阅注入点
+│   ├── 📥 Raw Library        /raw
+│   ├── 📖 Wiki Pages         /wiki[/:slug]
+│   ├── 🕸  Graph              /graph
+│   ├── 📐 Schema             /schema
+│   │
+│   ├── ─ FUNNEL ─
+│   ├── 🔗 WeChat Bridge      /wechat
+│   │
+│   └── ⚙️  Settings           /settings
+│
+└── 主区：Page Head (56px) + Body + StatusLine (28px)
+```
 
-- `desktop-core`
-- `desktop-server`
-- `server`
+**为什么 Ask 和 Inbox 排在前面**：这是 CCD 4 件套灵魂的主要栖息地。用户最高频的动作是"在微信发一条" → 然后"回到桌面看 Inbox → 点 Ask 接着挖"。其它页是支撑。
 
-上游依赖：
+---
 
-- `api`
-- `runtime`
-- `tools`
-- `plugins`
+## WeChat 漏斗 · 唯一入口的技术链路
 
-这些 crate 通过固定 git revision 依赖 `claw-code-parity`，具体见 [rust/Cargo.toml](rust/Cargo.toml) 和 [rust/README.md](rust/README.md)。
+```
+企业微信外联机器人 ──webhook──▶ wechat-ingest :8904 ──WS──▶ desktop-shell
+     (主推 · 合规)                  (只中继 · 不入库)              │
+                                   (30 天 TTL · AES-GCM)          ▼
+                                                           下载 blob
+                                                                  │
+                                                                  ▼
+                                                        defuddle (fork + wechat extractor)
+                                                                  │
+                                                                  ▼
+                                                        obsidian-clipper/api::clip()
+                                                                  │
+                                                                  ▼
+                                                          POST Rust → ~/.clawwiki/raw/
+                                                                  │
+                                                                  ▼
+                                                          触发 wiki-maintainer (Codex GPT-5.4)
 
-### 3. `docs/`
+🔒 原文永不经任何第三方 LLM   🔒 只经过用户自己订阅的 Codex   🔒 云侧 blob 加密，不解密
+```
 
-包含当前仓库的重要设计和迁移结论，建议优先阅读：
+### 10 种素材类型支持
 
-- [open-claude-code-parity-dependency-design.md](docs/open-claude-code-parity-dependency-design.md)
-- [open-claude-code-parity-migration-checklist.md](docs/open-claude-code-parity-migration-checklist.md)
+| 微信输入 | 桌面侧 pipeline | Raw 产出 |
+|---|---|---|
+| 文本 | 包成 md | `NNNNN_wechat_text_{slug}.md` |
+| **mp.weixin.qq.com URL** | fetch → forked defuddle + wechat extractor → clipper/api::clip() | `NNNNN_wechat_article_{pub}_{slug}.md` + `attachments/` |
+| 普通 URL | 同上，不走 wechat 分支 | `NNNNN_wechat_url_{slug}.md` |
+| 语音 `.silk/.amr/.mp3` | ffmpeg → whisper.cpp 本地 或 Whisper API | `NNNNN_wechat_voice_{dur}.md` |
+| 图片 `.jpg` | Codex GPT-5.4 Vision caption + OCR | `NNNNN_wechat_image_{sha}.md` + 原图 |
+| **PPT `.pptx`** | Rust spawn `python-pptx` → 每 slide 一个 section | `NNNNN_wechat_pptx_{slug}.md` + slide 图 |
+| PDF | 前端 `pdfjs-dist` 抽文本 + 页边图 | `NNNNN_wechat_pdf_{slug}.md` |
+| DOCX | Rust spawn `mammoth` → defuddle 通用链路 | `NNNNN_wechat_docx_{slug}.md` |
+| **视频 `.mp4`** | ffmpeg 抽音轨 + 10s 抽帧 → Whisper + Vision caption | `NNNNN_wechat_video_{dur}.md` + `keyframes/` |
+| 小程序卡片 | 反推落地 URL → URL pipeline | `NNNNN_wechat_card_{appid}.md` |
+| 聊天记录片段 | 按发言人聚合 + 主题分段 | `NNNNN_wechat_chat_{count}.md` |
+
+### 关键技术栈决定
+
+| 选择 | 决定 | 理由 |
+|---|---|---|
+| HTML → 干净 HTML | **defuddle** (fork + 自写 `wechat.ts` extractor) | 成熟、MIT、环境无关 |
+| HTML → Markdown | **obsidian-clipper/api::clip()** | `src/api.ts` 零 chrome.* 依赖，已经把 defuddle 串起来 |
+| DOM Parser | Tauri WebView 原生 `DOMParser` | 不用 linkedom，不开 Node 子进程 |
+| ❌ obsidian-importer | 硬绑 Obsidian Vault API，抽出来成本 > 重写 | 不用 |
+| 维护 LLM | Codex GPT-5.4 via CloudManaged pool | prompt cache 能省 50-90% |
+| 维护范式 MVP | engram 式（单次 LLM 调用 + Pydantic 校验返回 JSON） | 代码量小；规模化后抄 sage-wiki 5-pass |
+
+---
+
+## 数据层 · `~/.clawwiki/`
+
+```
+~/.clawwiki/
+├── raw/                              # 不可变事实层（92%+ 来自微信）
+│   └── attachments/
+├── wiki/                             # LLM 持续维护
+│   ├── index.md                      # Maintainer 自动重建
+│   ├── log.md                        # append-only `## [YYYY-MM-DD HH:MM] ingest | ...`
+│   ├── concepts/*.md
+│   ├── people/*.md
+│   ├── topics/*.md
+│   ├── compare/*.md
+│   └── changelog/YYYY-MM-DD.md
+├── schema/                           # 规则层（人写 + AI 提议）
+│   ├── CLAUDE.md                     # Maintainer 纪律（必须先于代码落地）
+│   ├── AGENTS.md                     # 多 agent 分工
+│   ├── templates/{concept,people,topic,compare}.md + wechat-clip.clipper.json
+│   └── policies/{maintenance,conflict,deprecation,naming}.md
+├── .clawwiki/                        # 机器可读元数据
+│   ├── manifest.json                 # source/concept hash tracker
+│   ├── compile-state.json            # 断点续传
+│   └── ask-sessions.db               # SQLite：ask 会话持久化
+└── .git/                             # git init，白送版本历史
+```
+
+---
+
+## 10 屏线框图
+
+`docs/clawwiki/wireframes.html` · 1400×900 · 全 DeepTutor 暖色 · 单侧栏 · CCD 4 件套灵魂可见于 #06 + #07
+
+| # | 屏 | 展示 | CCD 灵魂 |
+|---|---|---|---|
+| 01 | Dashboard · 你的外脑主页 | 认知资产复利指标 + 今日微信进账 + QuickAsk | — |
+| 02 | WeChat Bridge · 唯一漏斗 | Bot 绑定 + 5 步 pipeline 状态灯 + 今日收件箱 | — |
+| 03 | Raw Library · 不可变事实层 | 1326 源 · 92% 来自微信 | — |
+| 04 | Wiki Pages · LLM 主笔层 | Concepts/People/Topics/Compare/Changelog | — |
+| 05 | Wiki Page Detail · Lora 衬线 | 正文 + backlinks 追溯到微信 | — |
+| **06** | **Ask · CCD 工作台 + 流式会话** | 流式消息流 + Composer + PermissionDialog 预览 | **① 工作台 ② 流式** |
+| **07** | **Inbox · CCD 权限确认 + 任务审阅** | 任务列表 + 完整 TaskTree + diff 预览 | **③ 权限 ④ 审阅** |
+| 08 | Graph · 你的认知网络 | 节点=页面 · 颜色=fresh/stale/conflict | — |
+| 09 | Schema Editor · Maintainer 的纪律 | CLAUDE.md + Maintainer proposal diff | — |
+| 10 | Settings · Subscription & Codex Pool | 订阅状态 + 账号池（只读）· 无外部 hookup | — |
+
+---
+
+## MVP 路线（7 周 · 锐化版）
+
+| Sprint | 周 | 交付 | 成功判据 |
+|---|---|---|---|
+| **S0 · 斩断** | W1 前半 | 一次性删除 `shell/TabBar.tsx`、`features/{apps,code,code-tools,workbench,session-workbench}/` 六个目录 · 建 `~/.clawwiki/` + `CLAUDE.md` + `Sidebar.tsx` + 7 路由 stub | Wiki-first 壳跑起来不编译错 |
+| **S1 · 漏斗** | W1 后半 + W2 | fork defuddle + 写 `wechat.ts` extractor + `features/ingest/` + `RawLibraryPage` + 手动 paste URL | 粘贴 mp.weixin URL，10s 内 raw 多一份格式良好 md |
+| **S2 · Broker** | W3 | `codex_broker` Rust 模块 + `CloudManaged` source + Settings > Subscription & Codex Pool 只读面板 | Dashboard 显示 "pool: 5 · 今日 0 req · ¥0" |
+| **S3 · CCD 4 件套提取** | W4 | 拆 `session-workbench` → 7 个新组件 · AskPage 通 Broker · InboxPage 空壳 | 能 Ask 对话、看流式、mock write_page 触发 PermissionDialog |
+| **S4 · 维护 Agent** | W5 | `wiki_maintainer` (engram 式单次调用) · JSON 校验 · Inbox 显 MaintainerTaskTree | ingest 后自动生成 1-3 wiki page + log.md + 能审阅 |
+| **S5 · 微信主入口** | W6 | `wechat-ingest` 云服务 · Rust `wechat_bridge` · WeChatBridgePage + WS | 微信给 bot 发 mp 链接，3s 内 Inbox 卡片出现并走完 pipeline |
+| **S6 · 丰富素材** | W7 | 语音/图片/PDF/PPT/视频 adapter + Rust endpoint · Graph + Schema 只读 | 微信发语音/PPT/视频，raw 出 md 带转写/slides |
+
+**Backlog 明确不做**：sage-wiki 5-pass compiler · Batch API · FTS5 · 向量检索 · MCP server · 个人微信桥 · Obsidian vault · 团队多用户 · i18n · 移动端。
+
+---
+
+## 当前仓库结构
+
+```text
+claudewiki/
+├── apps/
+│   └── desktop-shell/                # Tauri 2 + React 桌面壳
+│       └── src/
+│           ├── shell/                # 🔨 S0 重写为 Sidebar + Router
+│           ├── features/
+│           │   ├── settings/         # ✅ Phase 6B/6C: WeChat + MultiProvider 已合并
+│           │   ├── agents/
+│           │   ├── apps/             # ❌ S0 删除
+│           │   ├── code/             # ❌ S0 删除
+│           │   ├── code-tools/       # ❌ S0 删除
+│           │   ├── workbench/        # ❌ S0 删除
+│           │   └── session-workbench/ # 🔨 S3 拆成 5 个新组件
+│           └── lib/
+├── rust/
+│   └── crates/
+│       ├── desktop-core/             # 桌面 domain
+│       │   └── src/
+│       │       ├── wechat_ilink/     # ✅ Phase 6B/6C: WeChat 账号接入（10 个文件）
+│       │       ├── providers_config.rs
+│       │       ├── managed_auth.rs   # 🔨 S2 加 CloudManaged source
+│       │       ├── codex_auth.rs
+│       │       └── agentic_loop.rs
+│       ├── desktop-server/           # 本地 HTTP (127.0.0.1:4357)
+│       ├── desktop-cli/              # 桌面侧 CLI 工具
+│       └── server/                   # 轻量服务层
+├── vendor/
+│   └── api/                          # LLM provider 抽象（Anthropic / OpenAI 兼容）
+├── docs/
+│   ├── clawwiki/                     # ⭐ canonical 产品设计 + 线框图
+│   │   ├── product-design.md         # 769 行
+│   │   ├── wireframes.html           # 10 屏
+│   │   └── _archive/                 # v1 / middle-path / v2 / v3 全部历史
+│   └── desktop-shell/
+└── assets/
+```
+
+---
 
 ## 开发环境
 
-建议环境：
+- Node.js 22+ · npm
+- Rust stable · Cargo
+- Tauri 2 本机依赖（[官方文档](https://tauri.app/start/prerequisites/)）
 
-- Node.js 22+
-- npm
-- Rust stable
-- Cargo
-- Tauri 2 所需本机依赖
-
-## 快速开始
-
-### 桌面壳层
-
-安装前端依赖：
+### 快速开始
 
 ```bash
+# 桌面壳
 cd apps/desktop-shell
 npm install
-```
+npm run tauri:dev        # 会自动拉起 rust/crates/desktop-server
 
-前端构建：
-
-```bash
-npm run build
-```
-
-本地开发：
-
-```bash
-npm run tauri:dev
-```
-
-说明：
-
-- `desktop-shell` 启动时会尝试自动拉起本仓库 `rust/` 下的 `desktop-server`
-- debug 环境下会执行 `cargo run -p desktop-server`
-- 如果已有编译产物，也会直接复用 `rust/target/{debug,release}/desktop-server`
-
-### Rust 服务层
-
-进入 Rust workspace：
-
-```bash
+# Rust 服务层（独立启动）
 cd rust
-```
-
-常用命令：
-
-```bash
-cargo check --workspace
-cargo test --workspace
-```
-
-单独启动桌面服务：
-
-```bash
 cargo run -p desktop-server
-```
-
-健康检查：
-
-```bash
 curl http://127.0.0.1:4357/healthz
 ```
 
-## 验证命令
-
-当前仓库常用验证命令：
-
-### Rust
+### 验证命令
 
 ```bash
+# Rust
 cd rust
 cargo fmt --all
-cargo check --workspace
+cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
-```
 
-### Desktop Shell
-
-```bash
+# Desktop shell
 cd apps/desktop-shell
 npm run build
-cd src-tauri
-cargo check
+cd src-tauri && cargo check
 ```
+
+---
+
+## 设计文档（必读）
+
+按优先级：
+
+| 文档 | 内容 |
+|---|---|
+| ⭐ [`docs/clawwiki/product-design.md`](docs/clawwiki/product-design.md) | **canonical 产品设计**。手术刀哲学、11 条断腕、7 个一级导航、CCD 4 件套提取精确映射、WeChat pipeline、`CodexBroker` Rust 草图、7 周 MVP 路线、D1-D20 团队评审投票表 |
+| ⭐ [`docs/clawwiki/wireframes.html`](docs/clawwiki/wireframes.html) | 10 屏 canonical 线框图，暖色 DeepTutor 风格，CCD 4 件套灵魂可见于 #06 Ask + #07 Inbox |
+| [`docs/clawwiki/_archive/`](docs/clawwiki/_archive/) | 前 4 代设计演进（v1 → middle-path → v2 → v3），供 diff review |
+| [`docs/desktop-shell/cloud-managed-integration.md`](docs/desktop-shell/cloud-managed-integration.md) | 历史 spec：trade-service Codex 账号 → Rust `CloudManaged` 的早期规划 |
+| [`CLAW.md`](CLAW.md) · [`AGENTS.md`](AGENTS.md) | 仓库级 Claude Code 使用约定 · 多 agent 分工 |
+| [`rust/README.md`](rust/README.md) | Rust workspace 结构 |
+
+---
 
 ## 设计边界
 
-当前建议遵循以下边界：
+| 层 | 职责 |
+|---|---|
+| [`claw-code-parity`](https://github.com/wangedoo518/claw-code-parity) 上游 | Rust 核心能力（api / runtime / tools / plugins） |
+| `rust/crates/desktop-core` | 桌面 domain：会话 · OAuth · WeChat · 权限 · providers |
+| `rust/crates/desktop-server` | 本机 HTTP 服务，给前端提供 `/api/desktop/*` |
+| `apps/desktop-shell` | 桌面交互、页面结构、宿主行为 |
 
-- `claw-code-parity` 负责 Rust 核心能力
-- `open-claude-code/rust` 只负责桌面集成层和产品边界适配
-- `apps/desktop-shell` 负责桌面交互、页面结构和宿主行为
+如果要改 Rust 核心行为，**优先 upstream 到 `claw-code-parity`**。
 
-如果要改 Rust 核心行为，优先考虑 upstream 到 parity，而不是在本仓库重新形成 fork。
-
-## 需要注意的历史内容
-
-仓库里仍保留一些历史或迁移文档，例如：
-
-- 根目录 [package.json](package.json) 仍反映旧的 Electron/Claude 桌面依赖树
-- [PARITY.md](PARITY.md) 是针对旧 vendored Rust port 的历史分析文档
-
-这些内容依然有参考价值，但不应再被当成当前主产品入口或当前实现来源。
-
-## 相关文档
-
-- [CLAW.md](CLAW.md)
-- [rust/README.md](rust/README.md)
-- [docs/desktop-shell/README.md](docs/desktop-shell/README.md)
+---
 
 ## License
 
-请结合仓库根目录现有文件与上游依赖的许可证约束一起使用本项目。
+请结合仓库根目录现有文件与上游依赖（`claw-code-parity` 等）的许可证约束一起使用本项目。
+
+---
+
+<sub>
+<b>ClawWiki</b> · 产品哲学："放弃做瑞士军刀，打造一把手术刀。" ·
+canonical design <code>docs/clawwiki/product-design.md</code>
+</sub>

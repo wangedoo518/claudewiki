@@ -1,14 +1,16 @@
-// S1 paste-URL adapter (minimal).
+// Paste-URL adapter.
 //
-// MVP behavior: we accept the URL string and store it as the body of a
-// `url`-source entry, with the URL itself echoed into both the body
-// and the frontmatter `source_url` field. We deliberately do NOT fetch
-// the URL contents in S1 — that responsibility moves to S6 when the
-// `wiki_ingest` Rust crate lands defuddle + obsidian-clipper integration
-// per canonical §7.3.
+// B.2 upgrade: the backend `ingest_wiki_raw_handler` now honors
+// `{source: "url", body: "", source_url: "..."}` by delegating to
+// `wiki_ingest::url::fetch_and_body`, which actually fetches the URL
+// and stores the response body (text/html wrapped in a code fence,
+// text/plain/markdown verbatim, opaque MIMEs get a stub). This
+// adapter therefore sends an empty body and lets the server do the
+// real work.
 //
-// The structure of this file matches the future shape so the S6 swap is
-// a single function-body change with no consumer rewrites.
+// A caller that wants to skip the network fetch (e.g. a manual
+// import of cached content) can pass `body` directly; the server
+// only triggers `wiki_ingest` when `body` is empty.
 
 import { ingestRawEntry } from "../persist";
 import type { RawEntry } from "../types";
@@ -16,23 +18,12 @@ import type { RawEntry } from "../types";
 export interface IngestUrlInput {
   url: string;
   title?: string;
-}
-
-/**
- * Build a minimal markdown body that captures just the URL. Future
- * S6 work will replace this with the defuddle-extracted article text
- * and a richer frontmatter (published date, author, ...).
- */
-function buildPlaceholderBody(url: string): string {
-  return [
-    `# ${url}`,
-    "",
-    "_This entry was ingested via the S1 minimal URL adapter._",
-    "_Full article extraction (defuddle + obsidian-clipper) lands in S6._",
-    "",
-    `<${url}>`,
-    "",
-  ].join("\n");
+  /**
+   * Optional pre-fetched body. When absent (the common case),
+   * `ingest_wiki_raw_handler` will call `wiki_ingest::url::fetch_and_body`
+   * and populate the body from the live URL.
+   */
+  body?: string;
 }
 
 export async function ingestUrl(input: IngestUrlInput): Promise<RawEntry> {
@@ -40,7 +31,9 @@ export async function ingestUrl(input: IngestUrlInput): Promise<RawEntry> {
   if (!url) {
     throw new Error("ingestUrl: url is empty");
   }
-  // Best-effort title fallback: take the URL hostname.
+  // Best-effort title fallback: take the URL hostname. The backend
+  // will override this with the wiki_ingest result if we don't
+  // supply an explicit title.
   const fallbackTitle = (() => {
     try {
       return new URL(url).hostname;
@@ -52,7 +45,7 @@ export async function ingestUrl(input: IngestUrlInput): Promise<RawEntry> {
   return ingestRawEntry({
     source: "url",
     title: input.title?.trim() || fallbackTitle,
-    body: buildPlaceholderBody(url),
+    body: input.body ?? "",
     source_url: url,
   });
 }

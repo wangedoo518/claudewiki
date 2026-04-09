@@ -1683,22 +1683,70 @@ async fn ingest_wiki_raw_handler(
             }),
         ));
     }
-    if body.body.is_empty() {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            Json(ErrorResponse {
-                error: "body must not be empty".to_string(),
-            }),
-        ));
-    }
+
+    // B.2: when `source == "url"` AND the caller supplied a
+    // `source_url`, upgrade the request by actually fetching the URL
+    // through `wiki_ingest::url::fetch_and_body`. This replaces the
+    // S1 placeholder body (a fixed `<{url}>` stub) with real content
+    // pulled from the upstream server — text/html gets wrapped in a
+    // code fence, text/plain and text/markdown land verbatim,
+    // opaque MIMEs get a stub with byte count + content-type.
+    //
+    // The S1 behavior is preserved as a fallback when the caller
+    // explicitly passes a non-empty `body` — this gives CLI tests
+    // and integration test fixtures a way to avoid the live network
+    // round-trip.
+    let (effective_title, effective_body, effective_source_url) =
+        if body.source == "url" && body.body.is_empty() {
+            let url = body.source_url.as_deref().unwrap_or("").trim().to_string();
+            if url.is_empty() {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    Json(ErrorResponse {
+                        error: "url source requires either `body` or `source_url`".to_string(),
+                    }),
+                ));
+            }
+            match wiki_ingest::url::fetch_and_body(&url).await {
+                Ok(result) => {
+                    let title = if body.title.trim().is_empty() {
+                        result.title
+                    } else {
+                        body.title.clone()
+                    };
+                    (title, result.body, result.source_url)
+                }
+                Err(err) => {
+                    return Err((
+                        StatusCode::BAD_GATEWAY,
+                        Json(ErrorResponse {
+                            error: format!("url fetch failed: {err}"),
+                        }),
+                    ));
+                }
+            }
+        } else {
+            // Non-url sources still require a body. The url fast-path
+            // above is the ONLY case where body may legitimately be empty.
+            if body.body.is_empty() {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    Json(ErrorResponse {
+                        error: "body must not be empty".to_string(),
+                    }),
+                ));
+            }
+            (body.title.clone(), body.body.clone(), body.source_url.clone())
+        };
 
     let paths = resolve_wiki_root_for_handler()?;
-    let frontmatter = wiki_store::RawFrontmatter::for_paste(&body.source, body.source_url);
+    let frontmatter =
+        wiki_store::RawFrontmatter::for_paste(&body.source, effective_source_url);
     let entry = wiki_store::write_raw_entry(
         &paths,
         &body.source,
-        &body.title,
-        &body.body,
+        &effective_title,
+        &effective_body,
         &frontmatter,
     )
     .map_err(|e| {

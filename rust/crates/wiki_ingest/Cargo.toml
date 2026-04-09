@@ -1,0 +1,30 @@
+[package]
+name = "wiki_ingest"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# ── Why a standalone crate? ────────────────────────────────────────
+# `wiki_ingest` owns the adapters that turn inbound URLs, voice
+# clips, images, PPTs, PDFs, DOCX, and videos into markdown bodies
+# landing under `~/.clawwiki/raw/`. Per ClawWiki canonical §11.2
+# this is one of the six new crates in the ingestion pipeline.
+#
+# Kept separate from `wiki_store` because the adapters will eventually
+# pull in heavy deps (python-pptx spawning, whisper-rs, ffmpeg-sys-next,
+# pdfjs-dist etc.) that `wiki_store` has no business knowing about.
+# Today the only adapter is `url::fetch_and_body`, so the dep graph
+# is minimal: just `reqwest` + `thiserror`.
+
+[dependencies]
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+thiserror = "2"
+wiki_store = { path = "../wiki_store" }
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { version = "1", features = ["macros", "rt", "net", "rt-multi-thread"] }
+
+[lints]
+workspace = true

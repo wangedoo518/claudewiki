@@ -16,6 +16,7 @@ base64 = "0.22"
 bytes = "1"
 desktop-core = { path = "../desktop-core" }
 wiki_store = { path = "../wiki_store" }
+wiki_ingest = { path = "../wiki_ingest" }
 futures = "0.3"
 log = "0.4"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }

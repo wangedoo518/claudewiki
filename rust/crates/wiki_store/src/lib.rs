@@ -396,6 +396,30 @@ fn try_git_init(root: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Overwrite `schema/CLAUDE.md` with new user-supplied content.
+/// Canonical §8: schema is human-curated; this is the human write
+/// path (the maintainer agent never calls this — it goes through
+/// the Inbox proposal flow instead).
+///
+/// Atomic via tmp + rename. Idempotent — calling twice with the
+/// same content produces the same on-disk result. Empty content
+/// is REJECTED to prevent accidental schema truncation; callers
+/// should validate before calling.
+pub fn overwrite_schema_claude_md(paths: &WikiPaths, content: &str) -> Result<()> {
+    if content.trim().is_empty() {
+        return Err(WikiStoreError::Invalid(
+            "schema content must not be empty".to_string(),
+        ));
+    }
+    fs::create_dir_all(&paths.schema)
+        .map_err(|e| WikiStoreError::io(paths.schema.clone(), e))?;
+    let target = paths.schema_claude_md.clone();
+    let tmp = target.with_extension("md.tmp");
+    fs::write(&tmp, content.as_bytes()).map_err(|e| WikiStoreError::io(tmp.clone(), e))?;
+    fs::rename(&tmp, &target).map_err(|e| WikiStoreError::io(target.clone(), e))?;
+    Ok(())
+}
+
 /// Returns the bytes of the canonical `schema/CLAUDE.md` template that
 /// `init_wiki` writes on first run. Exposed so other crates can show it
 /// in onboarding screens or "reset to defaults" actions without having
@@ -2606,6 +2630,52 @@ mod tests {
         // Falls back to slug as title; no " — summary" suffix.
         assert!(content.contains("- [bare-page](concepts/bare-page.md)\n"));
         assert!(!content.contains("bare-page.md — "));
+    }
+
+    // ── M schema overwrite tests ─────────────────────────────────
+
+    #[test]
+    fn overwrite_schema_claude_md_replaces_seed() {
+        let tmp = tempdir().unwrap();
+        init_wiki(tmp.path()).unwrap();
+        let paths = WikiPaths::resolve(tmp.path());
+
+        // After init_wiki, the seed template is on disk.
+        let seed = fs::read_to_string(&paths.schema_claude_md).unwrap();
+        assert!(!seed.is_empty());
+
+        let new_content = "# CLAUDE.md\n\n## Role\n\nYou are a custom maintainer.\n";
+        overwrite_schema_claude_md(&paths, new_content).unwrap();
+
+        let actual = fs::read_to_string(&paths.schema_claude_md).unwrap();
+        assert_eq!(actual, new_content);
+    }
+
+    #[test]
+    fn overwrite_schema_claude_md_rejects_empty_content() {
+        let tmp = tempdir().unwrap();
+        init_wiki(tmp.path()).unwrap();
+        let paths = WikiPaths::resolve(tmp.path());
+
+        let err = overwrite_schema_claude_md(&paths, "").unwrap_err();
+        assert!(matches!(err, WikiStoreError::Invalid(_)));
+
+        let err = overwrite_schema_claude_md(&paths, "   \n  ").unwrap_err();
+        assert!(matches!(err, WikiStoreError::Invalid(_)));
+    }
+
+    #[test]
+    fn overwrite_schema_claude_md_is_idempotent() {
+        let tmp = tempdir().unwrap();
+        init_wiki(tmp.path()).unwrap();
+        let paths = WikiPaths::resolve(tmp.path());
+
+        let content = "# Custom\n\nbody\n";
+        overwrite_schema_claude_md(&paths, content).unwrap();
+        let first = fs::read_to_string(&paths.schema_claude_md).unwrap();
+        overwrite_schema_claude_md(&paths, content).unwrap();
+        let second = fs::read_to_string(&paths.schema_claude_md).unwrap();
+        assert_eq!(first, second);
     }
 
     // ── S per-day changelog tests ────────────────────────────────

@@ -481,7 +481,10 @@ pub fn app(state: AppState) -> Router {
         // §8 / §10, schema/ is human-owned: the maintainer agent may
         // PROPOSE changes via the Inbox but never writes here directly,
         // and neither does this HTTP route (no PUT/POST).
-        .route("/api/wiki/schema", get(get_wiki_schema_handler))
+        .route(
+            "/api/wiki/schema",
+            get(get_wiki_schema_handler).put(put_wiki_schema_handler),
+        )
         // ── Phase 6C: WeChat account management ────────────────────
         .route(
             "/api/desktop/wechat/accounts",
@@ -1998,6 +2001,72 @@ async fn get_wiki_schema_handler() -> Result<Json<serde_json::Value>, ApiError> 
         "source": "disk",
         "byte_size": byte_size,
     })))
+}
+
+/// `PUT /api/wiki/schema` (canonical §9.3 · feat M)
+///
+/// Overwrite `schema/CLAUDE.md` with new content. Canonical §8 says
+/// "schema/ is human-only — the maintainer agent may PROPOSE changes
+/// via Inbox but never writes here directly". This handler is the
+/// HUMAN write path: the user opens SchemaEditor, edits, clicks
+/// Save, frontend POSTs the new content here. The `Inbox proposal`
+/// alternative path comes later via R + a future S2 sprint.
+///
+/// Body shape:
+/// ```json
+/// { "content": "# CLAUDE.md\n\n## Role\n..." }
+/// ```
+///
+/// Behavior:
+/// * Validates that content is non-empty (refuses to truncate
+///   the schema with a blank PUT — that would orphan the maintainer
+///   agent).
+/// * Atomic write: tmp + rename via wiki_store::overwrite_schema.
+/// * Logs to log.md as "edit-schema | CLAUDE.md".
+/// * Returns the new byte size for client confirmation.
+///
+/// Errors:
+/// * 400 — empty content
+/// * 500 — disk write failure
+async fn put_wiki_schema_handler(
+    Json(body): Json<PutSchemaRequest>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let trimmed = body.content.trim();
+    if trimmed.is_empty() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "schema content must not be empty".to_string(),
+            }),
+        ));
+    }
+
+    let paths = resolve_wiki_root_for_handler()?;
+    wiki_store::overwrite_schema_claude_md(&paths, &body.content).map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("schema write failed: {e}"),
+            }),
+        )
+    })?;
+
+    // Soft-fail audit log entry. Canonical §8 wants the schema
+    // edits in the timeline alongside maintainer writes.
+    if let Err(e) = wiki_store::append_wiki_log(&paths, "edit-schema", "CLAUDE.md") {
+        eprintln!("put_wiki_schema: schema written but log append failed: {e}");
+    }
+
+    Ok(Json(serde_json::json!({
+        "path": paths.schema_claude_md.display().to_string(),
+        "byte_size": body.content.len(),
+        "ok": true,
+    })))
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct PutSchemaRequest {
+    content: String,
 }
 
 async fn resolve_wiki_inbox_handler(

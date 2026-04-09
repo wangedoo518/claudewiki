@@ -89,6 +89,25 @@ export async function getWikiSchema(): Promise<SchemaResponse> {
   return fetchJson<SchemaResponse>("/api/wiki/schema");
 }
 
+/**
+ * PUT `/api/wiki/schema` (feat M) — overwrite `schema/CLAUDE.md`
+ * with new content. Returns the new byte size and disk path.
+ * Throws on empty content or disk write failure.
+ */
+export async function putWikiSchema(content: string): Promise<{
+  path: string;
+  byte_size: number;
+  ok: boolean;
+}> {
+  return fetchJson<{ path: string; byte_size: number; ok: boolean }>(
+    "/api/wiki/schema",
+    {
+      method: "PUT",
+      body: JSON.stringify({ content }),
+    },
+  );
+}
+
 // ── S4 Wiki Maintainer MVP ────────────────────────────────────
 
 /**

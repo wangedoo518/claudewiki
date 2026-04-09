@@ -1,33 +1,94 @@
 /**
  * Schema Editor · Maintainer 的纪律 (wireframes.html §09)
  *
- * S6 MVP implementation. Canonical §10 says `schema/` is human-owned
- * and the maintainer agent may only PROPOSE changes via the Inbox —
- * never write directly. This page is therefore READ-ONLY by contract:
- * it renders `schema/CLAUDE.md` with a friendly markdown preview plus
- * the resolved disk path so users can see exactly which file drives
- * the maintainer's behavior.
+ * S6 MVP shipped a read-only viewer; feat(M) adds write mode:
+ * canonical §8 says "schema/ is human-curated", so the HUMAN write
+ * path is a direct edit-and-save. (The maintainer agent's PROPOSE
+ * path through Inbox is a separate, future feature — see Tier 3 R.)
  *
- * What's NOT in S6 MVP:
- *   - Proposal diff view (needs the maintainer LLM to propose anything,
- *     which needs codex_broker::chat_completion to be wired)
+ * Layout:
+ *   - Hero header
+ *   - Source path + size card
+ *   - Read-only notice toggles to "Editing" notice when in edit mode
+ *   - Content pane is either a <pre> (view) or <textarea> (edit)
+ *   - Action bar at the bottom: Edit / Save / Cancel
+ *
+ * Save flow:
+ *   1. User clicks Edit → enter edit mode, copy server content into draft
+ *   2. User edits draft, clicks Save → PUT /api/wiki/schema
+ *   3. On success → exit edit mode, refetch schema, show "Saved" toast
+ *   4. On failure → stay in edit mode, show error inline
+ *
+ * What's STILL not in:
+ *   - Markdown rendered preview (raw monospace is fine for a rules file)
+ *   - Diff view (no proposal source to diff against yet)
  *   - Left-pane file tree of AGENTS.md / templates/ / policies/
- *     (S6 only reads CLAUDE.md; future sprints can add endpoints for
- *     the other schema files)
- *   - Inline editing (contradicts "human-owned" rule; if users want
- *     to edit they open the file in their OS editor)
  */
 
-import { useQuery } from "@tanstack/react-query";
-import { Loader2, Ruler, FileText, ShieldAlert } from "lucide-react";
-import { getWikiSchema } from "@/features/ingest/persist";
+import { useEffect, useState } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+  Loader2,
+  Ruler,
+  FileText,
+  ShieldAlert,
+  Pencil,
+  Save,
+  X,
+  CheckCircle2,
+} from "lucide-react";
+import { getWikiSchema, putWikiSchema } from "@/features/ingest/persist";
 
 export function SchemaEditorPage() {
+  const queryClient = useQueryClient();
   const schemaQuery = useQuery({
     queryKey: ["wiki", "schema"] as const,
     queryFn: () => getWikiSchema(),
     staleTime: 30_000,
   });
+
+  const [isEditing, setIsEditing] = useState(false);
+  const [draft, setDraft] = useState("");
+  const [savedAt, setSavedAt] = useState<number | null>(null);
+
+  // Reset draft whenever fresh server data arrives and we're not
+  // mid-edit (so Save+refetch ends up showing the new content
+  // rather than reverting to the old draft).
+  useEffect(() => {
+    if (!isEditing && schemaQuery.data) {
+      setDraft(schemaQuery.data.content);
+    }
+  }, [schemaQuery.data, isEditing]);
+
+  const saveMutation = useMutation({
+    mutationFn: (content: string) => putWikiSchema(content),
+    onSuccess: () => {
+      setIsEditing(false);
+      setSavedAt(Date.now());
+      void queryClient.invalidateQueries({ queryKey: ["wiki", "schema"] });
+    },
+  });
+
+  const handleEdit = () => {
+    if (schemaQuery.data) {
+      setDraft(schemaQuery.data.content);
+      setIsEditing(true);
+      setSavedAt(null);
+    }
+  };
+
+  const handleCancel = () => {
+    if (schemaQuery.data) {
+      setDraft(schemaQuery.data.content);
+    }
+    setIsEditing(false);
+    saveMutation.reset();
+  };
+
+  const handleSave = () => {
+    if (draft.trim().length === 0) return;
+    saveMutation.mutate(draft);
+  };
 
   return (
     <div className="flex h-full flex-col overflow-hidden">
@@ -43,7 +104,7 @@ export function SchemaEditorPage() {
           </h1>
         </div>
         <p className="mt-1 text-label text-muted-foreground">
-          AI 的纪律是什么 — <code>schema/CLAUDE.md</code> 是维护 agent 的唯一行为契约 · 人写优先 · AI 只能通过 Inbox 提议修改
+          AI 的纪律是什么 — <code>schema/CLAUDE.md</code> 是维护 agent 的唯一行为契约 · 人写优先 · feat(M) 后支持直接编辑保存
         </p>
       </div>
 
@@ -73,6 +134,15 @@ export function SchemaEditorPage() {
             path={schemaQuery.data.path}
             source={schemaQuery.data.source}
             byteSize={schemaQuery.data.byte_size}
+            isEditing={isEditing}
+            draft={draft}
+            onDraftChange={setDraft}
+            onEdit={handleEdit}
+            onCancel={handleCancel}
+            onSave={handleSave}
+            saveError={(saveMutation.error as Error | null)?.message ?? null}
+            isSaving={saveMutation.isPending}
+            savedAt={savedAt}
           />
         ) : null}
       </div>
@@ -80,17 +150,39 @@ export function SchemaEditorPage() {
   );
 }
 
+interface SchemaBodyProps {
+  content: string;
+  path: string;
+  source: "disk";
+  byteSize: number;
+  isEditing: boolean;
+  draft: string;
+  onDraftChange: (next: string) => void;
+  onEdit: () => void;
+  onCancel: () => void;
+  onSave: () => void;
+  saveError: string | null;
+  isSaving: boolean;
+  savedAt: number | null;
+}
+
 function SchemaBody({
   content,
   path,
   source,
   byteSize,
-}: {
-  content: string;
-  path: string;
-  source: "disk";
-  byteSize: number;
-}) {
+  isEditing,
+  draft,
+  onDraftChange,
+  onEdit,
+  onCancel,
+  onSave,
+  saveError,
+  isSaving,
+  savedAt,
+}: SchemaBodyProps) {
+  const justSaved = savedAt != null && Date.now() - savedAt < 4000;
+
   return (
     <div className="mx-auto max-w-4xl space-y-4">
       {/* Path card */}
@@ -109,33 +201,59 @@ function SchemaBody({
         </div>
       </div>
 
-      {/* Read-only notice */}
-      <div
-        className="flex items-start gap-2 rounded-md border px-4 py-3"
-        style={{
-          borderColor: "color-mix(in srgb, var(--color-warning) 30%, transparent)",
-          backgroundColor:
-            "color-mix(in srgb, var(--color-warning) 5%, transparent)",
-        }}
-      >
-        <ShieldAlert
-          className="mt-0.5 size-4 shrink-0"
-          style={{ color: "var(--color-warning)" }}
-        />
-        <div className="text-caption text-foreground/90">
-          <div className="mb-0.5 font-semibold">Human-owned file</div>
-          <div className="text-muted-foreground">
-            Per canonical §10 the <code>schema/</code> directory is
-            human-only. The maintainer agent may PROPOSE changes to this
-            file via the{" "}
-            <a href="#/inbox" className="text-primary hover:underline">
-              Inbox
-            </a>
-            , but never writes directly. This page is read-only. To edit
-            the rules, open <code>{path}</code> in your OS editor.
+      {/* Mode notice */}
+      {isEditing ? (
+        <div
+          className="flex items-start gap-2 rounded-md border px-4 py-3"
+          style={{
+            borderColor:
+              "color-mix(in srgb, var(--claude-orange) 40%, transparent)",
+            backgroundColor:
+              "color-mix(in srgb, var(--claude-orange) 6%, transparent)",
+          }}
+        >
+          <Pencil
+            className="mt-0.5 size-4 shrink-0"
+            style={{ color: "var(--claude-orange)" }}
+          />
+          <div className="text-caption text-foreground/90">
+            <div className="mb-0.5 font-semibold">Editing</div>
+            <div className="text-muted-foreground">
+              Save commits the change directly to disk. The maintainer
+              agent will pick up the new rules on the next ingest.
+              Cancel discards your changes.
+            </div>
           </div>
         </div>
-      </div>
+      ) : (
+        <div
+          className="flex items-start gap-2 rounded-md border px-4 py-3"
+          style={{
+            borderColor:
+              "color-mix(in srgb, var(--color-warning) 30%, transparent)",
+            backgroundColor:
+              "color-mix(in srgb, var(--color-warning) 5%, transparent)",
+          }}
+        >
+          <ShieldAlert
+            className="mt-0.5 size-4 shrink-0"
+            style={{ color: "var(--color-warning)" }}
+          />
+          <div className="text-caption text-foreground/90">
+            <div className="mb-0.5 font-semibold">Human-owned file</div>
+            <div className="text-muted-foreground">
+              Per canonical §10 the <code>schema/</code> directory is
+              human-only. Click <strong>Edit</strong> to change the
+              maintainer's rules; the agent never writes here directly
+              (it can only PROPOSE changes via the{" "}
+              <a href="#/inbox" className="text-primary hover:underline">
+                Inbox
+              </a>
+              ).
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Content pane */}
       <div className="rounded-md border border-border bg-background">
@@ -147,13 +265,83 @@ function SchemaBody({
           <span className="font-mono text-caption text-muted-foreground">
             CLAUDE.md
           </span>
+          {justSaved ? (
+            <span
+              className="ml-auto inline-flex items-center gap-1 text-caption"
+              style={{ color: "var(--color-success)" }}
+            >
+              <CheckCircle2 className="size-3" />
+              Saved
+            </span>
+          ) : null}
         </div>
-        <pre
-          className="overflow-x-auto whitespace-pre-wrap px-5 py-4 font-mono text-body-sm leading-relaxed text-foreground/90"
-          style={{ fontFamily: "var(--font-mono, 'JetBrains Mono', monospace)" }}
-        >
-          {content}
-        </pre>
+        {isEditing ? (
+          <textarea
+            value={draft}
+            onChange={(e) => onDraftChange(e.target.value)}
+            spellCheck={false}
+            className="block min-h-[400px] w-full resize-y bg-background px-5 py-4 font-mono text-body-sm leading-relaxed text-foreground/90 outline-none"
+            style={{
+              fontFamily: "var(--font-mono, 'JetBrains Mono', monospace)",
+            }}
+          />
+        ) : (
+          <pre
+            className="overflow-x-auto whitespace-pre-wrap px-5 py-4 font-mono text-body-sm leading-relaxed text-foreground/90"
+            style={{
+              fontFamily: "var(--font-mono, 'JetBrains Mono', monospace)",
+            }}
+          >
+            {content}
+          </pre>
+        )}
+      </div>
+
+      {/* Action bar */}
+      <div className="flex items-center justify-end gap-2">
+        {saveError ? (
+          <span
+            className="mr-auto text-caption"
+            style={{ color: "var(--color-error)" }}
+          >
+            {saveError}
+          </span>
+        ) : null}
+        {isEditing ? (
+          <>
+            <button
+              type="button"
+              onClick={onCancel}
+              disabled={isSaving}
+              className="inline-flex items-center gap-1 rounded-md border border-border bg-background px-3 py-1.5 text-body-sm font-medium text-foreground transition-colors hover:bg-muted/40 disabled:opacity-50"
+            >
+              <X className="size-3" />
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={onSave}
+              disabled={isSaving || draft.trim().length === 0}
+              className="inline-flex items-center gap-1 rounded-md bg-primary px-3 py-1.5 text-body-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"
+            >
+              {isSaving ? (
+                <Loader2 className="size-3 animate-spin" />
+              ) : (
+                <Save className="size-3" />
+              )}
+              Save
+            </button>
+          </>
+        ) : (
+          <button
+            type="button"
+            onClick={onEdit}
+            className="inline-flex items-center gap-1 rounded-md bg-primary px-3 py-1.5 text-body-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90"
+          >
+            <Pencil className="size-3" />
+            Edit
+          </button>
+        )}
       </div>
     </div>
   );

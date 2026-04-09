@@ -345,6 +345,7 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tower-http",
+ "wiki_store",
 ]
 
 [[package]]

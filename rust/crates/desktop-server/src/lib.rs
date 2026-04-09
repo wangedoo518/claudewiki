@@ -327,6 +327,17 @@ pub fn app(state: AppState) -> Router {
         // ClawWiki canonical §11.1 cut #6 — single Codex pool, no user
         // provider picker, no API-key paste form. The S2 codex_broker
         // module will own this surface (and will not expose any HTTP).
+        // ── ClawWiki S1 wiki/raw layer routes ──────────────────────
+        // The "raw" layer is the immutable facts directory under
+        // `~/.clawwiki/raw/`. Per canonical §10 every WeChat-ingested
+        // article / paste / URL lands here exactly once and is never
+        // mutated; the wiki_maintainer agent (S4) reads it and produces
+        // wiki/ pages on top.
+        .route(
+            "/api/wiki/raw",
+            get(list_wiki_raw_handler).post(ingest_wiki_raw_handler),
+        )
+        .route("/api/wiki/raw/{id}", get(get_wiki_raw_handler))
         // ── Phase 6C: WeChat account management ────────────────────
         .route(
             "/api/desktop/wechat/accounts",
@@ -1507,6 +1518,162 @@ async fn cancel_wechat_login_handler(
 ) -> Json<serde_json::Value> {
     let cancelled = state.desktop.cancel_wechat_login(&handle).await;
     Json(serde_json::json!({ "ok": cancelled }))
+}
+
+// ── ClawWiki S1: wiki/raw layer HTTP handlers ─────────────────────
+//
+// These three handlers wrap `wiki_store::{write_raw_entry,
+// list_raw_entries, read_raw_entry}`. They resolve the wiki root via
+// `wiki_store::default_root()` (env override `CLAWWIKI_HOME` →
+// `$HOME/.clawwiki/`) and call `init_wiki()` once on every request to
+// keep them stateless and crash-safe.
+//
+// S5 will add the WeChat ingest path that flows through `ingest_wiki_raw`
+// when a microWeChat message comes in via the wechat_ilink monitor.
+// For S1 the only producer is the manual paste form on the Raw Library
+// page (frontend `features/ingest/persist.ts`).
+
+#[derive(Debug, Deserialize)]
+struct IngestRawRequest {
+    /// Source identifier: `paste`, `wechat-text`, etc. Stored in the
+    /// frontmatter and used as part of the filename.
+    source: String,
+    /// Free-form title used to derive the slug. May contain any
+    /// characters; `wiki_store::slugify` sanitizes it.
+    title: String,
+    /// Markdown body. Written to disk verbatim under the frontmatter.
+    body: String,
+    /// Optional source URL. When present, recorded in the frontmatter.
+    #[serde(default)]
+    source_url: Option<String>,
+}
+
+fn resolve_wiki_root_for_handler() -> Result<wiki_store::WikiPaths, ApiError> {
+    let root = wiki_store::default_root();
+    wiki_store::init_wiki(&root).map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("failed to init wiki root: {e}"),
+            }),
+        )
+    })?;
+    Ok(wiki_store::WikiPaths::resolve(&root))
+}
+
+/// `POST /api/wiki/raw`
+///
+/// Ingest a single raw entry. Body shape:
+/// ```json
+/// {
+///   "source": "paste",
+///   "title": "Hello world",
+///   "body": "## hi\n",
+///   "source_url": "https://example.com/article"   // optional
+/// }
+/// ```
+///
+/// Returns the resulting `RawEntry` so the caller can render an
+/// optimistic row in the Raw Library list.
+async fn ingest_wiki_raw_handler(
+    Json(body): Json<IngestRawRequest>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    if body.source.trim().is_empty() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "source must not be empty".to_string(),
+            }),
+        ));
+    }
+    if body.body.is_empty() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "body must not be empty".to_string(),
+            }),
+        ));
+    }
+
+    let paths = resolve_wiki_root_for_handler()?;
+    let frontmatter = wiki_store::RawFrontmatter::for_paste(&body.source, body.source_url);
+    let entry = wiki_store::write_raw_entry(
+        &paths,
+        &body.source,
+        &body.title,
+        &body.body,
+        &frontmatter,
+    )
+    .map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("write_raw_entry failed: {e}"),
+            }),
+        )
+    })?;
+
+    Ok(Json(raw_entry_to_json(&entry)))
+}
+
+/// `GET /api/wiki/raw`
+///
+/// List every raw entry, sorted by id ascending. Empty wiki returns
+/// `{ entries: [] }` (never errors when the directory is missing).
+async fn list_wiki_raw_handler() -> Result<Json<serde_json::Value>, ApiError> {
+    let paths = resolve_wiki_root_for_handler()?;
+    let entries = wiki_store::list_raw_entries(&paths).map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("list_raw_entries failed: {e}"),
+            }),
+        )
+    })?;
+    let json: Vec<serde_json::Value> = entries.iter().map(raw_entry_to_json).collect();
+    Ok(Json(serde_json::json!({ "entries": json })))
+}
+
+/// `GET /api/wiki/raw/:id`
+///
+/// Read one raw entry by numeric id. Returns the metadata block plus
+/// the body text (`{ entry: ..., body: "..." }`). 404 when the id is
+/// not present in the directory.
+async fn get_wiki_raw_handler(
+    Path(id): Path<u32>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let paths = resolve_wiki_root_for_handler()?;
+    match wiki_store::read_raw_entry(&paths, id) {
+        Ok((entry, body)) => Ok(Json(serde_json::json!({
+            "entry": raw_entry_to_json(&entry),
+            "body": body,
+        }))),
+        Err(wiki_store::WikiStoreError::NotFound(_)) => Err((
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse {
+                error: format!("raw entry not found: {id}"),
+            }),
+        )),
+        Err(e) => Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("read_raw_entry failed: {e}"),
+            }),
+        )),
+    }
+}
+
+fn raw_entry_to_json(entry: &wiki_store::RawEntry) -> serde_json::Value {
+    serde_json::json!({
+        "id": entry.id,
+        "filename": entry.filename,
+        "source": entry.source,
+        "slug": entry.slug,
+        "date": entry.date,
+        "source_url": entry.source_url,
+        "ingested_at": entry.ingested_at,
+        "byte_size": entry.byte_size,
+    })
 }
 
 

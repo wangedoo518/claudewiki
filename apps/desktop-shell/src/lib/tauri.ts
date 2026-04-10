@@ -140,9 +140,17 @@ export type ContentBlock =
   | ContentBlockToolUse
   | ContentBlockToolResult;
 
+export interface TokenUsageData {
+  input_tokens: number;
+  output_tokens: number;
+  cache_creation_input_tokens?: number;
+  cache_read_input_tokens?: number;
+}
+
 export interface RuntimeConversationMessage {
   role: "system" | "user" | "assistant" | "tool";
   blocks: ContentBlock[];
+  usage?: TokenUsageData;
 }
 
 export interface RuntimeSession {
@@ -643,6 +651,18 @@ export type DesktopSessionEvent =
       type: "message";
       session_id: string;
       message: RuntimeConversationMessage;
+    }
+  | {
+      type: "text_delta";
+      session_id: string;
+      content: string;
+    }
+  | {
+      type: "permission_request";
+      session_id: string;
+      request_id: string;
+      tool_name: string;
+      tool_input: string;
     };
 
 

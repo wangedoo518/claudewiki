@@ -47,6 +47,7 @@ import {
   type DesktopSessionDetail,
   type RuntimeConversationMessage,
 } from "@/lib/tauri";
+import { compactSession } from "./api/client";
 import type { ConversationMessage } from "@/features/common/message-types";
 import { MOCK_DEMO_MESSAGES } from "./mockDemoMessages";
 
@@ -162,6 +163,13 @@ export function AskWorkbench({
     onCreateSession?.();
   }, [onCreateSession]);
 
+  const handleCompact = useCallback(() => {
+    if (!session?.id) return;
+    void compactSession(session.id)
+      .then(() => addSystemMessage("Session compacted."))
+      .catch((err) => addSystemMessage(`Compact failed: ${err instanceof Error ? err.message : String(err)}`));
+  }, [session?.id, addSystemMessage]);
+
   // Input ref for focus shortcut
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
@@ -263,6 +271,7 @@ export function AskWorkbench({
         inputRef={inputRef}
         onClear={handleClear}
         onNewSession={handleNewSession}
+        onCompact={handleCompact}
       />
 
       <StatusLine
@@ -433,10 +442,19 @@ function flattenSessionMessages(
   let order = 0;
 
   for (const message of source) {
+    let usageAttached = false;
     for (const block of message.blocks) {
       order += 1;
       const entry = toDisplayMessage(message.role, block, order);
       if (entry) {
+        // Attach usage data to the first text block of assistant messages
+        if (!usageAttached && message.usage && entry.role === "assistant" && entry.type === "text") {
+          entry.usage = {
+            inputTokens: message.usage.input_tokens,
+            outputTokens: message.usage.output_tokens,
+          };
+          usageAttached = true;
+        }
         items.push(entry);
       }
     }

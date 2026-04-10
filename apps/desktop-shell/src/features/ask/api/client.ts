@@ -93,6 +93,82 @@ export async function resumeSession(
   );
 }
 
+export async function compactSession(
+  sessionId: string,
+): Promise<DesktopSessionDetail> {
+  return fetchJson<DesktopSessionDetail>(
+    `/api/desktop/sessions/${sessionId}/compact`,
+    { method: "POST", body: JSON.stringify({}) },
+  );
+}
+
+/**
+ * Subscribe to Server-Sent Events for a session.
+ * Returns an AbortController to cancel the subscription.
+ * The `onEvent` callback receives parsed DesktopSessionEvent objects.
+ */
+export function subscribeToSessionEvents(
+  sessionId: string,
+  onEvent: (event: import("@/lib/tauri").DesktopSessionEvent) => void,
+  onError?: (error: Error) => void,
+): AbortController {
+  const controller = new AbortController();
+
+  (async () => {
+    const { getDesktopApiBase } = await import("@/lib/desktop/bootstrap");
+    const base = await getDesktopApiBase();
+    const url = `${base}/api/desktop/sessions/${sessionId}/events`;
+
+    try {
+      const response = await fetch(url, {
+        signal: controller.signal,
+        headers: { Accept: "text/event-stream" },
+      });
+
+      if (!response.ok || !response.body) {
+        onError?.(new Error(`SSE failed: ${response.status}`));
+        return;
+      }
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() ?? "";
+
+        let dataLines: string[] = [];
+        for (const line of lines) {
+          if (line.startsWith("data: ")) {
+            dataLines.push(line.slice(6));
+          } else if (line === "" && dataLines.length > 0) {
+            // End of event — parse accumulated data lines
+            const jsonStr = dataLines.join("\n");
+            dataLines = [];
+            try {
+              const event = JSON.parse(jsonStr) as import("@/lib/tauri").DesktopSessionEvent;
+              onEvent(event);
+            } catch {
+              // Skip malformed events
+            }
+          }
+        }
+      }
+    } catch (err) {
+      if ((err as Error).name !== "AbortError") {
+        onError?.(err instanceof Error ? err : new Error(String(err)));
+      }
+    }
+  })();
+
+  return controller;
+}
+
 export async function forwardPermissionDecision(
   sessionId: string,
   payload: {

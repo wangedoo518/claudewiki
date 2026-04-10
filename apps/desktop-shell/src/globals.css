@@ -395,8 +395,9 @@
     --claude-blue-shimmer: rgb(167, 131, 255);
     --color-label-claude: rgb(195, 90, 44);
     --color-label-you: rgb(195, 90, 44);
-    --color-msg-user-bg: rgb(232, 228, 222);
-    --color-msg-assistant-bg: rgb(255, 255, 255);
+    --color-msg-user-bg: oklch(0.25 0.01 50);
+    --color-msg-user-fg: oklch(0.95 0.005 50);
+    --color-msg-assistant-bg: transparent;
     --color-msg-bash-bg: rgb(240, 237, 231);
     --color-msg-actions-bg: rgb(240, 237, 231);
     --color-msg-memory-bg: rgba(139, 92, 246, 0.10);
@@ -468,8 +469,9 @@
     --claude-blue-shimmer: rgb(190, 165, 255);
     --color-label-claude: rgb(212, 115, 75);
     --color-label-you: rgb(212, 115, 75);
-    --color-msg-user-bg: rgb(58, 55, 51);
-    --color-msg-assistant-bg: rgb(37, 35, 32);
+    --color-msg-user-bg: oklch(0.85 0.01 50);
+    --color-msg-user-fg: oklch(0.15 0.005 50);
+    --color-msg-assistant-bg: transparent;
     --color-msg-bash-bg: rgb(44, 41, 37);
     --color-msg-actions-bg: rgb(44, 41, 37);
     --color-msg-memory-bg: rgba(167, 131, 255, 0.16);
@@ -594,6 +596,15 @@
 }
 .ask-streaming-border {
   animation: dt-border-pulse 2s ease-in-out infinite;
+}
+
+/* Blinking block cursor for streaming */
+@keyframes ask-blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
+}
+.ask-blink-cursor {
+  animation: ask-blink 0.8s steps(2, start) infinite;
 }
 
 /* Tool actions group card */

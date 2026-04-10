@@ -29,7 +29,7 @@ import {
   type KeyboardEvent,
 } from "react";
 import {
-  SendHorizonal,
+  ArrowUp,
   Square,
   ChevronDown,
   Paperclip,
@@ -166,6 +166,7 @@ interface ComposerProps {
   onClear?: () => void;
   onNewSession?: () => void;
   onExportMarkdown?: () => void;
+  onCompact?: () => void;
 }
 
 export function Composer({
@@ -177,6 +178,7 @@ export function Composer({
   onClear,
   onNewSession,
   onExportMarkdown,
+  onCompact,
 }: ComposerProps) {
   const permissionMode = useSettingsStore((state) => state.permissionMode);
   const setPermissionMode = useSettingsStore((state) => state.setPermissionMode);
@@ -214,7 +216,7 @@ export function Composer({
           onExportMarkdown?.();
           break;
         case "compact":
-          void onSend("/compact");
+          onCompact?.();
           break;
         case "plan":
           void onSend("/plan");
@@ -457,31 +459,53 @@ export function Composer({
         }}
       />
 
-      {/* Attachment chips row */}
+      {/* Attachment preview bar */}
       {(attachments.length > 0 || uploadError) && (
-        <div className="mb-2 flex flex-wrap items-center gap-1.5">
+        <div className="mb-2 flex items-center gap-2 overflow-x-auto">
           {attachments.map((att, i) => {
             const safeName = sanitizeFilename(att.filename);
+            const isImage = att.kind === "image_base64";
+
+            if (isImage) {
+              return (
+                <div
+                  key={`${safeName}-${att.byte_size}-${i}`}
+                  className="group/att relative size-16 shrink-0 overflow-hidden rounded-lg border border-border"
+                  title={safeName}
+                >
+                  <div className="flex size-full items-center justify-center bg-muted/30">
+                    <ImageIcon className="size-6 text-muted-foreground/40" />
+                  </div>
+                  <button
+                    type="button"
+                    className="absolute -right-1.5 -top-1.5 flex size-4 items-center justify-center rounded-full bg-foreground text-background opacity-0 shadow-sm transition-opacity group-hover/att:opacity-100"
+                    onClick={() => removeAttachment(i)}
+                    aria-label={`Remove ${safeName}`}
+                  >
+                    <XIcon className="size-2.5" />
+                  </button>
+                </div>
+              );
+            }
+
             return (
               <div
                 key={`${safeName}-${att.byte_size}-${i}`}
-                className="flex items-center gap-1.5 rounded-md border border-border/50 bg-muted/20 px-2 py-1 text-caption"
+                className="group/att inline-flex shrink-0 items-center gap-1 rounded-lg bg-muted/50 px-3 py-1.5 text-[11px]"
                 title={`${safeName} (${att.byte_size} bytes${att.truncated ? ", truncated" : ""})`}
                 dir="ltr"
               >
-                {att.kind === "image_base64" ? (
-                  <ImageIcon className="size-3" style={{ color: "var(--claude-blue)" }} />
-                ) : att.kind === "binary_stub" ? (
-                  <AlertCircle className="size-3" style={{ color: "var(--color-warning)" }} />
+                {att.kind === "binary_stub" ? (
+                  <AlertCircle className="size-3 shrink-0" style={{ color: "var(--color-warning)" }} />
                 ) : (
-                  <FileText className="size-3" style={{ color: "var(--muted-foreground)" }} />
+                  <FileText className="size-3 shrink-0 text-muted-foreground" />
                 )}
-                <span className="max-w-[180px] truncate font-medium" dir="ltr">
+                <span className="max-w-[140px] truncate font-medium text-muted-foreground" dir="ltr">
                   {safeName}
                 </span>
                 <button
                   type="button"
-                  className="ml-0.5 rounded p-0.5 text-muted-foreground hover:bg-accent hover:text-foreground"
+                  className="ml-0.5 opacity-60 transition-opacity hover:opacity-100"
                   onClick={() => removeAttachment(i)}
                   aria-label={`Remove ${safeName}`}
                 >
@@ -491,11 +515,11 @@ export function Composer({
             );
           })}
           {isUploading && (
-            <span className="text-caption text-muted-foreground">Uploading…</span>
+            <span className="shrink-0 text-[11px] text-muted-foreground">Uploading…</span>
           )}
           {uploadError && (
             <span
-              className="flex items-center gap-1 text-caption"
+              className="flex shrink-0 items-center gap-1 text-[11px]"
               style={{ color: "var(--color-error)" }}
             >
               <AlertCircle className="size-3" />
@@ -525,18 +549,18 @@ export function Composer({
         className={cn(
           "relative rounded-xl border border-input bg-muted/10 px-4 py-2.5 transition-colors",
           "focus-within:border-ring focus-within:ring-1 focus-within:ring-ring/50",
-          isDragging && "border-[color:var(--deeptutor-primary,var(--claude-blue))] bg-[color:var(--deeptutor-primary,var(--claude-blue))]/5",
+          isDragging && "border-2 border-dashed border-[color:var(--deeptutor-primary,var(--claude-blue))]/50 bg-[color:var(--deeptutor-primary,var(--claude-blue))]/[0.04]",
         )}
         onDragOver={handleDragOver}
         onDragLeave={handleDragLeave}
         onDrop={handleDrop}
       >
         {isDragging && (
-          <div className="pointer-events-none absolute inset-0 flex items-center justify-center rounded-xl bg-[color:var(--deeptutor-primary,var(--claude-blue))]/10">
-            <div className="flex items-center gap-2 text-body-sm font-medium" style={{ color: "var(--deeptutor-primary, var(--claude-blue))" }}>
-              <Paperclip className="size-4" />
-              Drop files to attach
-            </div>
+          <div className="pointer-events-none absolute inset-0 z-10 flex flex-col items-center justify-center gap-1.5 rounded-xl">
+            <Paperclip className="size-5" style={{ color: "var(--deeptutor-primary, var(--claude-blue))" }} strokeWidth={1.6} />
+            <span className="text-[13px] font-medium" style={{ color: "var(--deeptutor-primary, var(--claude-blue))" }}>
+              Drop files here
+            </span>
           </div>
         )}
         <textarea
@@ -554,8 +578,8 @@ export function Composer({
                 : "Ask your external brain..."
           }
           disabled={isBusy}
-          rows={2}
-          className="max-h-[200px] min-h-[44px] w-full resize-none bg-transparent text-body leading-relaxed text-foreground outline-none placeholder:text-muted-foreground disabled:opacity-50"
+          rows={1}
+          className="max-h-[200px] min-h-[40px] w-full resize-none bg-transparent text-sm leading-relaxed text-foreground outline-none transition-[height] duration-150 ease-out placeholder:text-muted-foreground disabled:pointer-events-none disabled:opacity-50"
         />
       </div>
 
@@ -659,32 +683,31 @@ export function Composer({
           </button>
         </div>
 
-        {/* Right: Send or Stop */}
+        {/* Right: circular Send or Stop */}
         {isBusy ? (
           <button
-            className="flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-label font-medium text-white transition-colors"
-            style={{
-              backgroundColor: "var(--color-error)",
-            }}
+            className="flex size-9 shrink-0 items-center justify-center rounded-full text-white transition-[transform,opacity,box-shadow] duration-150 active:scale-95"
+            style={{ backgroundColor: "var(--color-error, var(--destructive))" }}
             onClick={handleStop}
+            aria-label="Stop"
           >
-            <Square className="size-3" />
-            <span>Stop</span>
+            <Square className="size-4" />
           </button>
         ) : (
           <button
             className={cn(
-              "flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-label font-medium text-white transition-colors",
+              "flex size-9 shrink-0 items-center justify-center rounded-full text-white shadow-[0_4px_12px_rgba(195,90,44,0.15)] transition-[transform,opacity,box-shadow] duration-150",
+              "hover:shadow-[0_6px_16px_rgba(195,90,44,0.22)] hover:scale-105 active:scale-95",
               value.trim() || attachments.length > 0
-                ? "cursor-pointer"
-                : "cursor-not-allowed opacity-50"
+                ? ""
+                : "opacity-40 pointer-events-none shadow-none"
             )}
             style={{ backgroundColor: "var(--deeptutor-primary, var(--claude-orange))" }}
             onClick={handleSend}
             disabled={!value.trim() && attachments.length === 0}
+            aria-label="Send"
           >
-            <SendHorizonal className="size-3" />
-            <span>Send</span>
+            <ArrowUp className="size-4" strokeWidth={2.5} />
           </button>
         )}
       </div>

@@ -29,6 +29,11 @@ export interface ToolResultData {
   isError: boolean;
 }
 
+export interface TokenUsage {
+  inputTokens: number;
+  outputTokens: number;
+}
+
 export interface ConversationMessage {
   id: string;
   role: MessageRole;
@@ -37,4 +42,5 @@ export interface ConversationMessage {
   timestamp: number;
   toolUse?: ToolUseData;
   toolResult?: ToolResultData;
+  usage?: TokenUsage;
 }

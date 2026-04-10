@@ -42,7 +42,7 @@ export const Message = memo(function Message({ message }: MessageProps) {
       ) : message.role === "system" ? (
         <SystemMessage content={message.content} />
       ) : (
-        <AssistantMessage content={message.content} />
+        <AssistantMessage content={message.content} usage={message.usage} />
       );
     case "tool_use":
       return <ToolUseMessage message={message} />;
@@ -76,7 +76,7 @@ function MarkdownContent({ content }: { content: string }) {
 
           return (
             <code
-              className="rounded-[3px] bg-muted px-1.5 py-0.5 font-mono text-body-sm text-foreground"
+              className="rounded bg-muted/60 px-1.5 py-0.5 font-mono text-[13px] text-foreground"
               {...props}
             >
               {children}
@@ -167,15 +167,15 @@ function CodeBlock({ language, code }: { language: string; code: string }) {
   };
 
   return (
-    <div className="group/code relative my-2 overflow-hidden rounded-lg border border-border/50">
-      {/* Header */}
-      <div className="flex items-center justify-between border-b border-border/50 bg-muted/40 px-3 py-1">
-        <span className="font-mono text-caption uppercase tracking-wider text-muted-foreground">
+    <div className="group/code my-3 overflow-hidden rounded-lg border border-border/50 bg-[#1f2937]">
+      {/* Language header bar */}
+      <div className="flex items-center justify-between border-b border-white/10 px-3 py-2">
+        <span className="text-[11px] font-medium uppercase tracking-wider text-[#9ca3af]">
           {language}
         </span>
         <button
           onClick={handleCopy}
-          className="flex items-center gap-1 rounded px-1.5 py-0.5 text-caption text-muted-foreground opacity-0 transition-opacity hover:bg-accent group-hover/code:opacity-100"
+          className="flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] text-[#9ca3af] opacity-0 transition-opacity hover:text-white group-hover/code:opacity-100"
         >
           {copied ? (
             <>
@@ -193,14 +193,14 @@ function CodeBlock({ language, code }: { language: string; code: string }) {
         style={oneDark}
         customStyle={{
           margin: 0,
-          padding: "12px 14px",
-          fontSize: "12px",
-          lineHeight: "1.5",
-          background: "var(--color-msg-bash-bg, var(--color-muted))",
+          padding: "1rem",
+          fontSize: "13px",
+          lineHeight: "1.7",
+          background: "#1f2937",
           borderRadius: 0,
         }}
         codeTagProps={{
-          style: { fontFamily: "'Cascadia Code', 'Fira Code', 'JetBrains Mono', monospace" },
+          style: { fontFamily: "var(--font-family-dt-mono, 'JetBrains Mono', 'Cascadia Code', 'Fira Code', monospace)" },
         }}
       >
         {code}
@@ -213,24 +213,15 @@ function CodeBlock({ language, code }: { language: string; code: string }) {
 
 function UserMessage({ content }: { content: string }) {
   return (
-    <div
-      className="relative overflow-hidden rounded-lg border border-border/50 shadow-[var(--deeptutor-shadow-sm,none)]"
-      style={{ backgroundColor: "var(--color-msg-user-bg, var(--color-accent))" }}
-    >
+    <div className="flex justify-end">
       <div
-        className="absolute left-0 top-0 h-full w-[3px]"
-        style={{ backgroundColor: "var(--color-label-you)" }}
-      />
-      <div className="py-2.5 pl-5 pr-4">
-        <div
-          className="ask-serif mb-1 text-caption font-semibold uppercase tracking-wider"
-          style={{ color: "var(--color-label-you)" }}
-        >
-          You
-        </div>
-        <div className="whitespace-pre-wrap text-body leading-relaxed text-foreground">
-          {content}
-        </div>
+        className="max-w-[75%] whitespace-pre-wrap rounded-2xl px-4 py-3 text-sm leading-relaxed"
+        style={{
+          backgroundColor: "var(--color-msg-user-bg)",
+          color: "var(--color-msg-user-fg, var(--color-foreground))",
+        }}
+      >
+        {content}
       </div>
     </div>
   );
@@ -238,27 +229,41 @@ function UserMessage({ content }: { content: string }) {
 
 /* ─── Assistant message with markdown ────────────────────────────── */
 
-function AssistantMessage({ content }: { content: string }) {
+function AssistantMessage({ content, usage }: { content: string; usage?: { inputTokens: number; outputTokens: number } }) {
+  const tokenLabel = useMemo(() => {
+    if (usage) {
+      const total = usage.inputTokens + usage.outputTokens;
+      return total >= 1000 ? `${(total / 1000).toFixed(1)}k` : String(total);
+    }
+    // Fallback: rough estimate from word count
+    const words = content.split(/\s+/).filter(Boolean).length;
+    const est = Math.round(words * 1.3);
+    return est > 0 ? `~${est >= 1000 ? `${(est / 1000).toFixed(1)}k` : est}` : null;
+  }, [content, usage]);
+
   return (
-    <div
-      className="relative overflow-hidden rounded-lg border border-border/50 shadow-[var(--deeptutor-shadow-sm,none)]"
-      style={{ backgroundColor: "var(--color-msg-assistant-bg, var(--color-card))" }}
-    >
+    <div className="w-full border-b border-border/30 pb-4">
       <div
-        className="absolute left-0 top-0 h-full w-[3px]"
-        style={{ backgroundColor: "var(--color-label-claude)" }}
-      />
-      <div className="py-2.5 pl-5 pr-4">
-        <div
-          className="ask-serif mb-1 text-caption font-semibold uppercase tracking-wider"
-          style={{ color: "var(--color-label-claude)" }}
-        >
-          Assistant
-        </div>
-        <div className="text-body leading-relaxed text-foreground">
-          <MarkdownContent content={content} />
-        </div>
+        className="mb-1.5 text-[10px] font-semibold uppercase tracking-widest"
+        style={{ color: "var(--color-label-claude)" }}
+      >
+        Assistant
       </div>
+      <div className="text-sm leading-relaxed text-foreground">
+        <MarkdownContent content={content} />
+      </div>
+      {/* Cost footer */}
+      {tokenLabel && (
+        <div className="mt-2 flex items-center gap-1.5 text-[10px] text-muted-foreground/40">
+          <span>{tokenLabel} tokens</span>
+          {usage && (
+            <>
+              <span className="opacity-40">&middot;</span>
+              <span>{usage.outputTokens >= 1000 ? `${(usage.outputTokens / 1000).toFixed(1)}k` : usage.outputTokens} out</span>
+            </>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -292,6 +297,27 @@ function SystemMessage({ content }: { content: string }) {
         </div>
       )}
     </div>
+  );
+}
+
+/* ─── Tool status badge ─────────────────────────────────────────── */
+
+function ToolStatusBadge({ status }: { status: "pending" | "running" | "completed" | "error" }) {
+  const styles = {
+    pending: "border-[color:var(--deeptutor-warn,rgb(200,139,26))]/30 bg-[color:var(--deeptutor-warn,rgb(200,139,26))]/10 text-[color:var(--deeptutor-warn,rgb(200,139,26))]",
+    running: "border-[color:var(--deeptutor-primary,rgb(195,90,44))]/30 bg-[color:var(--deeptutor-primary,rgb(195,90,44))]/10 text-[color:var(--deeptutor-primary,rgb(195,90,44))]",
+    completed: "border-[color:var(--color-success)]/30 bg-[color:var(--color-success)]/10 text-[color:var(--color-success)]",
+    error: "border-[color:var(--color-error)]/30 bg-[color:var(--color-error)]/10 text-[color:var(--color-error)]",
+  };
+  const labels = { pending: "Pending", running: "Running", completed: "Done", error: "Error" };
+
+  return (
+    <span className={cn("inline-flex items-center gap-1 rounded-full border px-1.5 py-0.5 text-[10px] font-medium", styles[status])}>
+      {status === "running" && (
+        <span className="inline-block size-2.5 animate-spin rounded-full border border-current border-t-transparent" />
+      )}
+      {labels[status]}
+    </span>
   );
 }
 
@@ -355,8 +381,9 @@ function ToolUseMessage({ message }: { message: ConversationMessage }) {
         )}
         <ToolIcon className="size-3.5 shrink-0" style={{ color }} />
         <span className="font-medium" style={{ color }}>{label}</span>
+        <ToolStatusBadge status="running" />
         {!expanded && inputPreview && (
-          <span className="flex-1 truncate text-left font-mono text-label text-muted-foreground">
+          <span className="flex-1 truncate text-left font-mono text-[11px] text-muted-foreground">
             {inputPreview}
           </span>
         )}
@@ -448,14 +475,15 @@ function ToolResultMessage({ message }: { message: ConversationMessage }) {
           <ToolIcon className="size-3.5 shrink-0" style={{ color }} />
         )}
         <span className="font-medium">{toolName}</span>
+        <ToolStatusBadge status={isError ? "error" : "completed"} />
         {!expanded && (
           <>
             {isLong && (
-              <span className="rounded bg-muted/50 px-1 py-0.5 text-caption text-muted-foreground">
+              <span className="rounded bg-muted/50 px-1 py-0.5 text-[10px] text-muted-foreground">
                 {lineCount} lines
               </span>
             )}
-            <span className="flex-1 truncate text-left font-mono text-label text-muted-foreground">
+            <span className="flex-1 truncate text-left font-mono text-[11px] text-muted-foreground">
               {lines[0]?.slice(0, 80)}
             </span>
           </>

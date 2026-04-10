@@ -28,16 +28,22 @@
 import { Loader2, AlertTriangle, RefreshCw } from "lucide-react";
 import { AskWorkbench } from "./AskWorkbench";
 import { useAskSession } from "./useAskSession";
+import { useAskSSE } from "./useAskSSE";
 
 export function AskPage() {
   const {
+    sessionId,
     session,
     isLoadingSession,
     isSending,
+    isTurnActive,
     errorMessage,
     onSend,
     onResetSession,
   } = useAskSession();
+
+  // Wire SSE subscription for real-time streaming + permission requests
+  useAskSSE(sessionId, isTurnActive);
 
   // First-mount state: session creation in flight. Show a centered
   // spinner so the page transition animation has something to land

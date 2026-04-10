@@ -2414,6 +2414,24 @@ async fn approve_wiki_inbox_with_write_handler(
             "approve-with-write: wiki page written but index rebuild failed: {e}"
         );
     }
+    // feat(P): scan existing concept pages for mentions of the newly
+    // written page and create Stale inbox entries. Canonical §8
+    // Triggers row 2: "update affected pages". This is the notification
+    // half; the actual LLM re-write is future work.
+    match wiki_store::notify_affected_pages(&paths, &p.slug, &p.title) {
+        Ok(n) if n > 0 => {
+            eprintln!(
+                "approve-with-write: notified {n} affected page(s) about new `{}`",
+                p.slug
+            );
+        }
+        Ok(_) => {}
+        Err(e) => {
+            eprintln!(
+                "approve-with-write: notify_affected_pages failed (non-fatal): {e}"
+            );
+        }
+    }
 
     // Step 2: flip the inbox entry to approved. Soft-fail: we log
     // and keep going even if resolve fails, because the wiki page

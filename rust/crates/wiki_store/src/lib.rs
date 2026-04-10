@@ -2109,6 +2109,86 @@ pub fn mark_conflict(
     )
 }
 
+/// Scan existing concept pages for mentions of a newly-written page
+/// and append `Stale` inbox tasks for each affected page. This is
+/// the MVP half of canonical §8 Triggers row 2: "update affected
+/// concept/people/topic/compare pages". The actual LLM re-write of
+/// the affected page is a future feat — this function only creates
+/// the Inbox notification so the user can see "these pages might
+/// need updating".
+///
+/// `new_slug` and `new_title` identify the page that was just written.
+/// The function scans every OTHER concept page's body (case-insensitive)
+/// for occurrences of `new_slug` or `new_title`. If found, that page
+/// gets a `Stale` inbox entry.
+///
+/// Returns the number of affected pages found (0 is normal for the
+/// first page in a fresh wiki).
+pub fn notify_affected_pages(
+    paths: &WikiPaths,
+    new_slug: &str,
+    new_title: &str,
+) -> Result<usize> {
+    let new_slug_lc = new_slug.to_lowercase();
+    let new_title_lc = new_title.to_lowercase();
+    if new_slug_lc.is_empty() && new_title_lc.is_empty() {
+        return Ok(0);
+    }
+
+    let concepts_dir = paths.wiki.join(WIKI_CONCEPTS_SUBDIR);
+    if !concepts_dir.is_dir() {
+        return Ok(0);
+    }
+
+    let mut count = 0usize;
+    let dir =
+        fs::read_dir(&concepts_dir).map_err(|e| WikiStoreError::io(concepts_dir.clone(), e))?;
+    for entry in dir.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|s| s.to_str()) != Some("md") {
+            continue;
+        }
+        let slug = match path.file_stem().and_then(|s| s.to_str()) {
+            Some(s) => s.to_string(),
+            None => continue,
+        };
+        // Skip the newly-written page itself.
+        if slug.to_lowercase() == new_slug_lc {
+            continue;
+        }
+        let content = match fs::read_to_string(&path) {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+        let body = strip_frontmatter(&content);
+        let body_lc = body.to_lowercase();
+
+        let mentioned = (!new_slug_lc.is_empty() && body_lc.contains(&new_slug_lc))
+            || (!new_title_lc.is_empty() && body_lc.contains(&new_title_lc));
+
+        if mentioned {
+            let title = format!("Affected: `{slug}` mentions new page `{new_slug}`");
+            let description = format!(
+                "Page `{slug}` mentions `{new_slug}` (or its title `{new_title}`). \
+                 The new page may introduce information that this page should \
+                 incorporate. Consider re-running the maintainer on this page."
+            );
+            // Soft-fail: if the inbox append fails, we log but don't
+            // block the caller. Losing a notification is recoverable.
+            if let Err(e) =
+                append_inbox_pending(paths, InboxKind::Stale, &title, &description, None)
+            {
+                eprintln!(
+                    "[warn] notify_affected_pages: inbox append for `{slug}` failed: {e}"
+                );
+            } else {
+                count += 1;
+            }
+        }
+    }
+    Ok(count)
+}
+
 /// Hand-rolled UTC ISO-8601 timestamp formatter, second precision.
 /// We use `std::time` rather than pulling `chrono` for one function.
 fn now_iso8601() -> String {
@@ -2915,6 +2995,79 @@ mod tests {
         // Falls back to slug as title; no " — summary" suffix.
         assert!(content.contains("- [bare-page](concepts/bare-page.md)\n"));
         assert!(!content.contains("bare-page.md — "));
+    }
+
+    // ── P notify_affected_pages tests ────────────────────────────
+
+    #[test]
+    fn notify_affected_pages_finds_mentions_by_slug() {
+        let tmp = tempdir().unwrap();
+        init_wiki(tmp.path()).unwrap();
+        let paths = WikiPaths::resolve(tmp.path());
+
+        // Existing page mentions "karpathy" in its body.
+        write_wiki_page(
+            &paths,
+            "rag",
+            "RAG",
+            "Retrieval-augmented generation.",
+            "Karpathy proposed a different approach to knowledge management.",
+            Some(1),
+        )
+        .unwrap();
+
+        // Write new page whose slug is "karpathy".
+        write_wiki_page(
+            &paths,
+            "karpathy",
+            "Karpathy",
+            "Andrej Karpathy.",
+            "Pioneer of LLM wiki.",
+            Some(2),
+        )
+        .unwrap();
+
+        let count = notify_affected_pages(&paths, "karpathy", "Karpathy").unwrap();
+        assert_eq!(count, 1);
+
+        // The inbox should now have a Stale entry for "rag".
+        let entries = list_inbox_entries(&paths).unwrap();
+        let stale = entries
+            .iter()
+            .find(|e| e.kind == InboxKind::Stale)
+            .expect("should have a Stale entry");
+        assert!(stale.title.contains("rag"));
+        assert!(stale.description.contains("karpathy"));
+    }
+
+    #[test]
+    fn notify_affected_pages_skips_the_new_page_itself() {
+        let tmp = tempdir().unwrap();
+        init_wiki(tmp.path()).unwrap();
+        let paths = WikiPaths::resolve(tmp.path());
+
+        write_wiki_page(
+            &paths,
+            "self-mention",
+            "Self Mention",
+            "A page.",
+            "This page is about self-mention.",
+            None,
+        )
+        .unwrap();
+
+        let count = notify_affected_pages(&paths, "self-mention", "Self Mention").unwrap();
+        assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn notify_affected_pages_returns_zero_for_empty_wiki() {
+        let tmp = tempdir().unwrap();
+        init_wiki(tmp.path()).unwrap();
+        let paths = WikiPaths::resolve(tmp.path());
+
+        let count = notify_affected_pages(&paths, "anything", "Anything").unwrap();
+        assert_eq!(count, 0);
     }
 
     // ── Q backlinks tests ────────────────────────────────────────

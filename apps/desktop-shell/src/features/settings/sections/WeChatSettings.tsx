@@ -421,24 +421,27 @@ function QrLoginDialog({
 
           <div className="mt-5 flex justify-center">
             <div className="rounded-lg border border-border bg-muted/20 p-3">
-              {isQrImageUrl(qrImage) ? (
-                <img
-                  src={qrImage}
-                  alt="WeChat QR code"
-                  className="size-60 rounded bg-white"
-                />
-              ) : (
-                <div className="flex size-60 items-center justify-center rounded border border-dashed border-border bg-white p-3 text-caption text-muted-foreground">
-                  <a
-                    href={qrImage}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="text-primary underline"
-                  >
-                    在新窗口打开二维码链接
-                  </a>
-                </div>
-              )}
+              {(() => {
+                const imgSrc = qrImageSrc(qrImage);
+                return imgSrc ? (
+                  <img
+                    src={imgSrc}
+                    alt="WeChat QR code"
+                    className="size-60 rounded bg-white"
+                  />
+                ) : (
+                  <div className="flex size-60 items-center justify-center rounded border border-dashed border-border bg-white p-3 text-caption text-muted-foreground">
+                    <a
+                      href={qrImage}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="text-primary underline"
+                    >
+                      在新窗口打开二维码链接
+                    </a>
+                  </div>
+                );
+              })()}
             </div>
           </div>
 
@@ -537,17 +540,31 @@ function isTerminalStatus(status: WeChatLoginStatus): boolean {
   );
 }
 
-function isQrImageUrl(value: string): boolean {
-  // The iLink backend may return either a raw https URL (most common)
-  // or a data: URI. For https URLs we simply render them inside an
-  // <img> tag and let the browser load them. We intentionally don't
-  // trust untrusted data:image/* URIs here — if the shape doesn't
-  // look like a safe src we fall back to a plain link.
-  return (
-    value.startsWith("http://") ||
-    value.startsWith("https://") ||
-    value.startsWith("data:image/")
-  );
+/**
+ * Determine the best `<img src>` for the QR code value returned
+ * by the iLink login API.
+ *
+ * The backend returns one of:
+ *   1. `data:image/png;base64,...` — a real image, use directly
+ *   2. `https://liteapp.weixin.qq.com/q/...` — a scan-target URL
+ *      that needs to be ENCODED INTO a QR code image
+ *   3. Anything else — show as a plain link fallback
+ *
+ * For case 2, we generate a QR image via the free
+ * `api.qrserver.com` service. This is a well-known public API
+ * that renders QR codes as PNG images — no npm dependency needed.
+ */
+function qrImageSrc(value: string): string | null {
+  if (value.startsWith("data:image/")) {
+    return value; // already an image
+  }
+  if (value.startsWith("http://") || value.startsWith("https://")) {
+    // It's a URL that should be encoded AS a QR code, not loaded
+    // directly as an image. Use the free qrserver.com API.
+    const encoded = encodeURIComponent(value);
+    return `https://api.qrserver.com/v1/create-qr-code/?size=240x240&data=${encoded}`;
+  }
+  return null; // unknown format — use fallback link
 }
 
 function errorMessage(err: unknown): string {

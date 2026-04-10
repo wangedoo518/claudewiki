@@ -728,9 +728,20 @@ export async function openclawServiceControl(
 /**
  * Open a URL in the system's default browser.
  * Used to open the OpenClaw dashboard page.
+ *
+ * Falls back to `window.open` when running in a plain browser
+ * (dev mode via `npm run dev`) where Tauri's IPC bridge is not
+ * available. The Tauri `invoke` function exists (it's imported)
+ * but throws when the Tauri runtime isn't present.
  */
 export async function openDashboardUrl(url: string): Promise<void> {
-  return invoke<void>("open_dashboard_url", { url });
+  try {
+    await invoke<void>("open_dashboard_url", { url });
+  } catch {
+    // Tauri IPC not available (browser dev mode) — fall back to
+    // opening the URL in a new tab.
+    window.open(url, "_blank", "noopener,noreferrer");
+  }
 }
 
 // ---------------------------------------------------------------------------

@@ -100,9 +100,10 @@ fn default_project_path() -> &'static str {
     })
 }
 
-/// Compat alias — old code references this as a const str. Now
-/// delegates to `default_project_path()` at runtime.
-const DEFAULT_PROJECT_PATH: &str = DEFAULT_PROJECT_PATH_FALLBACK;
+// NOTE: The old `const DEFAULT_PROJECT_PATH` was removed because all
+// callsites now use `default_project_path()` (runtime-resolved via
+// OnceLock). If you need a compile-time fallback, use
+// `DEFAULT_PROJECT_PATH_FALLBACK` directly.
 const DEFAULT_MODEL_ID: &str = "claude-opus-4-6";
 const DEFAULT_MODEL_LABEL: &str = "Opus 4.6";
 const DEFAULT_ENVIRONMENT_LABEL: &str = "Local";

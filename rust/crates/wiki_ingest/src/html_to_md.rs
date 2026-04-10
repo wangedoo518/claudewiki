@@ -27,19 +27,29 @@
 
 use scraper::{ElementRef, Node};
 
+/// Maximum DOM recursion depth before we bail out. Prevents stack
+/// overflow on adversarial HTML with 10000+ nested `<div>` tags.
+/// 256 levels is generous — real-world HTML rarely exceeds 30-40.
+const MAX_RENDER_DEPTH: usize = 256;
+
 /// Convert a single scraper `ElementRef` subtree to a markdown string.
 /// Trims leading/trailing whitespace before returning so callers don't
 /// need to re-trim. The return never ends with a bare newline.
 #[must_use]
 pub fn element_to_markdown(elem: ElementRef<'_>) -> String {
     let mut out = String::new();
-    render_element(elem, &mut out, 0);
+    render_element(elem, &mut out, 0, 0);
     normalize_blank_lines(out.trim())
 }
 
 /// Recursive worker. `list_depth` tracks nested `<ul>`/`<ol>` so list
-/// items can indent correctly under their parent.
-fn render_element(elem: ElementRef<'_>, out: &mut String, list_depth: usize) {
+/// items can indent correctly under their parent. `depth` tracks total
+/// recursion depth for stack overflow protection (S3 fix).
+fn render_element(elem: ElementRef<'_>, out: &mut String, list_depth: usize, depth: usize) {
+    if depth > MAX_RENDER_DEPTH {
+        out.push_str("_(content too deeply nested)_");
+        return;
+    }
     let tag = elem.value().name();
     match tag {
         "h1" => {
@@ -115,7 +125,7 @@ fn render_element(elem: ElementRef<'_>, out: &mut String, list_depth: usize) {
             let mut inner = String::new();
             for child in elem.children() {
                 if let Some(child_elem) = ElementRef::wrap(child) {
-                    render_element(child_elem, &mut inner, list_depth);
+                    render_element(child_elem, &mut inner, list_depth, depth + 1);
                 } else if let Node::Text(text) = child.value() {
                     inner.push_str(text);
                 }
@@ -129,10 +139,10 @@ fn render_element(elem: ElementRef<'_>, out: &mut String, list_depth: usize) {
             out.push_str("\n");
         }
         "ul" => {
-            render_list(elem, out, false, list_depth);
+            render_list(elem, out, false, list_depth, depth);
         }
         "ol" => {
-            render_list(elem, out, true, list_depth);
+            render_list(elem, out, true, list_depth, depth);
         }
         "li" => {
             // `<li>` is only reachable if it's NOT under `<ul>`/`<ol>`
@@ -177,7 +187,7 @@ fn render_element(elem: ElementRef<'_>, out: &mut String, list_depth: usize) {
             // `<div>`, `<span>`, `<section>`, `<article>` etc.).
             for child in elem.children() {
                 if let Some(child_elem) = ElementRef::wrap(child) {
-                    render_element(child_elem, out, list_depth);
+                    render_element(child_elem, out, list_depth, depth + 1);
                 } else if let Node::Text(text) = child.value() {
                     let cleaned = clean_text(text);
                     if !cleaned.is_empty() {
@@ -192,7 +202,7 @@ fn render_element(elem: ElementRef<'_>, out: &mut String, list_depth: usize) {
 /// Render an `<ul>` or `<ol>`. Each direct-child `<li>` becomes one
 /// list item; non-`<li>` children are walked normally (wechat some-
 /// times nests `<div>` inside `<ul>`).
-fn render_list(ul_or_ol: ElementRef<'_>, out: &mut String, ordered: bool, list_depth: usize) {
+fn render_list(ul_or_ol: ElementRef<'_>, out: &mut String, ordered: bool, list_depth: usize, depth: usize) {
     out.push_str("\n\n");
     let mut index = 1usize;
     let indent: String = "  ".repeat(list_depth);
@@ -211,11 +221,11 @@ fn render_list(ul_or_ol: ElementRef<'_>, out: &mut String, ordered: bool, list_d
                     let name = grand_elem.value().name();
                     if name == "ul" || name == "ol" {
                         let mut nested = String::new();
-                        render_list(grand_elem, &mut nested, name == "ol", list_depth + 1);
+                        render_list(grand_elem, &mut nested, name == "ol", list_depth + 1, depth + 1);
                         li_buf.push('\n');
                         li_buf.push_str(&nested);
                     } else {
-                        render_element(grand_elem, &mut li_buf, list_depth);
+                        render_element(grand_elem, &mut li_buf, list_depth, depth + 1);
                     }
                 } else if let Node::Text(text) = grand.value() {
                     li_buf.push_str(&clean_text(text));
@@ -233,7 +243,7 @@ fn render_list(ul_or_ol: ElementRef<'_>, out: &mut String, ordered: bool, list_d
             }
         } else {
             // Non-<li> child of a list — tolerate and recurse.
-            render_element(child_elem, out, list_depth);
+            render_element(child_elem, out, list_depth, depth + 1);
         }
     }
     out.push_str("\n");
@@ -245,7 +255,7 @@ fn render_list(ul_or_ol: ElementRef<'_>, out: &mut String, ordered: bool, list_d
 fn render_children_inline(elem: ElementRef<'_>, out: &mut String) {
     for child in elem.children() {
         if let Some(child_elem) = ElementRef::wrap(child) {
-            render_element(child_elem, out, 0);
+            render_element(child_elem, out, 0, 0);
         } else if let Node::Text(text) = child.value() {
             out.push_str(&clean_text(text));
         }

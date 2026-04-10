@@ -406,6 +406,13 @@ pub fn app(state: AppState) -> Router {
         .route("/api/ask/sessions/{id}/resume", post(resume_session))
         .route("/api/ask/sessions/{id}/events", get(stream_session_events))
         .route("/api/ask/sessions/{id}/permission", post(forward_permission))
+        // I2 fix: complete the alias surface so frontend can fully
+        // migrate without falling back to /api/desktop/*.
+        .route("/api/ask/sessions/{id}/title", post(rename_session))
+        .route("/api/ask/sessions/{id}/compact", post(compact_session))
+        .route("/api/ask/sessions/{id}/fork", post(fork_session))
+        .route("/api/ask/sessions/{id}/lifecycle", post(set_session_lifecycle_handler))
+        .route("/api/ask/sessions/{id}/flag", post(set_session_flag_handler))
         // ── end feat(U) aliases ─────────────────────────────────────
         // ── feat(O): WebSocket inbox change stream (canonical §9.3) ─
         // WS /ws/wechat-inbox — clients subscribe to get instant

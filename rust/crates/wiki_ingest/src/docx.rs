@@ -43,16 +43,35 @@ pub fn extract_docx(path: &Path) -> Result<IngestResult> {
         IngestError::Invalid(format!("DOCX is not a valid ZIP: {}: {e}", path.display()))
     })?;
 
+    // S2 fix: ZIP bomb defense — cap the uncompressed size of
+    // word/document.xml before reading it into memory.
+    const MAX_XML_BYTES: u64 = 50 * 1024 * 1024; // 50 MiB
+
     // Read word/document.xml
     let mut doc_xml = String::new();
     {
-        let mut entry = archive.by_name("word/document.xml").map_err(|e| {
+        let entry = archive.by_name("word/document.xml").map_err(|e| {
             IngestError::Invalid(format!(
                 "DOCX missing word/document.xml: {}: {e}",
                 path.display()
             ))
         })?;
-        entry.read_to_string(&mut doc_xml).map_err(|e| {
+        if entry.size() > MAX_XML_BYTES {
+            return Err(IngestError::TooLarge {
+                bytes: entry.size() as usize,
+                max: MAX_XML_BYTES as usize,
+            });
+        }
+        // Re-open because `entry` was consumed by size check.
+        // (ZipArchive doesn't support seek on entries.)
+        drop(entry);
+        let mut entry2 = archive.by_name("word/document.xml").map_err(|e| {
+            IngestError::Invalid(format!(
+                "DOCX re-open word/document.xml: {}: {e}",
+                path.display()
+            ))
+        })?;
+        entry2.read_to_string(&mut doc_xml).map_err(|e| {
             IngestError::Invalid(format!(
                 "cannot read word/document.xml: {}: {e}",
                 path.display()

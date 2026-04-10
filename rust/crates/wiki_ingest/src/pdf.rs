@@ -28,7 +28,21 @@ use crate::{IngestError, IngestResult, Result};
 /// The title is derived from the filename (sans `.pdf` extension)
 /// since PDF metadata titles are often empty or useless ("Microsoft
 /// Word - Document1").
+/// Hard cap on PDF file size (100 MiB). Larger PDFs need to be
+/// split before ingestion.
+pub const MAX_PDF_BYTES: usize = 100 * 1024 * 1024;
+
 pub fn extract_pdf(path: &Path) -> Result<IngestResult> {
+    // I4 fix: check file size BEFORE reading to prevent OOM.
+    let metadata = std::fs::metadata(path).map_err(|e| {
+        IngestError::Invalid(format!("cannot stat PDF at {}: {e}", path.display()))
+    })?;
+    if metadata.len() > MAX_PDF_BYTES as u64 {
+        return Err(IngestError::TooLarge {
+            bytes: metadata.len() as usize,
+            max: MAX_PDF_BYTES,
+        });
+    }
     let bytes = std::fs::read(path).map_err(|e| {
         IngestError::Invalid(format!("cannot read PDF at {}: {e}", path.display()))
     })?;

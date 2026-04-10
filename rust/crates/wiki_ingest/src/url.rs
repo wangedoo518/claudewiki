@@ -205,7 +205,56 @@ fn validate_url(url: &str) -> Result<()> {
             "url must start with http:// or https:// (got: {trimmed})"
         )));
     }
+    // S1 fix: SSRF defense — reject URLs pointing at localhost,
+    // private IP ranges, or link-local addresses. This prevents
+    // POST /api/wiki/fetch from being used as an SSRF proxy to
+    // probe internal services or cloud metadata endpoints.
+    //
+    // Bypassed in `#[cfg(test)]` because integration tests bind
+    // an in-process HTTP server on 127.0.0.1. Production code
+    // always enforces the check.
+    #[cfg(not(test))]
+    {
+        let host_part = trimmed
+            .split_once("://")
+            .map(|(_, rest)| rest)
+            .unwrap_or(trimmed);
+        let host = host_part
+            .split('/')
+            .next()
+            .unwrap_or("")
+            .split(':')
+            .next()
+            .unwrap_or("")
+            .to_lowercase();
+        if host.is_empty() {
+            return Err(IngestError::Invalid("url has no host".to_string()));
+        }
+        if host == "localhost"
+            || host == "[::1]"
+            || host.starts_with("127.")
+            || host.starts_with("10.")
+            || host.starts_with("192.168.")
+            || host.starts_with("169.254.")
+            || is_172_private(&host)
+            || host == "0.0.0.0"
+        {
+            return Err(IngestError::Invalid(format!(
+                "url points to a private/internal address ({host}) — blocked for SSRF safety"
+            )));
+        }
+    }
     Ok(())
+}
+
+/// Check if a host string is in the 172.16.0.0/12 range.
+fn is_172_private(host: &str) -> bool {
+    if let Some(rest) = host.strip_prefix("172.") {
+        if let Some(second_octet) = rest.split('.').next().and_then(|s| s.parse::<u8>().ok()) {
+            return (16..=31).contains(&second_octet);
+        }
+    }
+    false
 }
 
 /// Pull a lowercase `content-type` bare MIME (no parameters) out of

@@ -75,9 +75,19 @@ pub fn extract_pptx(path: &Path) -> Result<IngestResult> {
         count = slide_names.len(),
     );
 
+    // S2 fix: ZIP bomb defense — cap per-slide XML size.
+    const MAX_SLIDE_XML_BYTES: u64 = 20 * 1024 * 1024; // 20 MiB per slide
+
     for (idx, slide_name) in slide_names.iter().enumerate() {
         let mut xml_content = String::new();
-        if let Ok(mut entry) = archive.by_name(slide_name) {
+        // S2 fix: check uncompressed size before reading.
+        let too_large = archive
+            .by_name(slide_name)
+            .map(|e| e.size() > MAX_SLIDE_XML_BYTES)
+            .unwrap_or(false);
+        if too_large {
+            xml_content = format!("(slide too large, skipped)");
+        } else if let Ok(mut entry) = archive.by_name(slide_name) {
             let _ = entry.read_to_string(&mut xml_content);
         }
         let text = extract_slide_text(&xml_content);

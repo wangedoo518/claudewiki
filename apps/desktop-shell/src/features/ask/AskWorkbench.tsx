@@ -1,27 +1,19 @@
 /**
- * S0.3 extraction target: Ask page workbench (CCD soul ① + ②).
+ * S0.3 → S1 redesign: Ask page workbench.
  *
- * Original: features/session-workbench/SessionWorkbenchTerminal.tsx.
- *
- * MVP cuts per ClawWiki canonical §11.1 + §6.1:
- *   - Drop slash command handling (commandExecutor / handleSlashCommand).
- *     The Composer no longer accepts an `onSlashCommand` prop and the
- *     `addSystemMessage` "command failed" branch goes with it. Error
- *     dismissal still adds a system message via the same helper.
- *   - Drop the `useKeyboardShortcuts` integration during S0.3 — the
- *     hook lives in the still-existing session-workbench/ directory and
- *     S3 will rebuild a smaller Ask-specific shortcut surface.
+ * Architecture changes from S0.3:
+ *   - ConversationScroller (use-stick-to-bottom) replaces manual scroll div
+ *   - StreamingMessage component replaces inline StreamingIndicator
+ *   - MessageList groups tool messages into ToolActionsGroup
+ *   - SlashCommandPalette wired into Composer
+ *   - DeepTutor warm visual language (#C35A2C + Lora serif + #FAF9F6)
  *
  * Preserved:
- *   - Welcome screen + demo mode (so AskPage's "View demo" CTA works
- *     immediately when S3 wires it up).
- *   - Streaming indicator + permission dialog rendering.
- *   - Tool / message flattening from runtime types.
- *   - Subagent panel (now MaintainerTaskTree).
- *   - All store wiring (settings, permissions, streaming).
- *
- * S3 will replace the body of this file with the ask_runtime-backed
- * implementation. The component shape stays put.
+ *   - Welcome screen + demo mode
+ *   - Permission dialog rendering
+ *   - Tool / message flattening from runtime types
+ *   - Subagent panel (MaintainerTaskTree)
+ *   - All store wiring (settings, permissions, streaming)
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -38,6 +30,8 @@ import {
 import { AskHeader } from "./AskHeader";
 import { MessageList } from "./MessageList";
 import { Composer } from "./Composer";
+import { ConversationScroller } from "./ConversationScroller";
+import { ScrollToBottomButton } from "./ScrollToBottomButton";
 import { StatusLine } from "@/features/common/StatusLine";
 import { WikiPermissionDialog } from "@/features/permission/WikiPermissionDialog";
 import type { PermissionAction } from "@/features/permission/permission-types";
@@ -76,8 +70,7 @@ export function AskWorkbench({
   errorMessage,
   onSend,
   onStop,
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars -- reserved for S3 keyboard shortcuts
-  onCreateSession: _onCreateSession,
+  onCreateSession,
   modelLabel = "Codex GPT-5.4",
   environmentLabel = "via internal broker",
   projectPath,
@@ -91,13 +84,12 @@ export function AskWorkbench({
   const clearPendingPermission = usePermissionsStore(
     (state) => state.clearPendingPermission
   );
-  const [scrollNode, setScrollNode] = useState<HTMLDivElement | null>(null);
-  const scrollCallbackRef = useCallback((node: HTMLDivElement | null) => {
-    setScrollNode(node);
-  }, []);
+  const streamingContent = useStreamingStore((s) => s.streamingContent);
+
   const [showDemo, setShowDemo] = useState(false);
   const [localMessages, setLocalMessages] = useState<ConversationMessage[]>([]);
   const [showAgentPanel, setShowAgentPanel] = useState(false);
+
   const messages = useMemo(
     () => flattenSessionMessages(session?.session.messages ?? []),
     [session?.session.messages]
@@ -107,6 +99,7 @@ export function AskWorkbench({
     if (showDemo) return [...MOCK_DEMO_MESSAGES, ...localMessages];
     return localMessages;
   }, [messages, showDemo, localMessages]);
+
   const agentCount = useMemo(
     () => extractSubagents(displayMessages).length,
     [displayMessages]
@@ -159,7 +152,17 @@ export function AskWorkbench({
     ]);
   }, []);
 
-  // Input ref for focus shortcut (used by S3 keyboard shortcuts)
+  // Slash command handlers
+  const handleClear = useCallback(() => {
+    setLocalMessages([]);
+    onCreateSession?.();
+  }, [onCreateSession]);
+
+  const handleNewSession = useCallback(() => {
+    onCreateSession?.();
+  }, [onCreateSession]);
+
+  // Input ref for focus shortcut
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
   return (
@@ -178,77 +181,78 @@ export function AskWorkbench({
       {displayMessages.length === 0 && !isLoadingSession ? (
         <WelcomeScreen onShowDemo={() => setShowDemo(true)} />
       ) : (
-        <div
-          ref={scrollCallbackRef}
-          className="flex-1 overflow-y-auto pb-4 [&::-webkit-scrollbar]:w-2 [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-border [&::-webkit-scrollbar-track]:bg-transparent"
-        >
-            {showDemo && (
-              <div className="mx-4 mb-2 mt-1 flex items-center justify-between rounded-lg border border-border/30 bg-muted/10 px-3 py-1.5">
-                <span className="text-label text-muted-foreground">
-                  Demo mode — showing sample conversation
-                </span>
-                <div className="flex items-center gap-2">
-                  {!pendingPermission && (
-                    <button
-                      className="text-label font-medium text-muted-foreground hover:text-foreground hover:underline"
-                      onClick={() =>
-                        setPendingPermission({
-                          id: `demo-perm-${Date.now()}`,
-                          toolName: "Bash",
-                          toolInput: {
-                            command: "npm install @radix-ui/react-dialog",
-                          },
-                          riskLevel: "high",
-                        })
-                      }
-                    >
-                      Test permission
-                    </button>
-                  )}
+        <ConversationScroller>
+          {showDemo && (
+            <div className="mb-2 flex items-center justify-between rounded-lg border border-border/30 bg-muted/10 px-3 py-1.5">
+              <span className="text-label text-muted-foreground">
+                Demo mode — showing sample conversation
+              </span>
+              <div className="flex items-center gap-2">
+                {!pendingPermission && (
                   <button
-                    className="text-label font-medium text-foreground hover:underline"
-                    onClick={() => setShowDemo(false)}
+                    className="text-label font-medium text-muted-foreground hover:text-foreground hover:underline"
+                    onClick={() =>
+                      setPendingPermission({
+                        id: `demo-perm-${Date.now()}`,
+                        toolName: "Bash",
+                        toolInput: {
+                          command: "npm install @radix-ui/react-dialog",
+                        },
+                        riskLevel: "high",
+                      })
+                    }
                   >
-                    Exit demo
+                    Test permission
                   </button>
-                </div>
-              </div>
-            )}
-            {isLoadingSession && <MessageSkeleton />}
-
-            {/* Virtualized message list */}
-            <MessageList
-              messages={displayMessages}
-              scrollElement={scrollNode}
-            />
-
-            {/* Fixed items after virtual list */}
-            {pendingPermission && (
-              <WikiPermissionDialog
-                request={pendingPermission}
-                onDecision={handlePermissionDecision}
-              />
-            )}
-            {isRunning && !pendingPermission && <StreamingIndicator />}
-            {errorMessage && (
-              <div
-                className="mx-4 mt-3 flex items-start gap-2 rounded-lg border px-3 py-2 text-body-sm"
-                style={{
-                  borderColor: "color-mix(in srgb, var(--color-error) 30%, transparent)",
-                  backgroundColor: "color-mix(in srgb, var(--color-error) 5%, transparent)",
-                  color: "var(--color-error)",
-                }}
-              >
-                <span className="flex-1">{errorMessage}</span>
+                )}
                 <button
-                  className="shrink-0 rounded px-1.5 py-0.5 text-label font-medium transition-colors hover:bg-[color-mix(in_srgb,var(--color-error)_15%,transparent)]"
-                  onClick={() => addSystemMessage("Error dismissed. You can retry your last message.")}
+                  className="text-label font-medium text-foreground hover:underline"
+                  onClick={() => setShowDemo(false)}
                 >
-                  Dismiss
+                  Exit demo
                 </button>
               </div>
-            )}
-        </div>
+            </div>
+          )}
+
+          {isLoadingSession && <MessageSkeleton />}
+
+          <MessageList
+            messages={displayMessages}
+            streamingContent={streamingContent}
+            isStreaming={isRunning && !pendingPermission}
+          />
+
+          {/* Permission dialog rendered inside scroller for flow */}
+          {pendingPermission && (
+            <WikiPermissionDialog
+              request={pendingPermission}
+              onDecision={handlePermissionDecision}
+            />
+          )}
+
+          {/* Error banner */}
+          {errorMessage && (
+            <div
+              className="flex items-start gap-2 rounded-lg border px-3 py-2 text-body-sm"
+              style={{
+                borderColor: "color-mix(in srgb, var(--color-error) 30%, transparent)",
+                backgroundColor: "color-mix(in srgb, var(--color-error) 5%, transparent)",
+                color: "var(--color-error)",
+              }}
+            >
+              <span className="flex-1">{errorMessage}</span>
+              <button
+                className="shrink-0 rounded px-1.5 py-0.5 text-label font-medium transition-colors hover:bg-[color-mix(in_srgb,var(--color-error)_15%,transparent)]"
+                onClick={() => addSystemMessage("Error dismissed. You can retry your last message.")}
+              >
+                Dismiss
+              </button>
+            </div>
+          )}
+
+          <ScrollToBottomButton />
+        </ConversationScroller>
       )}
 
       <Composer
@@ -257,6 +261,8 @@ export function AskWorkbench({
         isBusy={isRunning || !!pendingPermission}
         environmentLabel={environmentLabel}
         inputRef={inputRef}
+        onClear={handleClear}
+        onNewSession={handleNewSession}
       />
 
       <StatusLine
@@ -282,7 +288,7 @@ export function AskWorkbench({
 
 function MessageSkeleton() {
   return (
-    <div className="space-y-3 px-4 py-4">
+    <div className="space-y-3">
       {/* User message skeleton */}
       <div className="rounded-lg border border-border/30 bg-muted/10 p-3">
         <div className="mb-2 h-2.5 w-12 animate-pulse rounded bg-muted/40" />
@@ -312,54 +318,6 @@ function MessageSkeleton() {
   );
 }
 
-/* ─── Streaming Spinner with shimmer ─────────────────────────────── */
-
-function StreamingIndicator() {
-  const streamingContent = useStreamingStore((s) => s.streamingContent);
-
-  if (streamingContent) {
-    // Show streaming text in real time.
-    return (
-      <div className="mx-4 my-2">
-        <div className="rounded-lg border border-border/30 bg-muted/10 px-4 py-3">
-          <div className="whitespace-pre-wrap text-body text-foreground/90">
-            {streamingContent}
-            <span className="ml-0.5 inline-block h-4 w-0.5 animate-pulse bg-foreground/60" />
-          </div>
-        </div>
-      </div>
-    );
-  }
-
-  // No text yet — show thinking spinner.
-  return (
-    <div className="mx-4 my-2">
-      <div className="flex items-center gap-3 rounded-lg border border-border/30 bg-muted/10 px-4 py-3">
-        <div className="flex items-center gap-1">
-          <ShimmerDot delay={0} />
-          <ShimmerDot delay={150} />
-          <ShimmerDot delay={300} />
-        </div>
-        <span className="text-body text-muted-foreground">
-          Thinking...
-        </span>
-      </div>
-    </div>
-  );
-}
-
-function ShimmerDot({ delay }: { delay: number }) {
-  return (
-    <span
-      className="inline-block size-1.5 rounded-full animate-pulse"
-      style={{
-        backgroundColor: "var(--claude-orange)",
-        animationDelay: `${delay}ms`,
-      }}
-    />
-  );
-}
-
 /* ─── Welcome Screen ─────────────────────────────────────────────── */
 
 function WelcomeScreen({ onShowDemo }: { onShowDemo?: () => void }) {
@@ -374,31 +332,31 @@ function WelcomeScreen({ onShowDemo }: { onShowDemo?: () => void }) {
       icon: FileEdit,
       title: "Edit Files",
       desc: "Read, write, and modify code with precise diffs",
-      color: "var(--claude-orange)",
+      color: "var(--deeptutor-primary, var(--claude-orange))",
     },
     {
       icon: Search,
       title: "Search Code",
       desc: "Find files and patterns across your codebase",
-      color: "var(--claude-blue)",
+      color: "var(--deeptutor-purple, var(--claude-blue))",
     },
     {
       icon: Globe,
       title: "Web Access",
       desc: "Fetch URLs and search the web for information",
-      color: "var(--agent-cyan)",
+      color: "var(--deeptutor-purple, var(--agent-cyan))",
     },
     {
       icon: Code2,
       title: "Multi-file Edits",
       desc: "Coordinate changes across multiple files at once",
-      color: "var(--agent-purple)",
+      color: "var(--deeptutor-purple, var(--agent-purple))",
     },
     {
       icon: Zap,
       title: "MCP Tools",
       desc: "Use connected MCP server tools and extensions",
-      color: "var(--color-fast-mode)",
+      color: "var(--deeptutor-warn, var(--color-fast-mode))",
     },
   ];
 
@@ -409,13 +367,13 @@ function WelcomeScreen({ onShowDemo }: { onShowDemo?: () => void }) {
         <div
           className="flex size-14 items-center justify-center rounded-2xl"
           style={{
-            background: "linear-gradient(135deg, var(--claude-orange), var(--claude-orange-shimmer))",
+            background: "linear-gradient(135deg, var(--deeptutor-primary, var(--claude-orange)), var(--deeptutor-primary-hi, var(--claude-orange-shimmer)))",
           }}
         >
           <MessageSquare className="size-7 text-white" />
         </div>
         <div className="text-center">
-          <h2 className="text-base font-semibold text-foreground">
+          <h2 className="ask-serif text-base font-semibold text-foreground">
             What can I help you with?
           </h2>
           <p className="mt-1 max-w-sm text-body text-muted-foreground">
@@ -429,7 +387,7 @@ function WelcomeScreen({ onShowDemo }: { onShowDemo?: () => void }) {
         {capabilities.map((item) => (
           <div
             key={item.title}
-            className="flex items-start gap-2.5 rounded-lg border border-border/40 bg-muted/10 p-3 transition-colors hover:bg-muted/20"
+            className="flex items-start gap-2.5 rounded-lg border border-border/40 bg-card/50 p-3 shadow-[var(--deeptutor-shadow-sm,none)] transition-colors hover:bg-accent/50"
           >
             <item.icon className="mt-0.5 size-4 shrink-0" style={{ color: item.color }} />
             <div className="min-w-0">
@@ -448,10 +406,13 @@ function WelcomeScreen({ onShowDemo }: { onShowDemo?: () => void }) {
           <span className="mx-1">|</span>
           <kbd className="rounded border border-border/50 bg-muted/30 px-1.5 py-0.5 font-mono text-caption">Shift+Enter</kbd>
           <span>for newline</span>
+          <span className="mx-1">|</span>
+          <kbd className="rounded border border-border/50 bg-muted/30 px-1.5 py-0.5 font-mono text-caption">/</kbd>
+          <span>for commands</span>
         </div>
         {onShowDemo && (
           <button
-            className="flex items-center gap-1.5 rounded-md border border-border/40 bg-muted/10 px-3 py-1 text-label text-muted-foreground transition-colors hover:bg-muted/30 hover:text-foreground"
+            className="flex items-center gap-1.5 rounded-md border border-border/40 bg-card/50 px-3 py-1 text-label text-muted-foreground shadow-[var(--deeptutor-shadow-sm,none)] transition-colors hover:bg-accent/50 hover:text-foreground"
             onClick={onShowDemo}
           >
             <Play className="size-3" />

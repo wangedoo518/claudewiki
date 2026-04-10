@@ -46,6 +46,10 @@ import {
   PERMISSION_MODES,
   getPermissionConfig,
 } from "@/features/permission/permission-config";
+import {
+  SlashCommandPalette,
+  type SlashCommand,
+} from "./SlashCommandPalette";
 
 /* ─── Attachment helpers ─────────────────────────────────────────── */
 
@@ -159,6 +163,9 @@ interface ComposerProps {
   isBusy?: boolean;
   environmentLabel?: string;
   inputRef?: React.RefObject<HTMLTextAreaElement | null>;
+  onClear?: () => void;
+  onNewSession?: () => void;
+  onExportMarkdown?: () => void;
 }
 
 export function Composer({
@@ -167,6 +174,9 @@ export function Composer({
   isBusy = false,
   environmentLabel = "Local",
   inputRef,
+  onClear,
+  onNewSession,
+  onExportMarkdown,
 }: ComposerProps) {
   const permissionMode = useSettingsStore((state) => state.permissionMode);
   const setPermissionMode = useSettingsStore((state) => state.setPermissionMode);
@@ -185,6 +195,38 @@ export function Composer({
   const permMenuRef = useRef<HTMLDivElement>(null);
   const rafRef = useRef<number>(0);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // ── Slash command state ────────────────────────────────────────
+  const showSlashPalette = value.startsWith("/") && !isBusy;
+  const slashQuery = showSlashPalette ? value.slice(1) : "";
+
+  const handleSlashSelect = useCallback(
+    (cmd: SlashCommand) => {
+      setValue("");
+      switch (cmd.action) {
+        case "clear":
+          onClear?.();
+          break;
+        case "new":
+          onNewSession?.();
+          break;
+        case "export":
+          onExportMarkdown?.();
+          break;
+        case "compact":
+          void onSend("/compact");
+          break;
+        case "plan":
+          void onSend("/plan");
+          break;
+      }
+    },
+    [onClear, onNewSession, onExportMarkdown, onSend]
+  );
+
+  const handleSlashClose = useCallback(() => {
+    // Just leave the text — user can keep typing
+  }, []);
 
   // ── Attachment handling ─────────────────────────────────────────
   const handleFiles = useCallback(async (files: FileList | File[]) => {
@@ -341,6 +383,9 @@ export function Composer({
   }, [onStop]);
 
   const handleKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
+    // Skip history nav when slash palette is open
+    if (showSlashPalette && (e.key === "ArrowUp" || e.key === "ArrowDown")) return;
+
     // History navigation
     if (e.key === "ArrowUp" && !e.shiftKey && value === "") {
       e.preventDefault();
@@ -364,8 +409,9 @@ export function Composer({
       return;
     }
 
-    // Send on Enter
+    // Send on Enter (unless slash palette is intercepting)
     if (e.key === "Enter" && !e.shiftKey) {
+      if (showSlashPalette) return; // palette handles Enter via document listener
       e.preventDefault();
       handleSend();
     }
@@ -466,20 +512,28 @@ export function Composer({
         </div>
       )}
 
+      {/* Slash command palette */}
+      <SlashCommandPalette
+        query={slashQuery}
+        visible={showSlashPalette}
+        onSelect={handleSlashSelect}
+        onClose={handleSlashClose}
+      />
+
       {/* Textarea (with drag-drop) */}
       <div
         className={cn(
           "relative rounded-xl border border-input bg-muted/10 px-4 py-2.5 transition-colors",
           "focus-within:border-ring focus-within:ring-1 focus-within:ring-ring/50",
-          isDragging && "border-[color:var(--claude-blue)] bg-[color:var(--claude-blue)]/5",
+          isDragging && "border-[color:var(--deeptutor-primary,var(--claude-blue))] bg-[color:var(--deeptutor-primary,var(--claude-blue))]/5",
         )}
         onDragOver={handleDragOver}
         onDragLeave={handleDragLeave}
         onDrop={handleDrop}
       >
         {isDragging && (
-          <div className="pointer-events-none absolute inset-0 flex items-center justify-center rounded-xl bg-[color:var(--claude-blue)]/10">
-            <div className="flex items-center gap-2 text-body-sm font-medium" style={{ color: "var(--claude-blue)" }}>
+          <div className="pointer-events-none absolute inset-0 flex items-center justify-center rounded-xl bg-[color:var(--deeptutor-primary,var(--claude-blue))]/10">
+            <div className="flex items-center gap-2 text-body-sm font-medium" style={{ color: "var(--deeptutor-primary, var(--claude-blue))" }}>
               <Paperclip className="size-4" />
               Drop files to attach
             </div>
@@ -625,7 +679,7 @@ export function Composer({
                 ? "cursor-pointer"
                 : "cursor-not-allowed opacity-50"
             )}
-            style={{ backgroundColor: "var(--claude-orange)" }}
+            style={{ backgroundColor: "var(--deeptutor-primary, var(--claude-orange))" }}
             onClick={handleSend}
             disabled={!value.trim() && attachments.length === 0}
           >

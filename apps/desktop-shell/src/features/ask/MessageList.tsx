@@ -1,84 +1,93 @@
-// S0.3 extraction target: virtualized message list (CCD soul ②).
-//
-// Original: features/session-workbench/VirtualizedMessageList.tsx.
-// Behavior is verbatim; only the imports change:
-//   - `./MessageItem` → `./Message`
-//   - `./types` → `@/features/common/message-types`
+/**
+ * Message list — renders conversation messages as flex children inside the
+ * ConversationScroller.  Replaces the previous @tanstack/react-virtual
+ * approach with simple DOM rendering + use-stick-to-bottom auto-scroll.
+ *
+ * Key behavior:
+ *   - Groups consecutive tool_use/tool_result messages into a single
+ *     <ToolActionsGroup> node for collapse/lazy-render.
+ *   - Appends a <StreamingMessage> at the tail when the turn is active.
+ */
 
-import { memo, useEffect, useRef, useCallback } from "react";
-import { useVirtualizer } from "@tanstack/react-virtual";
+import { memo, useMemo } from "react";
 import { Message } from "./Message";
+import { ToolActionsGroup } from "./ToolActionsGroup";
+import { StreamingMessage } from "./StreamingMessage";
 import type { ConversationMessage } from "@/features/common/message-types";
 
 interface MessageListProps {
   messages: ConversationMessage[];
-  scrollElement: HTMLDivElement | null;
+  streamingContent?: string;
+  isStreaming?: boolean;
+}
+
+interface MessageGroup {
+  kind: "single";
+  message: ConversationMessage;
+}
+
+interface ToolGroup {
+  kind: "tool-group";
+  messages: ConversationMessage[];
+  key: string;
+}
+
+type RenderGroup = MessageGroup | ToolGroup;
+
+/** Group consecutive tool_use/tool_result messages together. */
+function groupMessages(messages: ConversationMessage[]): RenderGroup[] {
+  const groups: RenderGroup[] = [];
+  let toolBuf: ConversationMessage[] = [];
+
+  const flushToolBuf = () => {
+    if (toolBuf.length > 0) {
+      groups.push({
+        kind: "tool-group",
+        messages: [...toolBuf],
+        key: toolBuf.map((m) => m.id).join("+"),
+      });
+      toolBuf = [];
+    }
+  };
+
+  for (const msg of messages) {
+    if (msg.type === "tool_use" || msg.type === "tool_result") {
+      toolBuf.push(msg);
+    } else {
+      flushToolBuf();
+      groups.push({ kind: "single", message: msg });
+    }
+  }
+  flushToolBuf();
+
+  return groups;
 }
 
 export const MessageList = memo(function MessageList({
   messages,
-  scrollElement,
+  streamingContent,
+  isStreaming = false,
 }: MessageListProps) {
-  const isAtBottomRef = useRef(true);
-
-  const virtualizer = useVirtualizer({
-    count: messages.length,
-    getScrollElement: () => scrollElement,
-    estimateSize: () => 80,
-    overscan: 5,
-  });
-
-  // Track scroll position to decide auto-scroll
-  const checkScrollPosition = useCallback(() => {
-    if (!scrollElement) return;
-    const threshold = 100;
-    isAtBottomRef.current =
-      scrollElement.scrollHeight - scrollElement.scrollTop - scrollElement.clientHeight < threshold;
-  }, [scrollElement]);
-
-  useEffect(() => {
-    if (!scrollElement) return;
-    scrollElement.addEventListener("scroll", checkScrollPosition, { passive: true });
-    return () => scrollElement.removeEventListener("scroll", checkScrollPosition);
-  }, [scrollElement, checkScrollPosition]);
-
-  // Auto-scroll to bottom when new messages arrive (if user was at bottom)
-  useEffect(() => {
-    if (messages.length > 0 && isAtBottomRef.current) {
-      virtualizer.scrollToIndex(messages.length - 1, { align: "end" });
-    }
-  }, [messages.length, virtualizer]);
-
-  const virtualItems = virtualizer.getVirtualItems();
-  const totalSize = virtualizer.getTotalSize();
+  const groups = useMemo(() => groupMessages(messages), [messages]);
 
   return (
-    <div
-      style={{
-        height: `${totalSize}px`,
-        width: "100%",
-        position: "relative",
-      }}
-    >
-      {virtualItems.map((virtualItem) => {
-        const message = messages[virtualItem.index];
-        return (
-          <div
-            key={message.id}
-            data-index={virtualItem.index}
-            ref={virtualizer.measureElement}
-            style={{
-              position: "absolute",
-              top: 0,
-              left: 0,
-              width: "100%",
-              transform: `translateY(${virtualItem.start}px)`,
-            }}
-          >
-            <Message message={message} />
-          </div>
-        );
+    <>
+      {groups.map((group) => {
+        if (group.kind === "tool-group") {
+          return (
+            <ToolActionsGroup
+              key={group.key}
+              messages={group.messages}
+              isStreaming={isStreaming && group === groups[groups.length - 1]}
+            />
+          );
+        }
+        return <Message key={group.message.id} message={group.message} />;
       })}
-    </div>
+
+      {isStreaming && (
+        <StreamingMessage content={streamingContent ?? ""} />
+      )}
+    </>
   );
 });

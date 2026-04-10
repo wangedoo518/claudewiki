@@ -387,6 +387,27 @@
 
     /* ── Selection highlight matches primary-soft ── */
     --color-selection-bg: rgba(195, 90, 44, 0.18);
+
+    /* ── Ask page: remap warwolf message tokens to DeepTutor palette ── */
+    --claude-orange: rgb(195, 90, 44);
+    --claude-orange-shimmer: rgb(212, 115, 75);
+    --claude-blue: rgb(139, 92, 246);
+    --claude-blue-shimmer: rgb(167, 131, 255);
+    --color-label-claude: rgb(195, 90, 44);
+    --color-label-you: rgb(195, 90, 44);
+    --color-msg-user-bg: rgb(232, 228, 222);
+    --color-msg-assistant-bg: rgb(255, 255, 255);
+    --color-msg-bash-bg: rgb(240, 237, 231);
+    --color-msg-actions-bg: rgb(240, 237, 231);
+    --color-msg-memory-bg: rgba(139, 92, 246, 0.10);
+    --color-success: rgb(63, 143, 94);
+    --color-error: rgb(212, 74, 60);
+    --color-warning: rgb(200, 139, 26);
+    --color-fast-mode: rgb(200, 139, 26);
+    --color-terminal-tool: rgb(63, 143, 94);
+    --color-terminal-error: rgb(212, 74, 60);
+    --agent-purple: rgb(139, 92, 246);
+    --agent-cyan: rgb(63, 143, 94);
   }
 
   /* Dark variant: inverted warm palette.
@@ -439,6 +460,27 @@
     --deeptutor-purple-soft: rgba(167, 131, 255, 0.16);
 
     --color-selection-bg: rgba(212, 115, 75, 0.26);
+
+    /* ── Ask page: remap warwolf message tokens to DeepTutor dark palette ── */
+    --claude-orange: rgb(212, 115, 75);
+    --claude-orange-shimmer: rgb(232, 139, 100);
+    --claude-blue: rgb(167, 131, 255);
+    --claude-blue-shimmer: rgb(190, 165, 255);
+    --color-label-claude: rgb(212, 115, 75);
+    --color-label-you: rgb(212, 115, 75);
+    --color-msg-user-bg: rgb(58, 55, 51);
+    --color-msg-assistant-bg: rgb(37, 35, 32);
+    --color-msg-bash-bg: rgb(44, 41, 37);
+    --color-msg-actions-bg: rgb(44, 41, 37);
+    --color-msg-memory-bg: rgba(167, 131, 255, 0.16);
+    --color-success: rgb(95, 180, 125);
+    --color-error: rgb(255, 107, 92);
+    --color-warning: rgb(236, 178, 70);
+    --color-fast-mode: rgb(236, 178, 70);
+    --color-terminal-tool: rgb(95, 180, 125);
+    --color-terminal-error: rgb(255, 107, 92);
+    --agent-purple: rgb(167, 131, 255);
+    --agent-cyan: rgb(95, 180, 125);
   }
 }
 
@@ -539,4 +581,35 @@
 
 .theme-warwolf.dark pre[class*="language-"] {
   background: var(--color-msg-bash-bg) !important;
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   DeepTutor Ask page — streaming pulse + tool group + syntax
+   ═══════════════════════════════════════════════════════════════ */
+
+/* Streaming message left-border pulse */
+@keyframes dt-border-pulse {
+  0%, 100% { border-left-color: var(--deeptutor-primary, rgb(195, 90, 44)); }
+  50% { border-left-color: var(--deeptutor-primary-hi, rgb(212, 115, 75)); }
+}
+.ask-streaming-border {
+  animation: dt-border-pulse 2s ease-in-out infinite;
+}
+
+/* Tool actions group card */
+.ask-tool-group {
+  box-shadow: var(--deeptutor-shadow-sm, 0 1px 3px rgba(45,43,40,0.04));
+}
+
+/* DeepTutor syntax highlighter overrides */
+.theme-deeptutor pre[class*="language-"] {
+  background: var(--color-msg-bash-bg) !important;
+}
+.theme-deeptutor.dark pre[class*="language-"] {
+  background: var(--color-msg-bash-bg) !important;
+}
+
+/* Serif heading utility for DeepTutor Ask page */
+.theme-deeptutor .ask-serif {
+  font-family: var(--font-family-dt-serif, "Lora", Georgia, serif);
 }

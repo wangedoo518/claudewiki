@@ -42,12 +42,12 @@ export function AskHeader({
       {/* Left: title + project path */}
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2">
-          <h1 className="text-body font-semibold text-foreground">{title}</h1>
+          <h1 className="ask-serif text-body font-semibold text-foreground">{title}</h1>
           {isStreaming && (
-            <span className="flex items-center gap-1 text-caption" style={{ color: "var(--claude-orange)" }}>
+            <span className="flex items-center gap-1 text-caption" style={{ color: "var(--deeptutor-primary, var(--claude-orange))" }}>
               <span
                 className="inline-block size-1.5 animate-pulse rounded-full"
-                style={{ backgroundColor: "var(--claude-orange)" }}
+                style={{ backgroundColor: "var(--deeptutor-primary, var(--claude-orange))" }}
               />
               Streaming
             </span>
@@ -79,7 +79,7 @@ export function AskHeader({
             className={cn(
               "relative flex h-[18px] items-center gap-1 rounded-md border px-1.5 text-caption font-medium transition-colors",
               showAgentPanel
-                ? "border-[color:var(--agent-purple,rgb(147,51,234))]/30 bg-[color:var(--agent-purple,rgb(147,51,234))]/10 text-[color:var(--agent-purple,rgb(147,51,234))]"
+                ? "border-[color:var(--deeptutor-purple,rgb(139,92,246))]/30 bg-[color:var(--deeptutor-purple,rgb(139,92,246))]/10 text-[color:var(--deeptutor-purple,rgb(139,92,246))]"
                 : "border-border/50 text-muted-foreground hover:bg-accent hover:text-foreground"
             )}
             onClick={onToggleAgentPanel}

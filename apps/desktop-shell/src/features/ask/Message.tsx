@@ -16,24 +16,17 @@ import { oneDark } from "react-syntax-highlighter/dist/esm/styles/prism";
 import {
   ChevronDown,
   ChevronRight,
-  Terminal as TerminalIcon,
-  Search,
-  Globe,
   AlertCircle,
   CheckCircle2,
-  Eye,
-  FileText,
-  FolderSearch,
   Copy,
   Check,
   Brain,
-  Pencil,
-  FileCode,
-  BookOpen,
   File,
   Folder,
+  Globe,
   ExternalLink,
 } from "lucide-react";
+import { getToolMeta } from "./tool-meta";
 import { cn } from "@/lib/utils";
 import type { ConversationMessage } from "@/features/common/message-types";
 
@@ -220,25 +213,23 @@ function CodeBlock({ language, code }: { language: string; code: string }) {
 
 function UserMessage({ content }: { content: string }) {
   return (
-    <div className="mx-4 my-2">
+    <div
+      className="relative overflow-hidden rounded-lg border border-border/50 shadow-[var(--deeptutor-shadow-sm,none)]"
+      style={{ backgroundColor: "var(--color-msg-user-bg, var(--color-accent))" }}
+    >
       <div
-        className="relative overflow-hidden rounded-lg border border-border/50"
-        style={{ backgroundColor: "var(--color-msg-user-bg, var(--color-accent))" }}
-      >
+        className="absolute left-0 top-0 h-full w-[3px]"
+        style={{ backgroundColor: "var(--color-label-you)" }}
+      />
+      <div className="py-2.5 pl-5 pr-4">
         <div
-          className="absolute left-0 top-0 h-full w-[3px]"
-          style={{ backgroundColor: "var(--color-label-you)" }}
-        />
-        <div className="py-2.5 pl-5 pr-4">
-          <div
-            className="mb-1 text-caption font-semibold uppercase tracking-wider"
-            style={{ color: "var(--color-label-you)" }}
-          >
-            You
-          </div>
-          <div className="whitespace-pre-wrap text-body leading-relaxed text-foreground">
-            {content}
-          </div>
+          className="ask-serif mb-1 text-caption font-semibold uppercase tracking-wider"
+          style={{ color: "var(--color-label-you)" }}
+        >
+          You
+        </div>
+        <div className="whitespace-pre-wrap text-body leading-relaxed text-foreground">
+          {content}
         </div>
       </div>
     </div>
@@ -249,25 +240,23 @@ function UserMessage({ content }: { content: string }) {
 
 function AssistantMessage({ content }: { content: string }) {
   return (
-    <div className="mx-4 my-2">
+    <div
+      className="relative overflow-hidden rounded-lg border border-border/50 shadow-[var(--deeptutor-shadow-sm,none)]"
+      style={{ backgroundColor: "var(--color-msg-assistant-bg, var(--color-card))" }}
+    >
       <div
-        className="relative overflow-hidden rounded-lg border border-border/50"
-        style={{ backgroundColor: "var(--color-msg-assistant-bg, var(--color-background))" }}
-      >
+        className="absolute left-0 top-0 h-full w-[3px]"
+        style={{ backgroundColor: "var(--color-label-claude)" }}
+      />
+      <div className="py-2.5 pl-5 pr-4">
         <div
-          className="absolute left-0 top-0 h-full w-[3px]"
-          style={{ backgroundColor: "var(--color-label-claude)" }}
-        />
-        <div className="py-2.5 pl-5 pr-4">
-          <div
-            className="mb-1 text-caption font-semibold uppercase tracking-wider"
-            style={{ color: "var(--color-label-claude)" }}
-          >
-            Assistant
-          </div>
-          <div className="text-body leading-relaxed text-foreground">
-            <MarkdownContent content={content} />
-          </div>
+          className="ask-serif mb-1 text-caption font-semibold uppercase tracking-wider"
+          style={{ color: "var(--color-label-claude)" }}
+        >
+          Assistant
+        </div>
+        <div className="text-body leading-relaxed text-foreground">
+          <MarkdownContent content={content} />
         </div>
       </div>
     </div>
@@ -280,13 +269,14 @@ function SystemMessage({ content }: { content: string }) {
   const [expanded, setExpanded] = useState(false);
 
   return (
-    <div className="mx-4 my-1">
+    <div>
       <button
-        className="flex w-full items-center gap-2 rounded-lg border border-border/30 bg-muted/20 px-3 py-1.5 text-label text-muted-foreground transition-colors hover:bg-muted/30"
+        className="flex w-full items-center gap-2 rounded-lg border border-border/30 px-3 py-1.5 text-label text-muted-foreground transition-colors hover:bg-muted/30"
+        style={{ backgroundColor: "var(--deeptutor-purple-soft, var(--color-muted))" }}
         onClick={() => setExpanded(!expanded)}
       >
         {expanded ? <ChevronDown className="size-3" /> : <ChevronRight className="size-3" />}
-        <Brain className="size-3" />
+        <Brain className="size-3" style={{ color: "var(--deeptutor-purple, var(--agent-purple))" }} />
         <span className="font-medium">System</span>
         {!expanded && (
           <span className="flex-1 truncate text-left opacity-60">
@@ -352,10 +342,10 @@ function ToolUseMessage({ message }: { message: ConversationMessage }) {
   }, [parsedInput, toolInput]);
 
   return (
-    <div className="mx-4 my-1">
+    <div>
       <button
-        className="flex w-full items-center gap-2 rounded-lg border border-border/40 px-3 py-2 text-body-sm transition-colors hover:bg-muted/30"
-        style={{ backgroundColor: "var(--color-msg-bash-bg, var(--color-muted))" }}
+        className="flex w-full items-center gap-2 rounded-lg border border-border/40 px-3 py-2 text-body-sm transition-colors hover:bg-accent/50"
+        style={{ backgroundColor: "var(--color-msg-bash-bg, var(--color-secondary))" }}
         onClick={() => setExpanded(!expanded)}
       >
         {expanded ? (
@@ -374,7 +364,7 @@ function ToolUseMessage({ message }: { message: ConversationMessage }) {
       {expanded && (
         <div
           className="mt-0.5 overflow-hidden rounded-b-lg border border-t-0 border-border/40"
-          style={{ backgroundColor: "var(--color-msg-bash-bg, var(--color-muted))" }}
+          style={{ backgroundColor: "var(--color-msg-bash-bg, var(--color-secondary))" }}
         >
           {parsedInput ? (
             <StructuredToolInput params={parsedInput} />
@@ -437,13 +427,13 @@ function ToolResultMessage({ message }: { message: ConversationMessage }) {
   const { icon: ToolIcon, color } = getToolMeta(toolName);
 
   return (
-    <div className="mx-4 my-1">
+    <div>
       <button
         className={cn(
           "flex w-full items-center gap-2 rounded-lg border px-3 py-1.5 text-body-sm transition-colors",
           isError
-            ? "border-[color:var(--color-error,rgb(171,43,63))]/30 bg-[color:var(--color-error,rgb(171,43,63))]/5 hover:bg-[color:var(--color-error,rgb(171,43,63))]/10"
-            : "border-[color:var(--color-success,rgb(44,122,57))]/20 bg-[color:var(--color-success,rgb(44,122,57))]/5 hover:bg-[color:var(--color-success,rgb(44,122,57))]/10"
+            ? "border-[color:var(--color-error)]/30 bg-[color:var(--color-error)]/5 hover:bg-[color:var(--color-error)]/10"
+            : "border-[color:var(--color-success)]/20 bg-[color:var(--color-success)]/5 hover:bg-[color:var(--color-success)]/10"
         )}
         onClick={() => setExpanded(!expanded)}
       >
@@ -474,7 +464,7 @@ function ToolResultMessage({ message }: { message: ConversationMessage }) {
       {expanded && (
         <div
           className="mt-0.5 max-h-[400px] overflow-auto rounded-b-lg border border-t-0 border-border/40"
-          style={{ backgroundColor: "var(--color-msg-bash-bg, var(--color-muted))" }}
+          style={{ backgroundColor: "var(--color-msg-bash-bg, var(--color-secondary))" }}
         >
           <ToolResultContent toolName={toolName} output={output} isDiff={isDiff} isError={isError} />
         </div>
@@ -711,60 +701,22 @@ function DiffDisplay({ content }: { content: string }) {
 
 function ErrorMessage({ content }: { content: string }) {
   return (
-    <div className="mx-4 my-2">
-      <div
-        className="flex items-start gap-2 rounded-lg border px-3 py-2"
-        style={{
-          borderColor: "color-mix(in srgb, var(--color-error) 30%, transparent)",
-          backgroundColor: "color-mix(in srgb, var(--color-error) 5%, transparent)",
-        }}
-      >
-        <AlertCircle className="mt-0.5 size-3.5 shrink-0" style={{ color: "var(--color-error)" }} />
-        <div className="font-mono text-body-sm" style={{ color: "var(--color-error)" }}>
-          {content}
-        </div>
+    <div
+      className="flex items-start gap-2 rounded-lg border px-3 py-2"
+      style={{
+        borderColor: "var(--deeptutor-danger, var(--color-error))",
+        backgroundColor: "var(--deeptutor-danger-soft, color-mix(in srgb, var(--color-error) 5%, transparent))",
+      }}
+    >
+      <AlertCircle className="mt-0.5 size-3.5 shrink-0" style={{ color: "var(--color-error)" }} />
+      <div className="font-mono text-body-sm" style={{ color: "var(--color-error)" }}>
+        {content}
       </div>
     </div>
   );
 }
 
-/* ─── Tool metadata helper ───────────────────────────────────────── */
-
-function getToolMeta(toolName: string): {
-  icon: typeof TerminalIcon;
-  label: string;
-  color: string;
-} {
-  const lower = toolName.toLowerCase();
-
-  if (lower === "bash" || lower.includes("shell") || lower === "powershell")
-    return { icon: TerminalIcon, label: "Bash", color: "var(--color-terminal-tool)" };
-  if (lower === "read" || lower === "readfile" || lower === "read_file")
-    return { icon: Eye, label: "Read", color: "var(--claude-blue)" };
-  if (lower === "edit" || lower === "editfile" || lower === "edit_file")
-    return { icon: Pencil, label: "Edit", color: "var(--claude-orange)" };
-  if (lower === "write" || lower === "writefile" || lower === "write_file")
-    return { icon: FileCode, label: "Write", color: "var(--claude-orange)" };
-  if (lower === "glob" || lower === "glob_search")
-    return { icon: FolderSearch, label: "Glob", color: "var(--color-terminal-tool)" };
-  if (lower === "grep" || lower === "grep_search")
-    return { icon: Search, label: "Grep", color: "var(--color-terminal-tool)" };
-  if (lower.includes("webfetch") || lower.includes("web_fetch"))
-    return { icon: Globe, label: "WebFetch", color: "var(--claude-blue)" };
-  if (lower.includes("websearch") || lower.includes("web_search"))
-    return { icon: Globe, label: "WebSearch", color: "var(--claude-blue)" };
-  if (lower === "agent")
-    return { icon: Brain, label: "Agent", color: "var(--agent-purple)" };
-  if (lower.includes("notebook"))
-    return { icon: BookOpen, label: "Notebook", color: "var(--claude-blue)" };
-  if (lower.includes("todowrite") || lower.includes("todo"))
-    return { icon: CheckCircle2, label: "TodoWrite", color: "var(--color-terminal-tool)" };
-  if (lower.includes("skill"))
-    return { icon: FileText, label: "Skill", color: "var(--agent-cyan)" };
-
-  // Fallback
-  return { icon: TerminalIcon, label: toolName, color: "var(--color-terminal-tool)" };
-}
+/* ─── Tool metadata — imported from tool-meta.ts ───────────────── */
 
 /* ─── TodoWrite message ─────────────────────────────────────────── */
 
@@ -801,7 +753,7 @@ function TodoMessage({ message }: { message: ConversationMessage }) {
   }
 
   return (
-    <div className="mx-4 my-2 rounded-lg border border-[color:var(--color-terminal-tool)]/20 bg-[color:var(--color-terminal-tool)]/5 p-3">
+    <div className="rounded-lg border border-[color:var(--color-terminal-tool)]/20 bg-[color:var(--color-terminal-tool)]/5 p-3">
       <div className="mb-2 flex items-center gap-2 text-body font-medium">
         <CheckCircle2 className="size-4" style={{ color: "var(--color-terminal-tool)" }} />
         <span>Task List</span>

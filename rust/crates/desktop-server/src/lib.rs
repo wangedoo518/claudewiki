@@ -37,6 +37,13 @@ pub struct AppState {
     // `Arc<CodexBroker>` — the inner RwLock + AtomicU64 handle their
     // own sync; we never need a Mutex around the whole thing.
     broker: Arc<desktop_core::codex_broker::CodexBroker>,
+    // feat(O): broadcast channel for inbox change notifications. Every
+    // time a raw entry lands, an inbox task is appended, or a proposal
+    // is approved, the handler sends a unit `()` through this channel.
+    // WS clients subscribed via `/ws/wechat-inbox` receive the signal
+    // and can trigger an immediate refetch, replacing the 30s polling
+    // interval with sub-second reactivity (canonical §2: "3 秒内").
+    inbox_notify: tokio::sync::broadcast::Sender<()>,
 }
 
 impl Default for AppState {
@@ -60,9 +67,12 @@ impl Default for AppState {
                 desktop_core::codex_broker::CodexBroker::new(&alt)
                     .expect("broker must construct from tempdir fallback")
             });
+        let (inbox_notify, _) = tokio::sync::broadcast::channel(16);
+        install_inbox_notify(inbox_notify.clone());
         Self {
             desktop: DesktopState::default(),
             broker: Arc::new(broker),
+            inbox_notify,
         }
     }
 }
@@ -93,9 +103,12 @@ impl AppState {
         // runtime. First install wins; tests that construct a second
         // AppState silently skip.
         desktop_core::codex_broker::install_global(Arc::clone(&broker_arc));
+        let (inbox_notify, _) = tokio::sync::broadcast::channel(16);
+        install_inbox_notify(inbox_notify.clone());
         Self {
             desktop,
             broker: broker_arc,
+            inbox_notify,
         }
     }
 
@@ -394,6 +407,11 @@ pub fn app(state: AppState) -> Router {
         .route("/api/ask/sessions/{id}/events", get(stream_session_events))
         .route("/api/ask/sessions/{id}/permission", post(forward_permission))
         // ── end feat(U) aliases ─────────────────────────────────────
+        // ── feat(O): WebSocket inbox change stream (canonical §9.3) ─
+        // WS /ws/wechat-inbox — clients subscribe to get instant
+        // notification when the inbox changes (new raw, approve, etc).
+        // Replaces the 30s polling interval with sub-second reactivity.
+        .route("/ws/wechat-inbox", axum::routing::get(ws_wechat_inbox_handler))
         .route(
             "/api/desktop/scheduled/{id}",
             delete(delete_scheduled_task_handler).post(update_scheduled_task),
@@ -1844,6 +1862,8 @@ async fn ingest_wiki_raw_handler(
             "[warn] raw entry {} written but inbox append failed: {err}",
             entry.id
         );
+    } else {
+        fire_inbox_notify(); // feat(O): instant WS push
     }
 
     Ok(Json(raw_entry_to_json(&entry)))
@@ -2169,6 +2189,7 @@ async fn resolve_wiki_inbox_handler(
             ),
         },
     )?;
+    fire_inbox_notify(); // feat(O): instant WS push
     Ok(Json(serde_json::json!({ "entry": updated })))
 }
 
@@ -2448,6 +2469,7 @@ async fn approve_wiki_inbox_with_write_handler(
         }
     };
 
+    fire_inbox_notify(); // feat(O): instant WS push
     Ok(Json(serde_json::json!({
         "written_path": written_path.display().to_string(),
         "slug": p.slug,
@@ -2547,6 +2569,70 @@ async fn get_wiki_page_handler(
         "summary": summary,
         "body": body,
     })))
+}
+
+/// `WS /ws/wechat-inbox` (canonical §9.3 · feat O)
+///
+/// WebSocket endpoint that sends a JSON `{"event":"inbox_changed"}`
+/// message whenever the inbox is mutated (new raw entry, proposal
+/// approved, conflict marked, etc.). Frontend subscribes on mount
+/// and invalidates the inbox query on each message, replacing the
+/// 30s polling interval with sub-second reactivity.
+///
+/// The WS is read-only from the client side — any incoming client
+/// message is ignored. The server holds the connection open and
+/// streams notifications until the client disconnects.
+async fn ws_wechat_inbox_handler(
+    ws: axum::extract::WebSocketUpgrade,
+    axum::extract::State(state): axum::extract::State<AppState>,
+) -> axum::response::Response {
+    ws.on_upgrade(move |mut socket| async move {
+        let mut rx = state.inbox_notify.subscribe();
+        loop {
+            match rx.recv().await {
+                Ok(()) => {
+                    let msg = axum::extract::ws::Message::Text(
+                        "{\"event\":\"inbox_changed\"}".into(),
+                    );
+                    if socket.send(msg).await.is_err() {
+                        break; // client disconnected
+                    }
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                    eprintln!("[ws/wechat-inbox] lagged {n} messages — sending catchup");
+                    let msg = axum::extract::ws::Message::Text(
+                        "{\"event\":\"inbox_changed\",\"lagged\":true}".into(),
+                    );
+                    if socket.send(msg).await.is_err() {
+                        break;
+                    }
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                    break; // sender dropped — server shutting down
+                }
+            }
+        }
+    })
+}
+
+/// Process-global inbox notification channel. Initialized once by
+/// `AppState::new` / `AppState::default` via `install_inbox_notify`.
+/// Handlers call `fire_inbox_notify()` without needing a `State`
+/// extractor, same pattern as `codex_broker::install_global`.
+static INBOX_NOTIFY: std::sync::OnceLock<tokio::sync::broadcast::Sender<()>> =
+    std::sync::OnceLock::new();
+
+fn install_inbox_notify(tx: tokio::sync::broadcast::Sender<()>) {
+    let _ = INBOX_NOTIFY.set(tx);
+}
+
+/// Fire the inbox_notify broadcast so all WS subscribers get an
+/// instant notification. Best-effort: if no subscribers exist the
+/// send is silently dropped.
+fn fire_inbox_notify() {
+    if let Some(tx) = INBOX_NOTIFY.get() {
+        let _ = tx.send(());
+    }
 }
 
 fn wiki_page_proposal_to_json(p: &wiki_maintainer::WikiPageProposal) -> serde_json::Value {

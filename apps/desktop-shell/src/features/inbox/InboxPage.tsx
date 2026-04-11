@@ -111,10 +111,10 @@ export function InboxPage() {
             className="rounded-md border border-border bg-background px-1.5 py-0.5"
             style={{ color: "var(--color-warning)" }}
           >
-            {listQuery.data?.pending_count ?? 0} pending
+            {listQuery.data?.pending_count ?? 0} 待处理
           </span>
           <span className="rounded-md border border-border bg-background px-1.5 py-0.5">
-            {listQuery.data?.total_count ?? 0} total
+            {listQuery.data?.total_count ?? 0} 总计
           </span>
         </div>
       </div>
@@ -161,7 +161,7 @@ function EntryList({
     return (
       <div className="flex-1 px-3 py-6 text-center text-caption text-muted-foreground">
         <Loader2 className="mx-auto mb-1.5 size-4 animate-spin" />
-        Loading inbox…
+        加载收件箱…
       </div>
     );
   }
@@ -177,7 +177,7 @@ function EntryList({
           color: "var(--color-error)",
         }}
       >
-        Failed to list inbox: {error.message}
+        加载收件箱失败：{error.message}
       </div>
     );
   }
@@ -185,13 +185,13 @@ function EntryList({
     return (
       <div className="flex-1 px-4 py-8 text-center text-caption text-muted-foreground">
         <InboxIcon className="mx-auto mb-2 size-6 opacity-40" />
-        <div>No maintainer tasks yet.</div>
+        <div>暂无维护任务。</div>
         <div className="mt-1 text-caption text-muted-foreground/70">
-          Ingest a raw entry from the{" "}
+          在{" "}
           <Link to="/raw" className="text-primary hover:underline">
-            Raw Library
+            素材库
           </Link>{" "}
-          to generate your first task.
+          中入库一条素材来生成你的第一个任务。
         </div>
       </div>
     );
@@ -365,7 +365,7 @@ function EntryDetail({ entry }: { entry: InboxEntry }) {
 
       <div className="flex-1 overflow-auto px-6 py-4">
         <h3 className="mb-2 text-caption font-semibold uppercase tracking-wide text-muted-foreground">
-          Description
+          描述
         </h3>
         <p className="whitespace-pre-wrap text-body text-foreground/90">
           {entry.description}
@@ -375,27 +375,21 @@ function EntryDetail({ entry }: { entry: InboxEntry }) {
         {proposal ? (
           <>
             <h3 className="mb-2 mt-5 text-caption font-semibold uppercase tracking-wide text-muted-foreground">
-              Proposed wiki page
+              生成的知识页面
             </h3>
             <ProposalPreview proposal={proposal} />
           </>
         ) : canMaintain ? (
           <>
             <h3 className="mb-2 mt-5 text-caption font-semibold uppercase tracking-wide text-muted-foreground">
-              Maintainer
+              维护器
             </h3>
             <div className="rounded-md border border-border/50 bg-muted/10 px-4 py-6">
               <div className="mb-2 text-body-sm text-foreground/90">
-                Ask the maintainer agent to summarise this raw entry
-                into a concept wiki page.
+                让维护 AI 将这条素材总结为概念知识页面。
               </div>
               <div className="mb-3 text-caption text-muted-foreground">
-                Fires one <code className="rounded bg-muted/40 px-1">
-                  chat_completion
-                </code>{" "}
-                against the Codex pool (engram style, ≤ 200 words, ≤ 15
-                consecutive quoted words). Nothing is written to disk
-                until you approve.
+                调用一次 AI 总结（≤200 词）。在你批准之前不会写入磁盘。
               </div>
               <button
                 type="button"
@@ -408,7 +402,7 @@ function EntryDetail({ entry }: { entry: InboxEntry }) {
                 ) : (
                   <Sparkles className="size-3" />
                 )}
-                Maintain this
+                开始维护
               </button>
             </div>
           </>
@@ -443,13 +437,13 @@ function EntryDetail({ entry }: { entry: InboxEntry }) {
             }}
           >
             {proposeMutation.error && (
-              <div>Propose failed: {String(proposeMutation.error)}</div>
+              <div>生成失败：{String(proposeMutation.error)}</div>
             )}
             {writeMutation.error && (
-              <div>Write failed: {String(writeMutation.error)}</div>
+              <div>写入失败：{String(writeMutation.error)}</div>
             )}
             {resolveMutation.error && (
-              <div>Resolve failed: {String(resolveMutation.error)}</div>
+              <div>处理失败：{String(resolveMutation.error)}</div>
             )}
           </div>
         )}
@@ -459,7 +453,7 @@ function EntryDetail({ entry }: { entry: InboxEntry }) {
         {isResolved ? (
           <div className="flex items-center justify-between gap-3">
             <div className="text-caption text-muted-foreground">
-              This task has already been {entry.status}.
+              该任务已{entry.status}。
             </div>
           </div>
         ) : (
@@ -471,7 +465,7 @@ function EntryDetail({ entry }: { entry: InboxEntry }) {
               className="flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-body-sm font-medium text-muted-foreground transition-colors hover:border-destructive hover:bg-destructive/10 hover:text-destructive disabled:opacity-50"
             >
               <XCircle className="size-3" />
-              Reject
+              拒绝
             </button>
             {proposal ? (
               <button
@@ -485,7 +479,7 @@ function EntryDetail({ entry }: { entry: InboxEntry }) {
                 ) : (
                   <Save className="size-3" />
                 )}
-                Approve &amp; Write Wiki Page
+                批准并写入知识页面
               </button>
             ) : (
               <button
@@ -499,7 +493,7 @@ function EntryDetail({ entry }: { entry: InboxEntry }) {
                 ) : (
                   <CheckCircle2 className="size-3" />
                 )}
-                Approve
+                批准
               </button>
             )}
           </div>
@@ -574,7 +568,7 @@ function EntryPlaceholder() {
       <div className="max-w-sm">
         <InboxIcon className="mx-auto mb-2 size-8 opacity-30" />
         <p className="text-body text-muted-foreground">
-          Select a task on the left to review it.
+          选择左侧任务进行审阅。
         </p>
       </div>
     </div>
@@ -587,8 +581,8 @@ function formatRelative(iso: string): string {
   const then = Date.parse(iso);
   if (Number.isNaN(then)) return iso;
   const deltaSecs = Math.max(0, Math.floor((Date.now() - then) / 1000));
-  if (deltaSecs < 60) return `${deltaSecs}s ago`;
-  if (deltaSecs < 3600) return `${Math.floor(deltaSecs / 60)}m ago`;
-  if (deltaSecs < 86_400) return `${Math.floor(deltaSecs / 3600)}h ago`;
-  return `${Math.floor(deltaSecs / 86_400)}d ago`;
+  if (deltaSecs < 60) return `${deltaSecs}秒前`;
+  if (deltaSecs < 3600) return `${Math.floor(deltaSecs / 60)}分钟前`;
+  if (deltaSecs < 86_400) return `${Math.floor(deltaSecs / 3600)}小时前`;
+  return `${Math.floor(deltaSecs / 86_400)}天前`;
 }

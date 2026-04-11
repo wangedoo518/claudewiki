@@ -161,6 +161,7 @@ interface ComposerProps {
   onSend: (message: string) => void | Promise<void>;
   onStop?: () => void;
   isBusy?: boolean;
+  modelLabel?: string;
   environmentLabel?: string;
   inputRef?: React.RefObject<HTMLTextAreaElement | null>;
   onClear?: () => void;
@@ -173,6 +174,7 @@ export function Composer({
   onSend,
   onStop,
   isBusy = false,
+  modelLabel,
   environmentLabel = "Local",
   inputRef,
   onClear,
@@ -515,7 +517,7 @@ export function Composer({
             );
           })}
           {isUploading && (
-            <span className="shrink-0 text-[11px] text-muted-foreground">Uploading…</span>
+            <span className="shrink-0 text-[11px] text-muted-foreground">上传中…</span>
           )}
           {uploadError && (
             <span
@@ -544,23 +546,22 @@ export function Composer({
         onClose={handleSlashClose}
       />
 
-      {/* Textarea (with drag-drop) */}
+      {/* Input area — CodePilot style: textarea with inline tools */}
       <div
         className={cn(
-          "relative rounded-xl border border-input bg-muted/10 px-4 py-2.5 transition-colors",
-          "focus-within:border-ring focus-within:ring-1 focus-within:ring-ring/50",
-          isDragging && "border-2 border-dashed border-[color:var(--deeptutor-primary,var(--claude-blue))]/50 bg-[color:var(--deeptutor-primary,var(--claude-blue))]/[0.04]",
+          "relative overflow-hidden rounded-2xl border bg-card shadow-[0_1px_8px_rgba(0,0,0,0.03)] transition-colors",
+          isDragging
+            ? "border-2 border-dashed border-primary/50 bg-primary/[0.03]"
+            : "border-border focus-within:border-ring",
         )}
         onDragOver={handleDragOver}
         onDragLeave={handleDragLeave}
         onDrop={handleDrop}
       >
         {isDragging && (
-          <div className="pointer-events-none absolute inset-0 z-10 flex flex-col items-center justify-center gap-1.5 rounded-xl">
-            <Paperclip className="size-5" style={{ color: "var(--deeptutor-primary, var(--claude-blue))" }} strokeWidth={1.6} />
-            <span className="text-[13px] font-medium" style={{ color: "var(--deeptutor-primary, var(--claude-blue))" }}>
-              Drop files here
-            </span>
+          <div className="pointer-events-none absolute inset-0 z-10 flex flex-col items-center justify-center gap-1.5">
+            <Paperclip className="size-5 text-primary" strokeWidth={1.6} />
+            <span className="text-[13px] font-medium text-primary">拖放文件到这里</span>
           </div>
         )}
         <textarea
@@ -572,144 +573,130 @@ export function Composer({
           aria-label="Message input"
           placeholder={
             isBusy
-              ? "Waiting for response..."
+              ? "等待回复中..."
               : permissionMode === "plan"
-                ? "Describe what you want to plan..."
-                : "Ask your external brain..."
+                ? "描述你的计划..."
+                : "Message Claude..."
           }
           disabled={isBusy}
           rows={1}
-          className="max-h-[200px] min-h-[40px] w-full resize-none bg-transparent text-sm leading-relaxed text-foreground outline-none transition-[height] duration-150 ease-out placeholder:text-muted-foreground disabled:pointer-events-none disabled:opacity-50"
+          className="max-h-[200px] min-h-[52px] w-full resize-none bg-transparent px-4 pb-1 pt-3.5 text-[14px] leading-relaxed text-foreground outline-none transition-[height] duration-150 ease-out placeholder:text-muted-foreground/50 disabled:pointer-events-none disabled:opacity-50"
         />
-      </div>
 
-      {/* Bottom button row */}
-      <div className="mt-2 flex items-center justify-between">
-        {/* Left: attach + permission + environment */}
-        <div className="flex items-center gap-2">
-          {/* Attach file button */}
-          <button
-            type="button"
-            className={cn(
-              "flex items-center gap-1 rounded-lg border border-border/50 px-2 py-1 text-label transition-colors hover:bg-accent hover:text-foreground",
-              "text-muted-foreground",
-              isUploading && "opacity-50",
-            )}
-            onClick={() => fileInputRef.current?.click()}
-            disabled={isBusy || isUploading}
-            aria-label="Attach file"
-            title="Attach file (or drag-drop into the textarea)"
-          >
-            <Paperclip className="size-3" />
-          </button>
-
-          {/* Permission mode selector */}
-          <div className="relative" ref={permMenuRef}>
+        {/* Inline toolbar inside the input card */}
+        <div className="flex items-center justify-between px-3 pb-2.5">
+          <div className="flex items-center gap-1">
+            {/* Attach */}
             <button
+              type="button"
               className={cn(
-                "flex items-center gap-1.5 rounded-lg border border-border/50 px-2 py-1 text-label transition-colors hover:bg-accent hover:text-foreground",
-                showPermissionMenu
-                  ? "bg-accent text-foreground"
-                  : "text-muted-foreground"
+                "flex size-7 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-accent hover:text-foreground",
+                isUploading && "opacity-50",
               )}
-              style={modeConfig.color ? { color: modeConfig.color } : undefined}
-              onClick={() => setShowPermissionMenu((prev) => !prev)}
-              aria-label={`Permission mode: ${modeConfig.label}`}
-              aria-expanded={showPermissionMenu}
+              onClick={() => fileInputRef.current?.click()}
+              disabled={isBusy || isUploading}
+              aria-label="附件"
             >
-              <ModeIcon className="size-3" />
-              <span>{modeConfig.label}</span>
-              <ChevronDown className="size-2.5 opacity-50" />
+              <Paperclip className="size-3.5" />
             </button>
 
-            {/* Permission mode dropdown */}
-            {showPermissionMenu && (
-              <div className="absolute bottom-full left-0 mb-1 w-[260px] rounded-lg border border-border bg-popover p-1 shadow-lg">
-                <div className="px-2 pb-1 pt-1 text-caption font-semibold uppercase tracking-wider text-muted-foreground">
-                  Permission Mode
-                </div>
-                {PERMISSION_MODES.map((mode) => {
-                  const Icon = mode.icon;
-                  const isActive = permissionMode === mode.value;
-                  return (
-                    <button
-                      key={mode.value}
-                      className={cn(
-                        "flex w-full items-center gap-2.5 rounded-md px-2 py-2 text-left transition-colors",
-                        isActive
-                          ? "bg-accent text-accent-foreground"
-                          : "text-foreground hover:bg-accent/50"
-                      )}
-                      onClick={() => {
-                        setPermissionMode(mode.value);
-                        setShowPermissionMenu(false);
-                      }}
-                    >
-                      <Icon
-                        className="size-3.5 shrink-0"
-                        style={mode.color ? { color: mode.color } : undefined}
-                      />
-                      <div className="min-w-0 flex-1">
-                        <div className="text-body-sm font-medium">
-                          {mode.label}
-                        </div>
-                        <div className="text-caption text-muted-foreground">
-                          {mode.desc}
-                        </div>
-                      </div>
-                      {isActive && (
-                        <div
-                          className="size-1.5 shrink-0 rounded-full"
-                          style={{
-                            backgroundColor:
-                              mode.color ??
-                              "var(--claude-orange)",
-                          }}
-                        />
-                      )}
-                    </button>
-                  );
-                })}
-              </div>
-            )}
+            {/* Slash commands */}
+            <button
+              type="button"
+              className="flex size-7 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+              onClick={() => { setValue("/"); textareaRef.current?.focus(); }}
+              aria-label="命令"
+            >
+              <ChevronDown className="size-3.5 rotate-[-90deg]" />
+            </button>
+
+            {/* Separator */}
+            <div className="mx-1 h-4 w-px bg-border" />
+
+            {/* Model label (display only) */}
+            <span className="text-[11px] text-muted-foreground/60">
+              {modelLabel || "AI"}
+            </span>
           </div>
 
-          <button
-            className="flex items-center gap-1.5 rounded-lg border border-border/50 px-2 py-1 text-label text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-            aria-label={`Environment: ${environmentLabel}`}
-          >
-            <Monitor className="size-3" />
-            <span>{environmentLabel}</span>
-          </button>
+          {/* Send / Stop button */}
+          {isBusy ? (
+            <button
+              className="flex size-8 shrink-0 items-center justify-center rounded-full bg-destructive text-white transition-transform duration-150 active:scale-95"
+              onClick={handleStop}
+              aria-label="停止"
+            >
+              <Square className="size-3.5" />
+            </button>
+          ) : (
+            <button
+              className={cn(
+                "flex size-8 shrink-0 items-center justify-center rounded-full text-white transition-[transform,opacity,box-shadow] duration-150",
+                value.trim() || attachments.length > 0
+                  ? "bg-primary shadow-sm hover:shadow-md hover:scale-105 active:scale-95"
+                  : "bg-primary/40 pointer-events-none",
+              )}
+              onClick={handleSend}
+              disabled={!value.trim() && attachments.length === 0}
+              aria-label="发送"
+            >
+              <ArrowUp className="size-4" />
+            </button>
+          )}
         </div>
+      </div>
 
-        {/* Right: circular Send or Stop */}
-        {isBusy ? (
-          <button
-            className="flex size-9 shrink-0 items-center justify-center rounded-full text-white transition-[transform,opacity,box-shadow] duration-150 active:scale-95"
-            style={{ backgroundColor: "var(--color-error, var(--destructive))" }}
-            onClick={handleStop}
-            aria-label="Stop"
-          >
-            <Square className="size-4" />
-          </button>
-        ) : (
+      {/* Bottom mode bar — CodePilot style */}
+      <div className="mt-1.5 flex items-center gap-3">
+        {/* Permission mode selector */}
+        <div className="relative" ref={permMenuRef}>
           <button
             className={cn(
-              "flex size-9 shrink-0 items-center justify-center rounded-full text-white shadow-[0_4px_12px_rgba(195,90,44,0.15)] transition-[transform,opacity,box-shadow] duration-150",
-              "hover:shadow-[0_6px_16px_rgba(195,90,44,0.22)] hover:scale-105 active:scale-95",
-              value.trim() || attachments.length > 0
-                ? ""
-                : "opacity-40 pointer-events-none shadow-none"
+              "flex items-center gap-1 rounded-md px-2 py-1 text-[11px] transition-colors hover:bg-accent",
+              showPermissionMenu ? "bg-accent text-foreground" : "text-muted-foreground"
             )}
-            style={{ backgroundColor: "var(--deeptutor-primary, var(--claude-orange))" }}
-            onClick={handleSend}
-            disabled={!value.trim() && attachments.length === 0}
-            aria-label="Send"
+            style={modeConfig.color ? { color: modeConfig.color } : undefined}
+            onClick={() => setShowPermissionMenu((prev) => !prev)}
           >
-            <ArrowUp className="size-4" strokeWidth={2.5} />
+            <ModeIcon className="size-3" />
+            <span>{modeConfig.label}</span>
           </button>
-        )}
+
+          {showPermissionMenu && (
+            <div className="absolute bottom-full left-0 mb-1 w-[240px] rounded-lg border border-border bg-popover p-1 shadow-lg">
+              <div className="px-2 pb-1 pt-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                权限模式
+              </div>
+              {PERMISSION_MODES.map((mode) => {
+                const Icon = mode.icon;
+                const isActive = permissionMode === mode.value;
+                return (
+                  <button
+                    key={mode.value}
+                    className={cn(
+                      "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left transition-colors",
+                      isActive ? "bg-accent text-accent-foreground" : "text-foreground hover:bg-accent/50"
+                    )}
+                    onClick={() => { setPermissionMode(mode.value); setShowPermissionMenu(false); }}
+                  >
+                    <Icon className="size-3 shrink-0" style={mode.color ? { color: mode.color } : undefined} />
+                    <div className="min-w-0 flex-1">
+                      <div className="text-[11px] font-medium">{mode.label}</div>
+                      <div className="text-[10px] text-muted-foreground">{mode.desc}</div>
+                    </div>
+                    {isActive && <div className="size-1.5 shrink-0 rounded-full" style={{ backgroundColor: mode.color ?? "var(--claude-orange)" }} />}
+                  </button>
+                );
+              })}
+            </div>
+          )}
+        </div>
+
+        {/* Environment */}
+        <span className="text-[11px] text-muted-foreground/50">
+          <Monitor className="mr-0.5 inline size-3 align-[-2px]" />
+          {environmentLabel}
+        </span>
       </div>
     </div>
   );

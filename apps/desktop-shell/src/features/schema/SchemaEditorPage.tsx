@@ -113,7 +113,7 @@ export function SchemaEditorPage() {
         {schemaQuery.isLoading ? (
           <div className="flex items-center gap-2 text-caption text-muted-foreground">
             <Loader2 className="size-3 animate-spin" />
-            Loading schema…
+            加载 Schema…
           </div>
         ) : schemaQuery.error ? (
           <div
@@ -126,7 +126,7 @@ export function SchemaEditorPage() {
               color: "var(--color-error)",
             }}
           >
-            Failed to load schema: {(schemaQuery.error as Error).message}
+            加载 Schema 失败：{(schemaQuery.error as Error).message}
           </div>
         ) : schemaQuery.data ? (
           <SchemaBody

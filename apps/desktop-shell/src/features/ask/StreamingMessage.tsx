@@ -11,7 +11,7 @@
  * ASSISTANT label, bottom border.
  */
 
-import { memo, useState } from "react";
+import { memo, useState, useEffect, useRef } from "react";
 import ReactMarkdown from "react-markdown";
 import { Brain, ChevronRight, ChevronDown } from "lucide-react";
 
@@ -31,23 +31,7 @@ export const StreamingMessage = memo(function StreamingMessage({
   }
 
   return (
-    <div className={`w-full border-b border-border/30 pb-4 ${isComplete ? "" : "ask-streaming-active"}`}>
-      {/* ASSISTANT label with pulsing dot */}
-      <div className="mb-1.5 flex items-center gap-1.5">
-        <div
-          className="text-[10px] font-semibold uppercase tracking-widest"
-          style={{ color: "var(--color-label-claude)" }}
-        >
-          Assistant
-        </div>
-        {!isComplete && (
-          <span
-            className="inline-block size-1.5 animate-pulse rounded-full"
-            style={{ backgroundColor: "var(--deeptutor-primary, var(--claude-orange))" }}
-          />
-        )}
-      </div>
-
+    <div className={`w-full pb-2 ${isComplete ? "" : "ask-streaming-active"}`}>
       {/* Thinking content (collapsible) */}
       {thinkingContent && (
         <ThinkingBlock content={thinkingContent} isStreaming={!isComplete} />
@@ -55,7 +39,7 @@ export const StreamingMessage = memo(function StreamingMessage({
 
       {/* Streaming text */}
       {content && (
-        <div className="text-sm leading-relaxed text-foreground">
+        <div className="text-[15px] leading-[1.8] text-foreground">
           <ReactMarkdown
             components={{
               p({ children }) {
@@ -92,6 +76,26 @@ export const StreamingMessage = memo(function StreamingMessage({
 
 function ThinkingBlock({ content, isStreaming }: { content: string; isStreaming: boolean }) {
   const [expanded, setExpanded] = useState(false);
+  const [elapsed, setElapsed] = useState(0);
+  const startRef = useRef(Date.now());
+
+  // Timer: count up while streaming
+  useEffect(() => {
+    if (!isStreaming) return;
+    startRef.current = Date.now();
+    const timer = setInterval(() => {
+      setElapsed(Math.floor((Date.now() - startRef.current) / 1000));
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [isStreaming]);
+
+  // Freeze elapsed when streaming ends
+  useEffect(() => {
+    if (!isStreaming && elapsed === 0) {
+      // Estimate from content length if we missed the live timer
+      setElapsed(Math.max(1, Math.ceil(content.length / 50)));
+    }
+  }, [isStreaming, elapsed, content.length]);
 
   return (
     <div className="mb-2">
@@ -103,14 +107,8 @@ function ThinkingBlock({ content, isStreaming }: { content: string; isStreaming:
         {expanded ? <ChevronDown className="size-3" /> : <ChevronRight className="size-3" />}
         <Brain className="size-3" style={{ color: "var(--deeptutor-purple, var(--agent-purple))" }} />
         <span className="font-medium">
-          {isStreaming ? "Thinking..." : "Thought process"}
+          {isStreaming ? `思考中 ${elapsed}s…` : `思考了 ${elapsed}s`}
         </span>
-        {isStreaming && (
-          <span
-            className="inline-block size-1.5 animate-pulse rounded-full"
-            style={{ backgroundColor: "var(--deeptutor-purple, var(--agent-purple))" }}
-          />
-        )}
       </button>
       {expanded && (
         <div className="ml-5 mt-1 border-l-2 border-border/30 pl-3">
@@ -133,7 +131,7 @@ function ThinkingIndicator() {
         <ShimmerDot delay={150} />
         <ShimmerDot delay={300} />
       </div>
-      <span className="text-sm text-muted-foreground">Thinking...</span>
+      <span className="text-sm text-muted-foreground">思考中…</span>
     </div>
   );
 }

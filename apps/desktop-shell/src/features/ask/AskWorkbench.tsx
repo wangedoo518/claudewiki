@@ -32,7 +32,6 @@ import { MessageList } from "./MessageList";
 import { Composer } from "./Composer";
 import { ConversationScroller } from "./ConversationScroller";
 import { ScrollToBottomButton } from "./ScrollToBottomButton";
-import { StatusLine } from "@/features/common/StatusLine";
 import { WikiPermissionDialog } from "@/features/permission/WikiPermissionDialog";
 import type { PermissionAction } from "@/features/permission/permission-types";
 import {
@@ -73,7 +72,7 @@ export function AskWorkbench({
   onStop,
   onCreateSession,
   modelLabel = "Codex GPT-5.4",
-  environmentLabel = "via internal broker",
+  environmentLabel = "内置代理",
   projectPath,
 }: AskWorkbenchProps) {
   const pendingPermission = usePermissionsStore(
@@ -166,8 +165,8 @@ export function AskWorkbench({
   const handleCompact = useCallback(() => {
     if (!session?.id) return;
     void compactSession(session.id)
-      .then(() => addSystemMessage("Session compacted."))
-      .catch((err) => addSystemMessage(`Compact failed: ${err instanceof Error ? err.message : String(err)}`));
+      .then(() => addSystemMessage("会话已压缩。"))
+      .catch((err) => addSystemMessage(`压缩失败：${err instanceof Error ? err.message : String(err)}`));
   }, [session?.id, addSystemMessage]);
 
   // Input ref for focus shortcut
@@ -193,7 +192,7 @@ export function AskWorkbench({
           {showDemo && (
             <div className="mb-2 flex items-center justify-between rounded-lg border border-border/30 bg-muted/10 px-3 py-1.5">
               <span className="text-label text-muted-foreground">
-                Demo mode — showing sample conversation
+                演示模式 — 展示示例对话
               </span>
               <div className="flex items-center gap-2">
                 {!pendingPermission && (
@@ -210,14 +209,14 @@ export function AskWorkbench({
                       })
                     }
                   >
-                    Test permission
+                    测试权限
                   </button>
                 )}
                 <button
                   className="text-label font-medium text-foreground hover:underline"
                   onClick={() => setShowDemo(false)}
                 >
-                  Exit demo
+                  退出演示
                 </button>
               </div>
             </div>
@@ -252,9 +251,9 @@ export function AskWorkbench({
               <span className="flex-1">{errorMessage}</span>
               <button
                 className="shrink-0 rounded px-1.5 py-0.5 text-label font-medium transition-colors hover:bg-[color-mix(in_srgb,var(--color-error)_15%,transparent)]"
-                onClick={() => addSystemMessage("Error dismissed. You can retry your last message.")}
+                onClick={() => addSystemMessage("错误已忽略。你可以重试上一条消息。")}
               >
-                Dismiss
+                忽略
               </button>
             </div>
           )}
@@ -267,6 +266,7 @@ export function AskWorkbench({
         onSend={onSend}
         onStop={onStop}
         isBusy={isRunning || !!pendingPermission}
+        modelLabel={modelLabel}
         environmentLabel={environmentLabel}
         inputRef={inputRef}
         onClear={handleClear}
@@ -274,12 +274,7 @@ export function AskWorkbench({
         onCompact={handleCompact}
       />
 
-      <StatusLine
-        modelLabel={modelLabel}
-        environmentLabel={environmentLabel}
-        isRunning={isRunning}
-        projectPath={session?.project_path}
-      />
+      {/* StatusLine removed — Composer's inline toolbar now shows model + permission + environment */}
      </div>
 
       {/* Maintainer task tree side panel (CCD soul ④) */}
@@ -333,38 +328,38 @@ function WelcomeScreen({ onShowDemo }: { onShowDemo?: () => void }) {
   const capabilities = [
     {
       icon: Terminal,
-      title: "Run Commands",
-      desc: "Execute shell commands, scripts, and build tools",
+      title: "执行命令",
+      desc: "运行 Shell 命令、脚本和构建工具",
       color: "var(--color-terminal-tool)",
     },
     {
       icon: FileEdit,
-      title: "Edit Files",
-      desc: "Read, write, and modify code with precise diffs",
+      title: "编辑文件",
+      desc: "精确读写和修改代码",
       color: "var(--deeptutor-primary, var(--claude-orange))",
     },
     {
       icon: Search,
-      title: "Search Code",
-      desc: "Find files and patterns across your codebase",
+      title: "搜索代码",
+      desc: "在代码库中查找文件和模式",
       color: "var(--deeptutor-purple, var(--claude-blue))",
     },
     {
       icon: Globe,
-      title: "Web Access",
-      desc: "Fetch URLs and search the web for information",
+      title: "网络访问",
+      desc: "抓取 URL 和搜索网络信息",
       color: "var(--deeptutor-purple, var(--agent-cyan))",
     },
     {
       icon: Code2,
-      title: "Multi-file Edits",
-      desc: "Coordinate changes across multiple files at once",
+      title: "多文件编辑",
+      desc: "同时协调多个文件的修改",
       color: "var(--deeptutor-purple, var(--agent-purple))",
     },
     {
       icon: Zap,
-      title: "MCP Tools",
-      desc: "Use connected MCP server tools and extensions",
+      title: "MCP 工具",
+      desc: "使用已连接的 MCP 服务器工具",
       color: "var(--deeptutor-warn, var(--color-fast-mode))",
     },
   ];
@@ -383,10 +378,10 @@ function WelcomeScreen({ onShowDemo }: { onShowDemo?: () => void }) {
         </div>
         <div className="text-center">
           <h2 className="ask-serif text-base font-semibold text-foreground">
-            What can I help you with?
+            有什么我能帮你的？
           </h2>
           <p className="mt-1 max-w-sm text-body text-muted-foreground">
-            I can read, write, and run code in your project. Just describe what you need.
+            我能阅读、编写和运行你项目中的代码。告诉我你需要什么。
           </p>
         </div>
       </div>
@@ -411,13 +406,13 @@ function WelcomeScreen({ onShowDemo }: { onShowDemo?: () => void }) {
       <div className="flex flex-col items-center gap-2">
         <div className="flex items-center gap-1.5 text-label text-muted-foreground/60">
           <kbd className="rounded border border-border/50 bg-muted/30 px-1.5 py-0.5 font-mono text-caption">Enter</kbd>
-          <span>to send</span>
+          <span>发送</span>
           <span className="mx-1">|</span>
           <kbd className="rounded border border-border/50 bg-muted/30 px-1.5 py-0.5 font-mono text-caption">Shift+Enter</kbd>
-          <span>for newline</span>
+          <span>换行</span>
           <span className="mx-1">|</span>
           <kbd className="rounded border border-border/50 bg-muted/30 px-1.5 py-0.5 font-mono text-caption">/</kbd>
-          <span>for commands</span>
+          <span>命令</span>
         </div>
         {onShowDemo && (
           <button
@@ -425,7 +420,7 @@ function WelcomeScreen({ onShowDemo }: { onShowDemo?: () => void }) {
             onClick={onShowDemo}
           >
             <Play className="size-3" />
-            View demo conversation
+            查看演示对话
           </button>
         )}
       </div>

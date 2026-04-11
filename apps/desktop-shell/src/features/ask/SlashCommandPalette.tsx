@@ -24,11 +24,11 @@ export interface SlashCommand {
 }
 
 export const SLASH_COMMANDS: SlashCommand[] = [
-  { name: "/clear",   description: "Clear conversation history",     icon: Trash2,     action: "clear" },
-  { name: "/new",     description: "Start a new conversation",       icon: Plus,       action: "new" },
-  { name: "/export",  description: "Export as Markdown",             icon: Download,   action: "export" },
-  { name: "/compact", description: "Summarize and compact history",  icon: Minimize2,  action: "compact" },
-  { name: "/plan",    description: "Toggle plan mode",               icon: FileSearch, action: "plan" },
+  { name: "/clear",   description: "清空对话历史",       icon: Trash2,     action: "clear" },
+  { name: "/new",     description: "新建对话",           icon: Plus,       action: "new" },
+  { name: "/export",  description: "导出为 Markdown",    icon: Download,   action: "export" },
+  { name: "/compact", description: "总结并压缩历史",     icon: Minimize2,  action: "compact" },
+  { name: "/plan",    description: "切换计划模式",       icon: FileSearch, action: "plan" },
 ];
 
 interface SlashCommandPaletteProps {
@@ -99,7 +99,7 @@ export const SlashCommandPalette = memo(function SlashCommandPalette({
   return (
     <div className="absolute bottom-full left-0 z-50 mb-2 w-[280px] animate-slide-up rounded-lg border border-border bg-popover py-1 shadow-[var(--deeptutor-shadow-md,0_4px_12px_-2px_rgba(0,0,0,0.1))]">
       <div className="px-2.5 py-1 text-caption font-semibold uppercase tracking-wider text-muted-foreground">
-        Commands
+        命令
       </div>
       {filtered.map((cmd, idx) => {
         const Icon = cmd.icon;

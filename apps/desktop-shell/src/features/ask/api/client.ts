@@ -153,8 +153,8 @@ export function subscribeToSessionEvents(
             try {
               const event = JSON.parse(jsonStr) as import("@/lib/tauri").DesktopSessionEvent;
               onEvent(event);
-            } catch {
-              // Skip malformed events
+            } catch (parseErr) {
+              console.warn("[sse] dropped malformed event:", jsonStr.slice(0, 200), parseErr);
             }
           }
         }

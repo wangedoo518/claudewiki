@@ -29,7 +29,7 @@ export function AskHeader({
   title = "Ask",
   projectPath,
   modelLabel = "Codex GPT-5.4",
-  environmentLabel = "via internal broker",
+  environmentLabel = "内置代理",
   isStreaming = false,
   agentCount = 0,
   showAgentPanel = false,
@@ -49,7 +49,7 @@ export function AskHeader({
                 className="inline-block size-1.5 animate-pulse rounded-full"
                 style={{ backgroundColor: "var(--deeptutor-primary, var(--claude-orange))" }}
               />
-              Streaming
+              生成中
             </span>
           )}
         </div>
@@ -129,7 +129,7 @@ function ExportDropdown({
       <button
         className="flex h-[18px] items-center gap-1 rounded-md border border-border/50 px-1.5 text-caption font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
         onClick={() => setOpen((v) => !v)}
-        title="Export session"
+        title="导出会话"
       >
         <Download className="size-3" />
       </button>
@@ -144,7 +144,7 @@ function ExportDropdown({
               }}
             >
               <FileText className="size-3" />
-              Export as Markdown
+              导出为 Markdown
             </button>
           )}
           {onExportJson && (
@@ -156,7 +156,7 @@ function ExportDropdown({
               }}
             >
               <FileJson className="size-3" />
-              Export as JSON
+              导出为 JSON
             </button>
           )}
         </div>

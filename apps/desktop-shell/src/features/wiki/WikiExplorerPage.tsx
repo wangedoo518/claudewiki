@@ -90,7 +90,7 @@ const CATEGORIES = [
   {
     key: "concept",
     icon: Brain,
-    label: "Concepts",
+    label: "概念",
     description:
       "每个核心想法一页 · 由 raw 层的 WeChat 素材自动汇总成 canonical 状态",
     tint: "var(--claude-orange)",
@@ -99,7 +99,7 @@ const CATEGORIES = [
   {
     key: "people",
     icon: Users,
-    label: "People",
+    label: "人物",
     description: "你引用过的作者 / 研究者 / 同事 · 自动汇总所有相关 raw",
     tint: "var(--claude-blue)",
     ready: false,
@@ -107,7 +107,7 @@ const CATEGORIES = [
   {
     key: "topic",
     icon: Tag,
-    label: "Topics",
+    label: "主题",
     description: "主题聚合页 · 跨多个 concept 汇总某一领域的结构化综述",
     tint: "var(--agent-purple)",
     ready: false,
@@ -115,7 +115,7 @@ const CATEGORIES = [
   {
     key: "compare",
     icon: GitCompare,
-    label: "Compare",
+    label: "对比",
     description: "A vs B 结构化对比 · 自动维护论据栏",
     tint: "var(--color-warning)",
     ready: false,
@@ -123,7 +123,7 @@ const CATEGORIES = [
   {
     key: "changelog",
     icon: History,
-    label: "Changelog",
+    label: "变更日志",
     description: "每天的维护动作日志 · append-only",
     tint: "var(--color-success)",
     ready: false,
@@ -226,7 +226,7 @@ export function WikiExplorerPage() {
               className="rounded-md border border-border bg-background px-1.5 py-0.5"
               style={{ color: "var(--claude-orange)" }}
             >
-              {totalCount} {totalCount === 1 ? "page" : "pages"}
+              {totalCount} 页
             </span>
             <button
               type="button"
@@ -234,7 +234,7 @@ export function WikiExplorerPage() {
                 void queryClient.invalidateQueries({ queryKey: wikiKeys.list() })
               }
               className="flex items-center gap-1 rounded-md border border-border bg-background px-1.5 py-0.5 text-caption text-muted-foreground transition-colors hover:bg-muted/30"
-              title="Refresh"
+              title="刷新"
             >
               <RefreshCw
                 className={
@@ -257,7 +257,7 @@ export function WikiExplorerPage() {
             type="search"
             value={searchInput}
             onChange={(e) => setSearchInput(e.target.value)}
-            placeholder="Search wiki pages — slug, title, summary, or body…"
+            placeholder="搜索知识页面——标题、摘要或正文…"
             className="h-8 w-full rounded-md border border-border bg-background pl-8 pr-8 text-body-sm text-foreground placeholder:text-muted-foreground/60 focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary/30"
           />
           {searchInput && (
@@ -265,7 +265,7 @@ export function WikiExplorerPage() {
               type="button"
               onClick={() => setSearchInput("")}
               className="absolute right-1 top-1/2 flex size-6 -translate-y-1/2 items-center justify-center rounded-md text-muted-foreground hover:bg-muted/40 hover:text-foreground"
-              title="Clear search"
+              title="清除搜索"
             >
               <XIcon className="size-3" />
             </button>
@@ -320,7 +320,7 @@ export function WikiExplorerPage() {
       {/* Planned layers strip (always visible as signposting) */}
       <section className="shrink-0 border-t border-border/50 px-6 py-4">
         <h2 className="mb-2 text-caption font-semibold uppercase tracking-wide text-muted-foreground">
-          Planned layers
+          知识层级
         </h2>
         <ul className="grid gap-2 md:grid-cols-5">
           {CATEGORIES.map((cat) => {
@@ -371,15 +371,15 @@ function EmptyHeroStrip() {
           style={{ color: "var(--claude-orange)" }}
         />
         <span className="flex-1">
-          No concept pages yet — paste a URL in{" "}
+          暂无概念页 — 在{" "}
           <Link to="/raw" className="text-primary hover:underline">
-            Raw Library
+            素材库
           </Link>
-          , then click <em>Maintain this</em> in{" "}
+          {" "}中粘贴一条 URL，然后在{" "}
           <Link to="/inbox" className="text-primary hover:underline">
             Inbox
           </Link>{" "}
-          to grow your first page.
+          中点击「维护」来生成第一页。
         </span>
         <Link
           to="/inbox"
@@ -425,19 +425,19 @@ function PageList({
           "Indexing and logging" — always present, always at the top. */}
       <div className="border-b border-border/40 bg-muted/10 pb-1 pt-2">
         <div className="px-4 py-1 text-caption font-semibold uppercase tracking-wide text-muted-foreground/70">
-          Pinned
+          置顶
         </div>
         <PinnedItem
           icon={ListTree}
-          label="Index"
-          hint="content catalog · auto-rebuilt"
+          label="索引"
+          hint="内容目录 · 自动生成"
           active={selectedKey === "index"}
           onClick={() => onSelect({ kind: "index" })}
         />
         <PinnedItem
           icon={ScrollText}
-          label="Log"
-          hint="append-only audit trail"
+          label="日志"
+          hint="追加式审计日志"
           active={selectedKey === "log"}
           onClick={() => onSelect({ kind: "log" })}
         />
@@ -445,12 +445,12 @@ function PageList({
 
       {/* Concept pages */}
       <div className="px-4 pb-1 pt-2 text-caption font-semibold uppercase tracking-wide text-muted-foreground/70">
-        Concepts {pages.length > 0 ? `(${pages.length})` : ""}
+        概念 {pages.length > 0 ? `(${pages.length})` : ""}
       </div>
       {isLoading ? (
         <div className="px-3 py-6 text-center text-caption text-muted-foreground">
           <Loader2 className="mx-auto mb-1.5 size-4 animate-spin" />
-          Loading…
+          加载中…
         </div>
       ) : error ? (
         <div
@@ -463,11 +463,11 @@ function PageList({
             color: "var(--color-error)",
           }}
         >
-          Failed to list wiki pages: {error.message}
+          加载失败：{error.message}
         </div>
       ) : sorted.length === 0 ? (
         <div className="px-4 py-3 text-caption text-muted-foreground/70">
-          No concept pages yet.
+          暂无内容。
         </div>
       ) : (
         <ul className="divide-y divide-border/40">
@@ -550,16 +550,16 @@ function SearchResultsList({
         <Search className="size-3 text-muted-foreground" />
         <span className="flex-1 truncate text-caption text-muted-foreground">
           {isLoading ? (
-            "Searching…"
+            "搜索中…"
           ) : (
             <>
               <span className="font-semibold text-foreground">{hits.length}</span>
               {totalMatches > hits.length ? (
                 <>
-                  {" "}of {totalMatches}
+                  {" "}/ {totalMatches}
                 </>
               ) : null}{" "}
-              {hits.length === 1 ? "hit" : "hits"} for &ldquo;{query}&rdquo;
+              条结果 &ldquo;{query}&rdquo;
             </>
           )}
         </span>
@@ -576,16 +576,16 @@ function SearchResultsList({
             color: "var(--color-error)",
           }}
         >
-          Search failed: {error.message}
+          加载失败：{error.message}
         </div>
       ) : hits.length === 0 && !isLoading ? (
         <div className="px-4 py-6 text-center text-caption text-muted-foreground">
           <Search className="mx-auto mb-1.5 size-5 opacity-40" />
-          <div className="text-body-sm text-foreground/80">No matches</div>
+          <div className="text-body-sm text-foreground/80">暂无结果</div>
           <div className="mt-0.5 text-caption text-muted-foreground/70">
-            Nothing in slug, title, summary, or body matches
+            标题、摘要、正文中没有匹配
             <br />
-            &ldquo;{query}&rdquo;.
+            &ldquo;{query}&rdquo; 的内容。
           </div>
         </div>
       ) : (
@@ -702,7 +702,7 @@ function PageDetail({ slug }: { slug: string }) {
     return (
       <div className="flex flex-1 items-center justify-center text-caption text-muted-foreground">
         <Loader2 className="mr-1.5 size-3 animate-spin" />
-        Loading {slug}…
+        加载中…
       </div>
     );
   }
@@ -720,7 +720,7 @@ function PageDetail({ slug }: { slug: string }) {
             color: "var(--color-error)",
           }}
         >
-          Failed to load page: {(detailQuery.error as Error).message}
+          加载失败：{(detailQuery.error as Error).message}
         </div>
       </div>
     );
@@ -875,7 +875,7 @@ function PagePlaceholder() {
       <div className="max-w-sm">
         <BookOpen className="mx-auto mb-2 size-8 opacity-30" />
         <p className="text-body text-muted-foreground">
-          Select a page on the left to read it.
+          选择一项查看内容。
         </p>
       </div>
     </div>
@@ -905,22 +905,22 @@ function SpecialFilePanel({ kind }: { kind: "index" | "log" }) {
     kind === "index"
       ? {
           icon: ListTree,
-          label: "Index",
+          label: "索引",
           description:
-            "Content catalog auto-rebuilt after every maintainer write. Canonical §10 + Karpathy llm-wiki §Indexing.",
+            "内容目录 · 每次维护写入后自动重建。Canonical §10 + Karpathy llm-wiki §Indexing.",
         }
       : {
           icon: ScrollText,
-          label: "Log",
+          label: "日志",
           description:
-            "Append-only timeline of maintainer and ingest actions. Canonical §8 Triggers.",
+            "追加式审计日志 · 维护与入库动作的时间线。Canonical §8 Triggers.",
         };
 
   if (query.isLoading) {
     return (
       <div className="flex flex-1 items-center justify-center text-caption text-muted-foreground">
         <Loader2 className="mr-1.5 size-3 animate-spin" />
-        Loading {meta.label.toLowerCase()}…
+        加载中…
       </div>
     );
   }
@@ -938,7 +938,7 @@ function SpecialFilePanel({ kind }: { kind: "index" | "log" }) {
             color: "var(--color-error)",
           }}
         >
-          Failed to load {meta.label.toLowerCase()}: {(query.error as Error).message}
+          加载失败：{(query.error as Error).message}
         </div>
       </div>
     );
@@ -974,7 +974,7 @@ function SpecialFilePanel({ kind }: { kind: "index" | "log" }) {
               })
             }
             className="flex items-center gap-1 rounded-md border border-border bg-background px-1.5 py-0.5 text-caption text-muted-foreground transition-colors hover:bg-muted/30"
-            title="Refresh"
+            title="刷新"
           >
             <RefreshCw
               className={
@@ -1000,12 +1000,12 @@ function SpecialFilePanel({ kind }: { kind: "index" | "log" }) {
               style={{ color: "var(--claude-orange)" }}
             />
             <div className="text-body-sm text-foreground/90">
-              This {meta.label.toLowerCase()} is empty.
+              暂无内容。
             </div>
             <div className="mt-1 text-caption text-muted-foreground/70">
               {kind === "index"
-                ? "Approve a maintainer proposal in Inbox and the catalog will rebuild here automatically."
-                : "Approve a maintainer proposal in Inbox and the first log entry will land here."}
+                ? "在 Inbox 中审批维护提案后，目录会在此自动重建。"
+                : "在 Inbox 中审批维护提案后，第一条日志会出现在这里。"}
             </div>
           </div>
         ) : (

@@ -179,11 +179,11 @@ function CodeBlock({ language, code }: { language: string; code: string }) {
         >
           {copied ? (
             <>
-              <Check className="size-3" /> Copied
+              <Check className="size-3" /> 已复制
             </>
           ) : (
             <>
-              <Copy className="size-3" /> Copy
+              <Copy className="size-3" /> 复制
             </>
           )}
         </button>
@@ -214,13 +214,7 @@ function CodeBlock({ language, code }: { language: string; code: string }) {
 function UserMessage({ content }: { content: string }) {
   return (
     <div className="flex justify-end">
-      <div
-        className="max-w-[75%] whitespace-pre-wrap rounded-2xl px-4 py-3 text-sm leading-relaxed"
-        style={{
-          backgroundColor: "var(--color-msg-user-bg)",
-          color: "var(--color-msg-user-fg, var(--color-foreground))",
-        }}
-      >
+      <div className="max-w-[80%] whitespace-pre-wrap rounded-2xl bg-foreground px-4 py-2.5 text-[14px] leading-relaxed text-background">
         {content}
       </div>
     </div>
@@ -230,40 +224,54 @@ function UserMessage({ content }: { content: string }) {
 /* ─── Assistant message with markdown ────────────────────────────── */
 
 function AssistantMessage({ content, usage }: { content: string; usage?: { inputTokens: number; outputTokens: number } }) {
+  const [copied, setCopied] = useState(false);
+
+  const handleCopy = () => {
+    void navigator.clipboard.writeText(content);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+
+  // Format token counts
+  const fmt = (n: number) => n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n);
+
   const tokenLabel = useMemo(() => {
-    if (usage) {
-      const total = usage.inputTokens + usage.outputTokens;
-      return total >= 1000 ? `${(total / 1000).toFixed(1)}k` : String(total);
-    }
-    // Fallback: rough estimate from word count
+    if (usage) return fmt(usage.inputTokens + usage.outputTokens);
     const words = content.split(/\s+/).filter(Boolean).length;
     const est = Math.round(words * 1.3);
-    return est > 0 ? `~${est >= 1000 ? `${(est / 1000).toFixed(1)}k` : est}` : null;
+    return est > 0 ? `~${fmt(est)}` : null;
   }, [content, usage]);
 
   return (
-    <div className="w-full border-b border-border/30 pb-4">
-      <div
-        className="mb-1.5 text-[10px] font-semibold uppercase tracking-widest"
-        style={{ color: "var(--color-label-claude)" }}
-      >
-        Assistant
-      </div>
-      <div className="text-sm leading-relaxed text-foreground">
+    <div className="w-full pb-3">
+      {/* Message body — 15px, generous line height, no border */}
+      <div className="text-[15px] leading-[1.8] text-foreground">
         <MarkdownContent content={content} />
       </div>
-      {/* Cost footer */}
-      {tokenLabel && (
-        <div className="mt-2 flex items-center gap-1.5 text-[10px] text-muted-foreground/40">
-          <span>{tokenLabel} tokens</span>
-          {usage && (
-            <>
-              <span className="opacity-40">&middot;</span>
-              <span>{usage.outputTokens >= 1000 ? `${(usage.outputTokens / 1000).toFixed(1)}k` : usage.outputTokens} out</span>
-            </>
-          )}
-        </div>
-      )}
+
+      {/* Action row: Copy + cost footer */}
+      <div className="mt-2 flex items-center gap-3">
+        <button
+          type="button"
+          onClick={handleCopy}
+          className="flex items-center gap-1 text-[12px] text-muted-foreground/50 transition-colors hover:text-foreground"
+        >
+          {copied ? <Check className="size-3" /> : <Copy className="size-3" />}
+          {copied ? "已复制" : "复制"}
+        </button>
+
+        {tokenLabel && (
+          <div className="ml-auto flex items-center gap-1.5 text-[11px] text-muted-foreground/40">
+            <span>{tokenLabel} tokens</span>
+            {usage && (
+              <>
+                <span className="opacity-40">·</span>
+                <span>{fmt(usage.outputTokens)} 输出</span>
+              </>
+            )}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -282,7 +290,7 @@ function SystemMessage({ content }: { content: string }) {
       >
         {expanded ? <ChevronDown className="size-3" /> : <ChevronRight className="size-3" />}
         <Brain className="size-3" style={{ color: "var(--deeptutor-purple, var(--agent-purple))" }} />
-        <span className="font-medium">System</span>
+        <span className="font-medium">系统</span>
         {!expanded && (
           <span className="flex-1 truncate text-left opacity-60">
             {content.slice(0, 80)}
@@ -309,7 +317,7 @@ function ToolStatusBadge({ status }: { status: "pending" | "running" | "complete
     completed: "border-[color:var(--color-success)]/30 bg-[color:var(--color-success)]/10 text-[color:var(--color-success)]",
     error: "border-[color:var(--color-error)]/30 bg-[color:var(--color-error)]/10 text-[color:var(--color-error)]",
   };
-  const labels = { pending: "Pending", running: "Running", completed: "Done", error: "Error" };
+  const labels = { pending: "等待中", running: "执行中", completed: "完成", error: "出错" };
 
   return (
     <span className={cn("inline-flex items-center gap-1 rounded-full border px-1.5 py-0.5 text-[10px] font-medium", styles[status])}>
@@ -480,7 +488,7 @@ function ToolResultMessage({ message }: { message: ConversationMessage }) {
           <>
             {isLong && (
               <span className="rounded bg-muted/50 px-1 py-0.5 text-[10px] text-muted-foreground">
-                {lineCount} lines
+                {lineCount} 行
               </span>
             )}
             <span className="flex-1 truncate text-left font-mono text-[11px] text-muted-foreground">
@@ -586,7 +594,7 @@ function GlobResult({ output }: { output: string }) {
         );
       })}
       <div className="px-3 py-1 text-caption text-muted-foreground">
-        {files.length} file{files.length !== 1 ? "s" : ""} matched
+        {files.length} 个文件匹配
       </div>
     </div>
   );
@@ -629,7 +637,7 @@ function GrepResult({ output }: { output: string }) {
         );
       })}
       <div className="mt-1 border-t border-border/20 pt-1 text-caption text-muted-foreground">
-        {lines.length} line{lines.length !== 1 ? "s" : ""}
+        {lines.length} 行
       </div>
     </pre>
   );
@@ -661,7 +669,7 @@ function AgentResult({ output }: { output: string }) {
     <div className="p-3">
       <div className="mb-2 flex items-center gap-1.5 text-caption font-medium" style={{ color: "var(--agent-purple)" }}>
         <Brain className="size-3" />
-        <span>Subagent Result</span>
+        <span>子代理结果</span>
       </div>
       <pre className="whitespace-pre-wrap font-mono text-label leading-[1.6] text-foreground/80">
         {output}
@@ -689,7 +697,7 @@ function WebResult({ output, isSearch }: { output: string; isSearch: boolean }) 
         </div>
       )}
       <div className="mb-1 text-caption font-medium text-muted-foreground">
-        {isSearch ? "Search Results" : "Fetched Content"}
+        {isSearch ? "搜索结果" : "抓取内容"}
       </div>
       <pre className="whitespace-pre-wrap font-mono text-label leading-[1.6] text-foreground/80">
         {urlLine ? lines.filter((l) => l !== urlLine).join("\n") : output}
@@ -784,7 +792,7 @@ function TodoMessage({ message }: { message: ConversationMessage }) {
     <div className="rounded-lg border border-[color:var(--color-terminal-tool)]/20 bg-[color:var(--color-terminal-tool)]/5 p-3">
       <div className="mb-2 flex items-center gap-2 text-body font-medium">
         <CheckCircle2 className="size-4" style={{ color: "var(--color-terminal-tool)" }} />
-        <span>Task List</span>
+        <span>任务列表</span>
         <span className="ml-auto rounded bg-muted/50 px-1.5 py-0.5 text-caption text-muted-foreground">
           {todos.filter((t) => t.status === "completed").length}/{todos.length}
         </span>

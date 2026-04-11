@@ -1,36 +1,71 @@
 /**
- * Conversation scroll container — wraps message content in use-stick-to-bottom
- * for automatic scroll-to-bottom during streaming with user-override support.
- *
- * Replaces the previous manual overflow-y-auto + @tanstack/react-virtual approach.
+ * Conversation scroll container — messages start from top, input stays
+ * at bottom. Auto-scrolls to bottom on new messages.
  */
 
-import type { ReactNode } from "react";
-import { StickToBottom } from "use-stick-to-bottom";
-import { cn } from "@/lib/utils";
+import {
+  type ReactNode,
+  useRef,
+  useEffect,
+  useCallback,
+  createContext,
+  useContext,
+  useState,
+} from "react";
 
-// Re-export for sibling components (ScrollToBottomButton, ToolActionsGroup)
-export { useStickToBottomContext } from "use-stick-to-bottom";
-
-interface ConversationScrollerProps {
-  children: ReactNode;
-  className?: string;
+interface ScrollCtx {
+  isAtBottom: boolean;
+  scrollToBottom: () => void;
 }
 
-export function ConversationScroller({
-  children,
-  className,
-}: ConversationScrollerProps) {
+const ScrollContext = createContext<ScrollCtx>({
+  isAtBottom: true,
+  scrollToBottom: () => {},
+});
+
+export function useStickToBottomContext() {
+  return useContext(ScrollContext);
+}
+
+export function ConversationScroller({ children }: { children: ReactNode }) {
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const [isAtBottom, setIsAtBottom] = useState(true);
+
+  const checkBottom = useCallback(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    setIsAtBottom(el.scrollHeight - el.scrollTop - el.clientHeight < 80);
+  }, []);
+
+  const scrollToBottom = useCallback(() => {
+    const el = scrollRef.current;
+    if (el) el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
+  }, []);
+
+  // Auto-scroll on content change if user was at bottom
+  useEffect(() => {
+    if (isAtBottom && scrollRef.current) {
+      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+    }
+  });
+
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    el.addEventListener("scroll", checkBottom, { passive: true });
+    return () => el.removeEventListener("scroll", checkBottom);
+  }, [checkBottom]);
+
   return (
-    <StickToBottom
-      className={cn("relative flex-1 overflow-y-hidden", className)}
-      initial="smooth"
-      resize="instant"
-      role="log"
-    >
-      <StickToBottom.Content className="flex flex-col gap-1 px-4 py-4">
-        {children}
-      </StickToBottom.Content>
-    </StickToBottom>
+    <ScrollContext.Provider value={{ isAtBottom, scrollToBottom }}>
+      <div
+        ref={scrollRef}
+        style={{ flex: "1 1 0%", overflowY: "auto", minHeight: 0 }}
+      >
+        <div style={{ display: "flex", flexDirection: "column", gap: "12px", padding: "16px" }}>
+          {children}
+        </div>
+      </div>
+    </ScrollContext.Provider>
   );
 }

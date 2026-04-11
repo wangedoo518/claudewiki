@@ -72,7 +72,7 @@ const MENU_ITEMS: MenuItem[] = [
     id: "codex-pool",
     i18nKey: "settings.codexPool",
     icon: ServerCog,
-    labelOverride: "Subscription & Codex Pool",
+    labelOverride: "订阅池",
   },
   // Phase 6C: WeChat account management (list + QR login + delete).
   // Sits between multi-provider (backend config) and MCP (tool config)

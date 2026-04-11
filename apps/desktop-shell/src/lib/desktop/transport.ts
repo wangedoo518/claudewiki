@@ -69,12 +69,21 @@ export async function fetchJson<T>(
   try {
     return await attempt(base);
   } catch (error) {
-    if (!isRetryableNetworkError(error)) {
-      throw error;
+    // Retry on network errors (connection refused, timeout, etc.)
+    if (isRetryableNetworkError(error)) {
+      resetDesktopApiBaseCache();
+      const ensuredBase = await getDesktopApiBase();
+      return attempt(ensuredBase);
     }
 
-    resetDesktopApiBaseCache();
-    const ensuredBase = await getDesktopApiBase();
-    return attempt(ensuredBase);
+    // Retry once on 5xx server errors (transient backend instability)
+    const errMsg = error instanceof Error ? error.message : "";
+    if (/status\s+5\d\d/i.test(errMsg) || /^5\d\d\b/.test(errMsg)) {
+      console.warn("[transport] 5xx error, retrying once:", errMsg);
+      await new Promise((r) => setTimeout(r, 500));
+      return attempt(base);
+    }
+
+    throw error;
   }
 }

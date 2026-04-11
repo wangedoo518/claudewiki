@@ -34,7 +34,7 @@ interface StatusLineProps {
  */
 export function StatusLine({
   modelLabel = "Codex GPT-5.4",
-  environmentLabel = "via internal broker",
+  environmentLabel = "内置代理",
   isRunning = false,
   // eslint-disable-next-line @typescript-eslint/no-unused-vars -- reserved for S3 status feed
   projectPath: _projectPath,
@@ -67,7 +67,7 @@ export function StatusLine({
             style={{ color: "var(--color-warning)" }}
           >
             <FileSearch className="size-2.5" />
-            Plan Mode
+            计划模式
           </span>
         )}
 
@@ -83,7 +83,7 @@ export function StatusLine({
             style={{ color: "var(--claude-orange)" }}
           >
             <Zap className="size-2.5" />
-            Running
+            运行中
           </span>
         )}
       </div>

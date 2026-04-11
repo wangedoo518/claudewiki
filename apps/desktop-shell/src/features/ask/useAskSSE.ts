@@ -11,6 +11,7 @@
 
 import { useEffect, useRef } from "react";
 import { useQueryClient } from "@tanstack/react-query";
+import { toast } from "sonner";
 import { subscribeToSessionEvents } from "./api/client";
 import { useStreamingStore } from "@/state/streaming-store";
 import { usePermissionsStore } from "@/state/permissions-store";
@@ -52,7 +53,10 @@ export function useAskSSE(
               toolName: event.tool_name,
               toolInput: (() => {
                 try { return JSON.parse(event.tool_input) as Record<string, unknown>; }
-                catch { return { raw: event.tool_input }; }
+                catch {
+                  console.warn("[ask-sse] failed to parse tool_input JSON, using raw string");
+                  return { raw_input: event.tool_input } as Record<string, unknown>;
+                }
               })(),
               riskLevel: "high",
             });
@@ -87,6 +91,7 @@ export function useAskSSE(
       },
       (error) => {
         console.warn("[ask-sse] connection error, falling back to polling", error.message);
+        toast.warning("实时流式连接失败，已退化为轮询模式", { duration: 4000 });
         controllerRef.current = null;
       },
     );

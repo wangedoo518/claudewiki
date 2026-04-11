@@ -31,12 +31,14 @@ import {
   Inbox as InboxIcon,
   ArrowRight,
 } from "lucide-react";
-import { listRawEntries } from "@/features/ingest/persist";
+import { listRawEntries, listInboxEntries, listWikiPages } from "@/features/ingest/persist";
 import { getBrokerStatus } from "@/features/settings/api/client";
 
 const dashboardKeys = {
   raw: () => ["wiki", "raw", "list"] as const,
   broker: () => ["broker", "status"] as const,
+  inbox: () => ["wiki", "inbox", "list"] as const,
+  wikiPages: () => ["wiki", "pages", "list"] as const,
 };
 
 export function DashboardPage() {
@@ -49,6 +51,18 @@ export function DashboardPage() {
   const brokerQuery = useQuery({
     queryKey: dashboardKeys.broker(),
     queryFn: () => getBrokerStatus(),
+    staleTime: 15_000,
+  });
+
+  const inboxQuery = useQuery({
+    queryKey: dashboardKeys.inbox(),
+    queryFn: () => listInboxEntries(),
+    staleTime: 15_000,
+  });
+
+  const wikiQuery = useQuery({
+    queryKey: dashboardKeys.wikiPages(),
+    queryFn: () => listWikiPages(),
     staleTime: 15_000,
   });
 
@@ -88,15 +102,15 @@ export function DashboardPage() {
       <section className="grid grid-cols-2 gap-3 px-8 py-5 md:grid-cols-4">
         <StatCard
           icon={FileStack}
-          label="Today's ingests"
+          label="今日入库"
           value={rawQuery.isLoading ? "…" : String(todaysIngests)}
-          hint={`of ${totalIngests} total`}
+          hint={`共 ${totalIngests} 条`}
           tint="var(--color-success)"
           link="/raw"
         />
         <StatCard
           icon={ServerCog}
-          label="Codex pool"
+          label="Codex 令牌池"
           value={
             brokerQuery.isLoading
               ? "…"
@@ -106,27 +120,28 @@ export function DashboardPage() {
           }
           hint={
             brokerError
-              ? "broker unreachable"
+              ? "代理不可达"
               : brokerStatus
-                ? `${brokerStatus.fresh_count} fresh`
-                : "connecting…"
+                ? `${brokerStatus.fresh_count} 可用`
+                : "连接中…"
           }
           tint={brokerError ? "var(--color-error)" : "var(--claude-blue)"}
           link="/settings"
         />
         <StatCard
           icon={Brain}
-          label="Pages maintained"
-          value="—"
-          hint="wiki_maintainer lands in S4"
-          tint="var(--muted-foreground)"
+          label="已维护页面"
+          value={wikiQuery.isLoading ? "…" : String(wikiQuery.data?.pages?.length ?? 0)}
+          hint={wikiQuery.error ? "加载失败" : `知识页面`}
+          tint={wikiQuery.error ? "var(--color-error)" : "var(--deeptutor-purple, var(--agent-purple))"}
+          link="/wiki"
         />
         <StatCard
           icon={InboxIcon}
-          label="Pending review"
-          value="—"
-          hint="inbox lands in S4"
-          tint="var(--muted-foreground)"
+          label="待审阅"
+          value={inboxQuery.isLoading ? "…" : String(inboxQuery.data?.pending_count ?? 0)}
+          hint={inboxQuery.error ? "加载失败" : `共 ${inboxQuery.data?.total_count ?? 0} 条任务`}
+          tint={inboxQuery.error ? "var(--color-error)" : "var(--color-warning)"}
           link="/inbox"
         />
       </section>
@@ -141,18 +156,17 @@ export function DashboardPage() {
                   className="size-4"
                   style={{ color: "var(--claude-orange)" }}
                 />
-                Ask your external brain
+                问问你的外脑
               </div>
               <p className="text-caption text-muted-foreground">
-                Jump into a conversation with Codex over your raw entries.
-                Mentions + @raw/ references land in S3 as CCD soul ① + ②.
+                与 AI 对话，探索你的素材库。支持 @raw/ 引用和多轮问答。
               </p>
             </div>
             <Link
               to="/ask"
               className="inline-flex shrink-0 items-center gap-1.5 rounded-md bg-primary px-4 py-2 text-body-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90"
             >
-              Open Ask
+              开始对话
               <ArrowRight className="size-3" />
             </Link>
           </div>
@@ -163,13 +177,13 @@ export function DashboardPage() {
       <section className="min-h-0 flex-1 px-8 pb-6 pt-4">
         <div className="mb-2 flex items-baseline justify-between">
           <h2 className="text-subhead font-semibold text-foreground">
-            Recent raw entries
+            最近入库
           </h2>
           <Link
             to="/raw"
             className="text-caption text-muted-foreground hover:text-foreground"
           >
-            View all →
+            查看全部 →
           </Link>
         </div>
         <RecentEntries
@@ -246,7 +260,7 @@ function RecentEntries({
     return (
       <div className="flex items-center gap-2 text-caption text-muted-foreground">
         <Loader2 className="size-3 animate-spin" />
-        Loading recent entries…
+        加载中…
       </div>
     );
   }
@@ -262,16 +276,16 @@ function RecentEntries({
           color: "var(--color-error)",
         }}
       >
-        Failed to load recent entries: {error.message}
+        加载失败：{error.message}
       </div>
     );
   }
   if (entries.length === 0) {
     return (
       <div className="rounded-md border border-border/50 bg-muted/10 px-4 py-6 text-center text-caption text-muted-foreground">
-        No raw entries yet.{" "}
+        还没有素材。{" "}
         <Link to="/raw" className="text-primary hover:underline">
-          Paste your first one →
+          粘贴第一条 →
         </Link>
       </div>
     );

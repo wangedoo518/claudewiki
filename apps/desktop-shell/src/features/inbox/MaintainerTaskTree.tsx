@@ -59,27 +59,27 @@ const AGENT_TYPE_META: Record<
 > = {
   "general-purpose": {
     icon: Brain,
-    label: "General",
+    label: "通用",
     color: "var(--agent-purple)",
   },
   plan: {
     icon: FileSearch,
-    label: "Plan",
+    label: "规划",
     color: "var(--color-warning)",
   },
   explore: {
     icon: Search,
-    label: "Explore",
+    label: "探索",
     color: "var(--agent-cyan)",
   },
   verification: {
     icon: Shield,
-    label: "Verify",
+    label: "验证",
     color: "var(--color-success)",
   },
   "claude-code-guide": {
     icon: BookOpen,
-    label: "Guide",
+    label: "引导",
     color: "var(--claude-blue)",
   },
 };
@@ -116,7 +116,7 @@ export function extractSubagents(
       const agent: SubagentInfo = {
         id: toolUseId,
         type: validType,
-        description: (parsed.description as string) ?? "Subagent task",
+        description: (parsed.description as string) ?? "子代理任务",
         model: parsed.model as string | undefined,
         status: "running",
         background: parsed.run_in_background as boolean | undefined,
@@ -180,7 +180,7 @@ export function MaintainerTaskTree({
             style={{ color: "var(--agent-purple)" }}
           />
           <span className="text-body-sm font-semibold text-foreground">
-            Subagents
+            子代理
           </span>
           {agents.length > 0 && (
             <span className="rounded-full bg-muted px-1.5 py-0.5 text-caption text-muted-foreground">
@@ -313,7 +313,7 @@ function StatusBadge({ status }: { status: SubagentStatus }) {
             className="text-nano font-medium"
             style={{ color: "var(--agent-purple)" }}
           >
-            Running
+            执行中
           </span>
         </div>
       );
@@ -328,7 +328,7 @@ function StatusBadge({ status }: { status: SubagentStatus }) {
             className="text-nano font-medium"
             style={{ color: "var(--color-success)" }}
           >
-            Done
+            完成
           </span>
         </div>
       );
@@ -343,7 +343,7 @@ function StatusBadge({ status }: { status: SubagentStatus }) {
             className="text-nano font-medium"
             style={{ color: "var(--color-error)" }}
           >
-            Error
+            出错
           </span>
         </div>
       );

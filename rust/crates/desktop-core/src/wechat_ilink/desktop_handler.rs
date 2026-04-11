@@ -530,13 +530,10 @@ fn ingest_wechat_text_to_wiki(
     // HTML → clean markdown conversion including WeChat-specific
     // selectors.
     let trimmed = user_text.trim();
-    let is_url = trimmed.starts_with("http://") || trimmed.starts_with("https://");
-    // Also detect URLs embedded in text (e.g. "看看这个 https://mp.weixin.qq.com/s/xxx")
-    let extracted_url = if is_url {
-        Some(trimmed.to_string())
-    } else {
-        extract_first_url(trimmed)
-    };
+    // Always use extract_first_url which properly truncates at non-URL chars.
+    // This handles both "https://...入库" (URL + trailing Chinese) and
+    // "看看这个 https://..." (text + embedded URL).
+    let extracted_url = extract_first_url(trimmed);
 
     let (source_tag, slug_seed, body, source_url) = if let Some(url) = extracted_url {
         eprintln!("[wechat agent] detected URL in message, fetching: {url}");
@@ -640,15 +637,42 @@ fn ingest_wechat_text_to_wiki(
 fn extract_first_url(text: &str) -> Option<String> {
     for word in text.split_whitespace() {
         if word.starts_with("http://") || word.starts_with("https://") {
-            // Trim trailing Chinese punctuation that often gets attached
-            let url = word
-                .trim_end_matches(|c: char| {
-                    matches!(c, '。' | '，' | '！' | '？' | '；' | '、' | '\u{201c}' | '\u{201d}' | ')' | '）')
-                });
-            return Some(url.to_string());
+            // Truncate at the first character that is NOT a valid URL char.
+            // This catches trailing Chinese text like "入库", punctuation, etc.
+            let url = truncate_url(word);
+            if !url.is_empty() {
+                return Some(url.to_string());
+            }
         }
     }
     None
+}
+
+/// Truncate a URL string at the first non-URL character.
+/// Keeps ASCII letters, digits, and common URL punctuation (-._~:/?#[]@!$&'()*+,;=%);
+/// stops at CJK characters, Chinese punctuation, or any other non-ASCII char
+/// that isn't part of a percent-encoded sequence.
+fn truncate_url(raw: &str) -> &str {
+    let bytes = raw.as_bytes();
+    let mut end = bytes.len();
+    for (i, &b) in bytes.iter().enumerate() {
+        // ASCII chars valid in URLs — keep going
+        if b.is_ascii() {
+            continue;
+        }
+        // Check if this is a percent-encoded sequence (%XX)
+        // Non-ASCII byte that isn't part of valid URL → truncate here
+        // But first, check if we're in a %-encoded sequence
+        if i >= 2 && bytes[i - 2] == b'%' {
+            continue; // part of %XX encoding
+        }
+        // Non-ASCII char (CJK, Chinese punctuation, etc.) → stop
+        end = i;
+        break;
+    }
+    // Also trim common trailing ASCII punctuation that gets attached
+    let s = &raw[..end];
+    s.trim_end_matches(|c: char| matches!(c, '.' | ',' | ')' | ']' | ';' | '!' | '?'))
 }
 
 /// Trim a long openid down to a recognizable suffix for use in session titles.

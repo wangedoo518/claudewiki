@@ -31,7 +31,7 @@
  * essentially reimplementing that hook under the Ask namespace.
  */
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   appendMessage,
@@ -157,6 +157,10 @@ export function useAskSession(): UseAskSessionResult {
   // Step 2 — poll the session detail. Only refetch on an interval
   // while the turn is active; idle turns use the standard staleTime
   // behavior and don't hammer the backend.
+  // Track whether we just transitioned from running → idle so we can
+  // do one final refetch to ensure the last message batch is captured.
+  const prevTurnStateRef = useRef<string | undefined>(undefined);
+
   const detailQuery = useQuery({
     queryKey: askSessionKeys.detail(activeId),
     queryFn: () => {
@@ -169,7 +173,14 @@ export function useAskSession(): UseAskSessionResult {
     staleTime: 5_000,
     refetchInterval: (q) => {
       const data = q.state.data as DesktopSessionDetail | undefined;
-      return data?.turn_state === "running" ? 1000 : false;
+      const currentState = data?.turn_state;
+      const wasRunning = prevTurnStateRef.current === "running";
+      prevTurnStateRef.current = currentState;
+
+      if (currentState === "running") return 1000;
+      // Just transitioned to idle — do one more poll to capture final messages
+      if (wasRunning && currentState === "idle") return 1000;
+      return false;
     },
   });
 

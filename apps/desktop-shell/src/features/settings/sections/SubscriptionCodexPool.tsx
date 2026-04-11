@@ -60,15 +60,15 @@ export function SubscriptionCodexPool() {
   return (
     <div className="space-y-4">
       <SettingGroup
-        title="Subscription & Codex Pool"
-        description="Managed Codex accounts delivered by your subscription. All tokens live inside the Rust process — no HTTP surface exposes them to this page or any external client."
+        title="订阅与令牌池"
+        description="由订阅交付的 Codex 账号。所有令牌都在 Rust 进程内部，不会暴露给前端或任何外部客户端。"
       >
         <StatusSnapshot status={statusQuery.data} isLoading={statusQuery.isLoading} />
       </SettingGroup>
 
       <SettingGroup
-        title="Account list"
-        description="Redacted view. You see the alias and expiry; access / refresh tokens never leave the Rust broker."
+        title="账号列表"
+        description="脱敏视图。仅显示别名和有效期，令牌永远不会离开 Rust 代理。"
       >
         <AccountListSection
           accounts={accountsQuery.data?.accounts}
@@ -78,12 +78,12 @@ export function SubscriptionCodexPool() {
       </SettingGroup>
 
       <SettingGroup
-        title="Danger zone"
-        description="Clearing the pool forgets every delivered account and deletes the encrypted blob under ~/.clawwiki/.clawwiki/cloud-accounts.enc. On next subscription sync, the pool will refill automatically."
+        title="危险操作"
+        description="清空池子将删除所有已交付账号和加密文件。下次订阅同步时会自动重新填充。"
       >
         <SettingRow
-          label="Clear Codex pool"
-          description="Delete all pool entries and the encrypted blob on disk. Safe — the next billing sync will refill it."
+          label="清空令牌池"
+          description="删除所有池条目和磁盘上的加密文件。安全操作——下次同步会自动重新填充。"
         >
           <button
             type="button"
@@ -100,7 +100,7 @@ export function SubscriptionCodexPool() {
             ) : (
               <Trash2 className="size-3" />
             )}
-            Clear pool
+            清空
           </button>
         </SettingRow>
         {clearMutation.error && (
@@ -112,7 +112,7 @@ export function SubscriptionCodexPool() {
               color: "var(--color-error)",
             }}
           >
-            Failed to clear pool: {String(clearMutation.error)}
+            清空失败：{String(clearMutation.error)}
           </div>
         )}
       </SettingGroup>
@@ -133,7 +133,7 @@ function StatusSnapshot({
     return (
       <div className="flex items-center gap-2 text-caption text-muted-foreground">
         <Loader2 className="size-3 animate-spin" />
-        Loading broker status…
+        加载代理状态…
       </div>
     );
   }
@@ -147,7 +147,7 @@ function StatusSnapshot({
           color: "var(--color-error)",
         }}
       >
-        Could not reach the Codex broker. Is desktop-server running?
+        无法连接 Codex 代理。请检查 desktop-server 是否运行。
       </div>
     );
   }
@@ -160,34 +160,34 @@ function StatusSnapshot({
     <div className="grid grid-cols-2 gap-2 md:grid-cols-4">
       <StatCard
         icon={ServerCog}
-        label="Pool size"
+        label="池大小"
         value={String(status.pool_size)}
       />
       <StatCard
         icon={Shield}
-        label="Fresh"
+        label="可用"
         value={String(status.fresh_count)}
         tint="var(--color-success)"
       />
       <StatCard
         icon={AlertTriangle}
-        label="Expiring"
+        label="即将过期"
         value={String(status.expiring_count)}
         tint="var(--color-warning)"
       />
       <StatCard
         icon={AlertTriangle}
-        label="Expired"
+        label="已过期"
         value={String(status.expired_count)}
         tint="var(--color-error)"
       />
       <StatCard
         icon={ServerCog}
-        label="Requests today"
+        label="今日请求"
         value={status.requests_today.toLocaleString()}
       />
       <div className="col-span-3 rounded-md border border-border bg-muted/10 px-3 py-2">
-        <div className="text-caption text-muted-foreground">Next refresh</div>
+        <div className="text-caption text-muted-foreground">下次刷新</div>
         <div className="text-body-sm text-foreground">{nextRefreshLabel}</div>
         {status.next_refresh_at_epoch && (
           <div className="text-caption text-muted-foreground/60">
@@ -241,7 +241,7 @@ function AccountListSection({
     return (
       <div className="flex items-center gap-2 text-caption text-muted-foreground">
         <Loader2 className="size-3 animate-spin" />
-        Loading account list…
+        加载账号列表…
       </div>
     );
   }
@@ -255,16 +255,14 @@ function AccountListSection({
           color: "var(--color-error)",
         }}
       >
-        Failed to list accounts: {error.message}
+        加载账号失败：{error.message}
       </div>
     );
   }
   if (!accounts || accounts.length === 0) {
     return (
       <div className="rounded-md border border-border/50 bg-muted/10 px-3 py-4 text-center text-caption text-muted-foreground">
-        No Codex accounts in the pool yet. Your subscription will
-        deliver them automatically; this panel will refresh within
-        30 seconds.
+        池中暂无 Codex 账号。订阅交付后会自动出现，30 秒内刷新。
       </div>
     );
   }

@@ -95,6 +95,7 @@ export function WeChatBridgePage() {
     null,
   );
   const loginPollRef = useRef<number | null>(null);
+  const mountedRef = useRef(true);
 
   // When login reaches a terminal state, stop polling and refresh list.
   useEffect(() => {
@@ -110,9 +111,11 @@ export function WeChatBridgePage() {
     }
   }, [loginStatus, queryClient]);
 
-  // Clean up the interval on unmount.
+  // Clean up the interval on unmount + set mounted flag.
   useEffect(() => {
+    mountedRef.current = true;
     return () => {
+      mountedRef.current = false;
       if (loginPollRef.current !== null) {
         window.clearInterval(loginPollRef.current);
       }
@@ -131,7 +134,7 @@ export function WeChatBridgePage() {
         void (async () => {
           try {
             const status = await getWeChatLoginStatus(data.handle);
-            setLoginStatus(status);
+            if (mountedRef.current) setLoginStatus(status);
           } catch (err) {
             console.error("[wechat] login poll failed", err);
           }

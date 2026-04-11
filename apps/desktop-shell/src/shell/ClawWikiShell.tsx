@@ -38,7 +38,7 @@ import { SettingsPage } from "@/features/settings/SettingsPage";
 function PageTransition({ children }: { children: ReactNode }) {
   const location = useLocation();
   return (
-    <div key={location.pathname} className="h-full animate-fade-in">
+    <div key={location.pathname} className="flex h-full flex-col animate-fade-in">
       {children}
     </div>
   );
@@ -49,7 +49,7 @@ export function ClawWikiShell() {
     <ErrorBoundary>
       <div className="flex h-screen w-screen overflow-hidden bg-background text-foreground">
         <Sidebar />
-        <main className="relative flex-1 overflow-hidden">
+        <main className="relative flex flex-1 flex-col overflow-hidden">
           <ErrorBoundary>
             <Routes>
               <Route

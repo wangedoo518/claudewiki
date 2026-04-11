@@ -12,21 +12,21 @@ interface ShortcutEntry {
 }
 
 const ASK_SHORTCUTS: readonly ShortcutEntry[] = [
-  { keys: "Esc", description: "Stop streaming / close dialogs" },
-  { keys: "Ctrl+L", description: "Clear messages" },
-  { keys: "Ctrl+N", description: "New session" },
-  { keys: "Ctrl+K", description: "Focus input" },
-  { keys: "Ctrl+,", description: "Open settings" },
-  { keys: "Ctrl+Shift+S", description: "Toggle sidebar" },
-  { keys: "Ctrl+Shift+B", description: "Toggle Maintainer Task Tree" },
+  { keys: "Esc", description: "停止流式 / 关闭对话框" },
+  { keys: "Ctrl+L", description: "清空消息" },
+  { keys: "Ctrl+N", description: "新建会话" },
+  { keys: "Ctrl+K", description: "聚焦输入框" },
+  { keys: "Ctrl+,", description: "打开设置" },
+  { keys: "Ctrl+Shift+S", description: "切换侧边栏" },
+  { keys: "Ctrl+Shift+B", description: "切换维护任务树" },
 ];
 
 export function ShortcutsSettings() {
   return (
     <div className="space-y-4">
       <SettingGroup
-        title="Keyboard Shortcuts"
-        description="Shortcuts active inside the Ask page (CCD work-bench layer)"
+        title="键盘快捷键"
+        description="在 Ask 对话页面中生效的快捷键"
       >
         <div className="divide-y divide-border/50">
           {ASK_SHORTCUTS.map((shortcut) => (
@@ -52,9 +52,7 @@ export function ShortcutsSettings() {
             style={{ color: "var(--claude-blue)" }}
           />
           <div className="text-body-sm leading-relaxed text-muted-foreground">
-            Shortcuts will become live once S3 rewires the Ask page to
-            the ask_runtime backend. They are listed here as a reference
-            so the canonical key-bindings stay documented through S0–S3.
+            快捷键列表，供参考。
           </div>
         </div>
       </div>

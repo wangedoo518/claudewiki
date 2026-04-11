@@ -100,9 +100,9 @@ export interface UseAskSessionResult {
  */
 export function useAskSession(): UseAskSessionResult {
   const queryClient = useQueryClient();
-  const [activeId, setActiveId] = useState<string | null>(() =>
-    readActiveSessionId()
-  );
+  // Never trust localStorage on init — always validate via ensureMutation.
+  // This prevents the "session not found" error when the stored ID is stale.
+  const [activeId, setActiveId] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | undefined>();
 
   // Step 1 — ensure an active session exists. If localStorage had a

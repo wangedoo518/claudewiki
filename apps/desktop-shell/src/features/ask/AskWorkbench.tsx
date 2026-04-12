@@ -125,6 +125,8 @@ export function AskWorkbench({
   providers,
   onSwitchProvider,
 }: AskWorkbenchProps) {
+  // Python deps auto-installed by backend on startup — no frontend action needed.
+
   const pendingPermission = usePermissionsStore(
     (state) => state.pendingRequest
   );

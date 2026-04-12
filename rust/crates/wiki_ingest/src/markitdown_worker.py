@@ -39,18 +39,52 @@ def main():
 
         md = MarkItDown()
         result = md.convert(file_path)
+        content = result.text_content if result.text_content else ""
+
+        # Image fallback: if MarkItDown returns minimal content, use Pillow metadata
+        ext = os.path.splitext(file_path)[1].lower().lstrip(".")
+        if ext in ("jpg", "jpeg", "png", "webp", "gif", "bmp", "tiff") and len(content.strip()) < 50:
+            try:
+                from PIL import Image as PILImage
+                from PIL.ExifTags import TAGS
+                img = PILImage.open(file_path)
+                w, h = img.size
+                meta_lines = [
+                    f"# 图片: {os.path.basename(file_path)}",
+                    f"",
+                    f"- 尺寸: {w} x {h} 像素",
+                    f"- 格式: {img.format or ext.upper()}",
+                    f"- 模式: {img.mode}",
+                    f"- 文件大小: {os.path.getsize(file_path)} 字节",
+                ]
+                # EXIF data
+                exif = img.getexif()
+                if exif:
+                    for tag_id, val in list(exif.items())[:10]:
+                        tag = TAGS.get(tag_id, tag_id)
+                        meta_lines.append(f"- {tag}: {val}")
+                content = "\n".join(meta_lines)
+            except Exception:
+                content = f"# 图片: {os.path.basename(file_path)}\n\n无法提取图片元数据。"
+
+        # Audio fallback: detect empty transcription
+        if ext in ("mp3", "wav", "m4a", "ogg", "flac", "amr") and len(content.strip()) < 20:
+            json.dump({
+                "ok": False,
+                "error": f"音频转写失败：MarkItDown 未返回有效文本。可能原因：1) 需要网络访问（Google Speech API）；2) 音频格式不支持。文件: {os.path.basename(file_path)}"
+            }, sys.stdout, ensure_ascii=False)
+            return
 
         # Extract title from first heading or filename
         title = os.path.splitext(os.path.basename(file_path))[0]
-        lines = result.text_content.split("\n")
+        lines = content.split("\n")
         for line in lines:
             stripped = line.strip()
             if stripped.startswith("# "):
                 title = stripped[2:].strip()
                 break
 
-        # Detect source type from extension
-        ext = os.path.splitext(file_path)[1].lower().lstrip(".")
+        # Detect source type from extension (ext already set above)
         source_map = {
             "pdf": "pdf", "docx": "docx", "doc": "docx",
             "pptx": "pptx", "ppt": "pptx",
@@ -69,7 +103,7 @@ def main():
         json.dump({
             "ok": True,
             "title": title,
-            "markdown": result.text_content,
+            "markdown": content,
             "source": source,
         }, sys.stdout, ensure_ascii=False)
 

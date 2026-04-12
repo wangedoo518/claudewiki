@@ -176,24 +176,37 @@ def main():
 
             page = context.new_page()
 
-            # Set referer
+            # Set headers for stealth
             page.set_extra_http_headers({
                 "Referer": "https://mp.weixin.qq.com/",
+                "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
             })
 
-            try:
-                page.goto(url, wait_until="networkidle", timeout=30000)
-            except Exception:
-                # networkidle might timeout, try domcontentloaded
+            # Navigate with retry (WeChat pages sometimes need a second load)
+            import random
+            loaded = False
+            for attempt in range(2):
                 try:
-                    page.goto(url, wait_until="domcontentloaded", timeout=15000)
-                except Exception as e:
-                    json.dump({"ok": False, "error": f"Page load failed: {e}"}, sys.stdout)
-                    browser.close()
-                    return
+                    page.goto(url, wait_until="networkidle", timeout=30000)
+                    loaded = True
+                    break
+                except Exception:
+                    try:
+                        page.goto(url, wait_until="domcontentloaded", timeout=15000)
+                        loaded = True
+                        break
+                    except Exception:
+                        if attempt == 0:
+                            page.wait_for_timeout(random.randint(1000, 3000))
+                            continue
 
-            # Extra wait for dynamic content
-            page.wait_for_timeout(2000)
+            if not loaded:
+                json.dump({"ok": False, "error": "页面加载失败，请稍后重试"}, sys.stdout, ensure_ascii=False)
+                browser.close()
+                return
+
+            # Random delay to avoid detection patterns
+            page.wait_for_timeout(random.randint(1500, 3000))
 
             # Check for CAPTCHA / verification page
             page_text = page.inner_text("body")

@@ -61,6 +61,12 @@ import { ingestRawEntry } from "@/features/ingest/persist";
 /** File extensions that should be routed through MarkItDown conversion. */
 const MARKITDOWN_EXTENSIONS = new Set([
   "pdf", "docx", "doc", "pptx", "ppt", "xlsx", "xls", "epub", "ipynb",
+  // Images (OCR/metadata via MarkItDown)
+  "jpg", "jpeg", "png", "webp", "gif",
+  // Audio (SpeechRecognition via MarkItDown)
+  "mp3", "wav", "m4a", "ogg", "flac",
+  // Video (metadata/fallback)
+  "mp4", "mov", "mkv", "avi",
 ]);
 
 /** Response shape from `POST /api/desktop/markitdown/convert`. */

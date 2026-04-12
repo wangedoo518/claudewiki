@@ -48,6 +48,12 @@ fn print_help() {
 }
 
 async fn run_server() -> Result<(), Box<dyn std::error::Error>> {
+    // Auto-install Python dependencies (markitdown + playwright) silently.
+    // This runs in the background so server startup is not blocked.
+    tokio::spawn(async {
+        auto_install_python_deps().await;
+    });
+
     // Workaround for a Windows-specific path bug in the upstream `runtime`
     // crate's `default_config_home()`: it reads `HOME` directly via
     // `std::env::var_os`, which under git-bash resolves to a Unix-style
@@ -247,4 +253,50 @@ async fn run_wechat_login() -> Result<(), Box<dyn std::error::Error>> {
     println!("──────────────────────────────────────────────────────────────");
 
     Ok(())
+}
+
+/// Silently auto-install Python deps on startup (background task).
+async fn auto_install_python_deps() {
+    // Check Python
+    let py = tokio::process::Command::new("python").args(["--version"]).output().await;
+    match py {
+        Ok(o) if o.status.success() => {
+            eprintln!("[auto-install] {}", String::from_utf8_lossy(&o.stdout).trim());
+        }
+        _ => {
+            eprintln!("[auto-install] Python not found, skipping");
+            return;
+        }
+    }
+
+    // markitdown
+    let ok = tokio::process::Command::new("python")
+        .args(["-c", "import markitdown"])
+        .output().await
+        .map(|o| o.status.success()).unwrap_or(false);
+    if !ok {
+        eprintln!("[auto-install] installing markitdown[all]...");
+        let _ = tokio::process::Command::new("python")
+            .args(["-m", "pip", "install", "--upgrade", "--quiet", "markitdown[all]"])
+            .output().await;
+        eprintln!("[auto-install] markitdown done");
+    }
+
+    // playwright
+    let ok = tokio::process::Command::new("python")
+        .args(["-c", "from playwright.sync_api import sync_playwright"])
+        .output().await
+        .map(|o| o.status.success()).unwrap_or(false);
+    if !ok {
+        eprintln!("[auto-install] installing playwright + chromium...");
+        let _ = tokio::process::Command::new("python")
+            .args(["-m", "pip", "install", "--upgrade", "--quiet", "playwright"])
+            .output().await;
+        let _ = tokio::process::Command::new("python")
+            .args(["-m", "playwright", "install", "chromium"])
+            .output().await;
+        eprintln!("[auto-install] playwright done");
+    }
+
+    eprintln!("[auto-install] all deps ready");
 }

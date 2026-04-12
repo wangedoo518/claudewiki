@@ -154,7 +154,27 @@ export function AskWorkbench({
     () => extractSubagents(displayMessages).length,
     [displayMessages]
   );
-  const isRunning = session?.turn_state === "running" || isSending;
+  // isRunning: true while the AI is generating a response.
+  // Keep it true for a few seconds after POST returns, bridging the gap
+  // until the next poll detects turn_state=running.
+  const [extendedRunning, setExtendedRunning] = useState(false);
+  useEffect(() => {
+    if (isSending) {
+      setExtendedRunning(true);
+    }
+  }, [isSending]);
+  useEffect(() => {
+    if (!extendedRunning) return;
+    if (session?.turn_state === "running") {
+      // Backend confirmed running — no longer need the extension
+      setExtendedRunning(false);
+      return;
+    }
+    // Auto-clear after 5s if backend never reports running (very short reply)
+    const t = setTimeout(() => setExtendedRunning(false), 5000);
+    return () => clearTimeout(t);
+  }, [extendedRunning, session?.turn_state]);
+  const isRunning = session?.turn_state === "running" || isSending || extendedRunning;
 
   // Clear local messages when session changes
   useEffect(() => {

@@ -427,6 +427,8 @@ pub fn app(state: AppState) -> Router {
             "/api/desktop/dispatch/items/{id}",
             delete(delete_dispatch_item_handler).post(update_dispatch_item),
         )
+        // ── Storage migration ──
+        .route("/api/desktop/storage/migrate", post(migrate_storage_handler))
         // ── Multi-provider registry (restored for ClawWiki Cloud gateway) ──
         .route(
             "/api/desktop/providers",
@@ -3440,4 +3442,82 @@ async fn list_provider_templates_handler() -> Json<serde_json::Value> {
         })
         .collect();
     Json(serde_json::json!({ "templates": items }))
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Storage migration handler
+// ═══════════════════════════════════════════════════════════════
+
+#[derive(Deserialize)]
+struct MigrateStorageRequest {
+    new_path: String,
+}
+
+/// `POST /api/desktop/storage/migrate`
+///
+/// Copies the entire wiki directory tree from the current location to
+/// `new_path`, then writes a `.clawwiki-redirect` marker so the next
+/// startup can auto-detect the new location.
+///
+/// This is a best-effort copy — if the target already exists and is
+/// non-empty, the handler returns 409 Conflict.
+async fn migrate_storage_handler(
+    Json(body): Json<MigrateStorageRequest>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let new_path = body.new_path.trim().to_string();
+    if new_path.is_empty() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse { error: "new_path must not be empty".to_string() }),
+        ));
+    }
+
+    let current_root = wiki_store::default_root();
+    let target = std::path::PathBuf::from(&new_path);
+
+    // Don't overwrite an existing non-empty directory
+    if target.exists() && target.read_dir().map(|mut d| d.next().is_some()).unwrap_or(false) {
+        return Err((
+            StatusCode::CONFLICT,
+            Json(ErrorResponse { error: format!("目标目录 {} 已存在且非空", new_path) }),
+        ));
+    }
+
+    // Recursive copy
+    fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<u64> {
+        let mut count = 0u64;
+        std::fs::create_dir_all(dst)?;
+        for entry in std::fs::read_dir(src)? {
+            let entry = entry?;
+            let ft = entry.file_type()?;
+            let src_path = entry.path();
+            let dst_path = dst.join(entry.file_name());
+            if ft.is_dir() {
+                count += copy_dir_recursive(&src_path, &dst_path)?;
+            } else {
+                std::fs::copy(&src_path, &dst_path)?;
+                count += 1;
+            }
+        }
+        Ok(count)
+    }
+
+    let file_count = copy_dir_recursive(&current_root, &target).map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse { error: format!("迁移失败: {e}") }),
+        )
+    })?;
+
+    // Write a redirect marker in the OLD location so future code can
+    // detect the move (optional — main mechanism is CLAWWIKI_HOME env).
+    let marker = current_root.join(".clawwiki-redirect");
+    let _ = std::fs::write(&marker, &new_path);
+
+    Ok(Json(serde_json::json!({
+        "ok": true,
+        "files_copied": file_count,
+        "old_path": current_root.to_string_lossy(),
+        "new_path": new_path,
+    })))
 }

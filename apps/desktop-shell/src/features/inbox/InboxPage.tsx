@@ -77,6 +77,7 @@ function translateStatus(status: string): string {
 }
 
 export function InboxPage() {
+  const queryClient = useQueryClient();
   const [selectedId, setSelectedId] = useState<number | null>(null);
 
   const listQuery = useQuery({
@@ -125,6 +126,22 @@ export function InboxPage() {
           </p>
         </div>
         <div className="flex items-center gap-2" style={{ fontSize: 11 }}>
+          {(listQuery.data?.pending_count ?? 0) > 0 && (
+            <button
+              type="button"
+              onClick={async () => {
+                if (!window.confirm(`确定要清空所有 ${listQuery.data?.pending_count} 条待处理任务？`)) return;
+                const pending = entries.filter((e) => e.status === "pending");
+                for (const e of pending) {
+                  try { await resolveInboxEntry(e.id, "reject"); } catch { /* ok */ }
+                }
+                void queryClient.invalidateQueries({ queryKey: inboxKeys.list() });
+              }}
+              className="rounded-md border border-border/40 px-2 py-0.5 text-muted-foreground transition-colors hover:border-destructive hover:text-destructive"
+            >
+              全部清除
+            </button>
+          )}
           <span
             className="rounded-full border border-border/40 px-2 py-0.5 text-muted-foreground"
             style={{ color: "var(--color-warning)" }}
@@ -175,6 +192,8 @@ function EntryList({
   selectedId: number | null;
   onSelect: (id: number) => void;
 }) {
+  const queryClient = useQueryClient();
+
   if (isLoading) {
     return (
       <div className="flex-1 px-3 py-6 text-center text-caption text-muted-foreground">
@@ -254,6 +273,21 @@ function EntryList({
                 <span className="shrink-0 text-muted-foreground/50" style={{ fontSize: 11 }}>
                   {translateKind(entry.kind)}
                 </span>
+                {entry.status === "pending" && (
+                  <span
+                    role="button"
+                    className="shrink-0 rounded p-0.5 text-muted-foreground/30 transition-colors hover:text-destructive"
+                    onClick={(ev) => {
+                      ev.stopPropagation();
+                      void resolveInboxEntry(entry.id, "reject").then(() => {
+                        void queryClient.invalidateQueries({ queryKey: inboxKeys.list() });
+                      });
+                    }}
+                    title="删除"
+                  >
+                    <XCircle className="size-3" />
+                  </span>
+                )}
               </div>
               <div className="mt-1 truncate pl-6 text-muted-foreground/60" style={{ fontSize: 11 }}>
                 {entry.description}

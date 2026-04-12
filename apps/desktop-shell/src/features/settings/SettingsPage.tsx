@@ -10,6 +10,7 @@ import {
   Shield,
   Keyboard,
   Database,
+  HardDrive,
   Info,
   Loader2,
 } from "lucide-react";
@@ -24,6 +25,7 @@ import { WeChatSettings } from "./sections/WeChatSettings";
 import { McpSettings } from "./sections/McpSettings";
 import { PermissionSettings } from "./sections/PermissionSettings";
 import { DataSettings } from "./sections/DataSettings";
+import { StorageSettings } from "./sections/StorageSettings";
 import { ShortcutsSettings } from "./sections/ShortcutsSettings";
 import { AboutSection } from "./sections/AboutSection";
 import { settingsKeys } from "./api/query";
@@ -46,6 +48,7 @@ type SettingsSection =
   | "mcp"
   | "permissions"
   | "shortcuts"
+  | "storage"
   | "data"
   | "about";
 
@@ -86,6 +89,12 @@ const MENU_ITEMS: MenuItem[] = [
   { id: "mcp", i18nKey: "settings.mcp", icon: Plug },
   { id: "permissions", i18nKey: "settings.permissions", icon: Shield },
   { id: "shortcuts", i18nKey: "settings.shortcuts", icon: Keyboard },
+  {
+    id: "storage",
+    i18nKey: "settings.storage",
+    icon: HardDrive,
+    labelOverride: "数据存储",
+  },
   { id: "data", i18nKey: "settings.data", icon: Database },
   { id: "about", i18nKey: "settings.about", icon: Info },
 ];
@@ -232,6 +241,8 @@ function SettingsContent({
       return <McpSettings customize={customize} error={error} />;
     case "permissions":
       return <PermissionSettings customize={customize} error={error} />;
+    case "storage":
+      return <StorageSettings settings={settings} error={error} />;
     case "data":
       return <DataSettings settings={settings} error={error} />;
     case "about":

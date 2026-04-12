@@ -48,6 +48,17 @@ const rawKeys = {
   detail: (id: number) => ["wiki", "raw", "detail", id] as const,
 };
 
+/** Translate known source labels to Chinese */
+function translateSource(source: string): string {
+  const map: Record<string, string> = {
+    "wechat-url": "微信链接",
+    "wechat-text": "微信消息",
+    "paste-text": "粘贴文本",
+    "paste-url": "粘贴链接",
+  };
+  return map[source] ?? source;
+}
+
 export function RawLibraryPage() {
   const [selectedId, setSelectedId] = useState<number | null>(null);
 
@@ -66,14 +77,14 @@ export function RawLibraryPage() {
             className="text-foreground"
             style={{ fontSize: 18, fontWeight: 600, fontFamily: "var(--font-serif, Lora, serif)" }}
           >
-            Raw Library
+            原始素材库
           </h1>
           <p className="mt-1 text-muted-foreground/60" style={{ fontSize: 11 }}>
-            微信转发、粘贴文本、URL -- 全部以 <code>~/.clawwiki/raw/</code> 下的 markdown 落盘
+            微信转发、粘贴文本、链接 -- 全部以 <code>~/.clawwiki/raw/</code> 下的 markdown 落盘
           </p>
         </div>
         <div className="text-muted-foreground/40" style={{ fontSize: 11 }}>
-          {listQuery.data?.entries.length ?? 0} entries
+          {listQuery.data?.entries.length ?? 0} 条
         </div>
       </div>
 
@@ -126,12 +137,12 @@ function PasteForm({ onIngested }: PasteFormProps) {
     mutationFn: async () => {
       if (mode === "text") {
         if (!body.trim()) {
-          throw new Error("Body cannot be empty");
+          throw new Error("内容不能为空");
         }
         return ingestText({ title, body });
       }
       if (!url.trim()) {
-        throw new Error("URL cannot be empty");
+        throw new Error("链接不能为空");
       }
       return ingestUrl({ url, title });
     },
@@ -162,7 +173,7 @@ function PasteForm({ onIngested }: PasteFormProps) {
           onClick={() => setMode("text")}
         >
           <FileText className="mr-1 inline size-3" />
-          Text
+          文本
         </button>
         <button
           type="button"
@@ -175,7 +186,7 @@ function PasteForm({ onIngested }: PasteFormProps) {
           onClick={() => setMode("url")}
         >
           <Link2 className="mr-1 inline size-3" />
-          URL
+          链接
         </button>
       </div>
 
@@ -183,7 +194,7 @@ function PasteForm({ onIngested }: PasteFormProps) {
         type="text"
         value={title}
         onChange={(e) => setTitle(e.target.value)}
-        placeholder="Title (optional)"
+        placeholder="标题（可选）"
         className="mb-1.5 w-full rounded-md border border-input bg-background px-2 py-1 text-body-sm text-foreground placeholder:text-muted-foreground focus:border-ring focus:outline-none focus:ring-1 focus:ring-ring/40"
       />
 
@@ -191,7 +202,7 @@ function PasteForm({ onIngested }: PasteFormProps) {
         <textarea
           value={body}
           onChange={(e) => setBody(e.target.value)}
-          placeholder="Paste markdown / text here…"
+          placeholder="粘贴 markdown 或文本..."
           rows={5}
           className="w-full resize-none rounded-md border border-input bg-background px-2 py-1.5 font-mono text-label text-foreground placeholder:text-muted-foreground focus:border-ring focus:outline-none focus:ring-1 focus:ring-ring/40"
         />
@@ -225,7 +236,7 @@ function PasteForm({ onIngested }: PasteFormProps) {
         className="mt-2 flex w-full items-center justify-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-body-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"
       >
         {ingestMutation.isPending && <Loader2 className="size-3 animate-spin" />}
-        {ingestMutation.isPending ? "Ingesting…" : "Ingest"}
+        {ingestMutation.isPending ? "入库中…" : "入库"}
       </button>
     </div>
   );
@@ -252,7 +263,7 @@ function EntryList({
     return (
       <div className="flex-1 px-3 py-6 text-center text-caption text-muted-foreground">
         <Loader2 className="mx-auto mb-1.5 size-4 animate-spin" />
-        Loading…
+        加载中…
       </div>
     );
   }
@@ -266,15 +277,14 @@ function EntryList({
           color: "var(--color-error)",
         }}
       >
-        Failed to list entries: {error.message}
+        加载失败：{error.message}
       </div>
     );
   }
   if (entries.length === 0) {
     return (
       <div className="flex-1 px-3 py-6 text-center text-caption text-muted-foreground">
-        No raw entries yet. Paste something above to start filling your
-        external brain.
+        暂无条目。在上方粘贴内容，开始构建你的外脑。
       </div>
     );
   }
@@ -300,7 +310,7 @@ function EntryList({
                   #{String(entry.id).padStart(5, "0")}
                 </span>
                 <span className="text-muted-foreground/50" style={{ fontSize: 11 }}>
-                  {entry.source}
+                  {translateSource(entry.source)}
                 </span>
               </div>
               <div
@@ -330,12 +340,10 @@ function DetailPlaceholder() {
       <div className="max-w-sm">
         <div className="mb-3 text-2xl opacity-20">📄</div>
         <p className="text-muted-foreground/60" style={{ fontSize: 13 }}>
-          Select an entry on the left, or paste new text to add the first
-          one.
+          选择左侧条目查看，或粘贴新内容入库。
         </p>
         <p className="mt-1.5 text-muted-foreground/40" style={{ fontSize: 11 }}>
-          Files live under <code>~/.clawwiki/raw/</code> and are read-only
-          by contract.
+          文件保存在 <code>~/.clawwiki/raw/</code> 下，入库后不可修改。
         </p>
       </div>
     </div>
@@ -357,7 +365,7 @@ function DetailView({ id }: { id: number }) {
     return (
       <div className="flex flex-1 items-center justify-center text-caption text-muted-foreground">
         <Loader2 className="mr-2 size-4 animate-spin" />
-        Loading…
+        加载中…
       </div>
     );
   }
@@ -371,7 +379,7 @@ function DetailView({ id }: { id: number }) {
           color: "var(--color-error)",
         }}
       >
-        Failed to load entry #{id}: {detailQuery.error.message}
+        加载条目 #{id} 失败：{detailQuery.error.message}
       </div>
     );
   }
@@ -396,7 +404,7 @@ function DetailView({ id }: { id: number }) {
                 #{String(entry.id).padStart(5, "0")}
               </span>
               <span>
-                {entry.source}
+                {translateSource(entry.source)}
               </span>
             </div>
             <h2
@@ -408,7 +416,7 @@ function DetailView({ id }: { id: number }) {
             <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-muted-foreground/40" style={{ fontSize: 11 }}>
               <span>{entry.filename}</span>
               <span>{entry.ingested_at}</span>
-              <span>{entry.byte_size} bytes</span>
+              <span>{entry.byte_size} 字节</span>
             </div>
             {entry.source_url && (
               <a
@@ -427,13 +435,13 @@ function DetailView({ id }: { id: number }) {
             className="flex shrink-0 items-center gap-1 rounded-md border border-border bg-background px-2 py-1 text-caption text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
           >
             {copied ? <Check className="size-3" /> : <Copy className="size-3" />}
-            {copied ? "Copied" : "Copy body"}
+            {copied ? "已复制" : "复制内容"}
           </button>
         </div>
       </div>
 
       {/* Body */}
-      <pre className="flex-1 overflow-auto whitespace-pre-wrap px-6 py-5 font-mono text-foreground/90" style={{ fontSize: 13, lineHeight: 1.6 }}>
+      <pre className="flex-1 overflow-auto whitespace-pre-wrap px-6 py-5 font-mono text-foreground/90" style={{ fontSize: 14, lineHeight: 1.6 }}>
         {body}
       </pre>
     </div>

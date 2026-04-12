@@ -53,6 +53,8 @@ import {
   SlashCommandPalette,
   type SlashCommand,
 } from "./SlashCommandPalette";
+import { fetchJson } from "@/lib/desktop/transport";
+import { ingestRawEntry } from "@/features/ingest/persist";
 
 /* ─── Attachment helpers ─────────────────────────────────────────── */
 
@@ -369,7 +371,15 @@ export function Composer({
     return () => document.removeEventListener("mousedown", handler);
   }, [showPermissionMenu]);
 
-  const handleSend = useCallback(() => {
+  /** Clear the composer input, attachments, and reset textarea height. */
+  const resetComposer = useCallback(() => {
+    setValue("");
+    setAttachments([]);
+    setUploadError(null);
+    if (textareaRef.current) textareaRef.current.style.height = "auto";
+  }, [textareaRef]);
+
+  const handleSend = useCallback(async () => {
     const trimmed = value.trim();
     // Allow sending if there's text OR at least one attachment.
     if ((!trimmed && attachments.length === 0) || isBusy) return;
@@ -402,62 +412,62 @@ export function Composer({
     if (urlMatch) {
       const detectedUrl = urlMatch[0];
 
-      // WeChat links blocked by anti-scraping
+      // WeChat links blocked by anti-scraping — clear input and send guidance immediately
       if (detectedUrl.includes("mp.weixin.qq.com") || detectedUrl.includes("weixin.qq.com")) {
-        void onSend("用户发送了一个微信公众号链接，但由于微信反爬机制无法直接抓取。请告诉用户：1. 在微信中将文章转发给 ClawBot 自动入库；2. 或手动复制文章内容粘贴到输入框。不要给出代码示例。");
-        setValue("");
-        setAttachments([]);
-        setUploadError(null);
-        if (textareaRef.current) textareaRef.current.style.height = "auto";
+        resetComposer();
+        await onSend("用户发送了一个微信公众号链接，但由于微信反爬机制无法直接抓取。请告诉用户：1. 在微信中将文章转发给 ClawBot 自动入库；2. 或手动复制文章内容粘贴到输入框。不要给出代码示例。");
         return;
       }
 
-      // Non-WeChat URL: fetch → ingest → send content to AI
-      setValue("");
-      setAttachments([]);
-      setUploadError(null);
-      if (textareaRef.current) textareaRef.current.style.height = "auto";
+      // Non-WeChat URL: clear input first so the user sees responsiveness,
+      // then await the fetch → ingest → onSend pipeline sequentially.
+      resetComposer();
 
-      void (async () => {
-        try {
-          const { fetchJson: fj } = await import("@/lib/desktop/transport");
-          const preview = await fj<{ title: string; body: string; source_url: string }>("/api/wiki/fetch", {
+      try {
+        console.log("[composer] fetching URL:", detectedUrl);
+        const preview = await fetchJson<{ title: string; body: string; source_url: string }>(
+          "/api/wiki/fetch",
+          {
             method: "POST",
             body: JSON.stringify({ url: detectedUrl }),
-          });
+          },
+          60_000, // 60s timeout for large pages
+        );
+        console.log("[composer] fetch OK, title:", preview.title, "body length:", preview.body.length);
 
-          // Check if content is valid (not a CAPTCHA page)
-          if (preview.body.length < 200 || preview.body.includes("环境异常") || preview.body.includes("完成验证")) {
-            void onSend(`用户想将链接 ${detectedUrl} 的内容入库到知识库，但抓取到的内容被反爬拦截。请告诉用户：去 Raw Library 页面，选择 URL 标签，粘贴链接后点击 Ingest 入库；或手动复制文章内容粘贴到输入框。不要给出代码示例。`);
-            return;
-          }
-
-          // Ingest to Raw Library
-          try {
-            const { ingestRawEntry } = await import("@/features/ingest/persist");
-            await ingestRawEntry({ source: "url", title: preview.title || detectedUrl, body: preview.body });
-          } catch { /* non-fatal */ }
-
-          // Send fetched content + user's question to AI
-          const enriched = `以下是从 ${detectedUrl} 抓取的文章内容（已自动入库到知识库）：\n\n标题：${preview.title}\n\n${preview.body.slice(0, 8000)}\n\n---\n\n用户的消息：${finalMessage}`;
-          void onSend(enriched);
-        } catch (err) {
-          console.warn("[composer] URL fetch failed:", err);
-          // Don't send raw URL — AI will just say "I can't access links"
-          void onSend(`用户想将链接 ${detectedUrl} 的内容入库到知识库，但系统自动抓取失败。请告诉用户：去 Raw Library 页面，选择 URL 标签，粘贴链接后点击 Ingest 入库。不要给出代码示例。`);
+        // Check if content is valid (not a CAPTCHA page)
+        if (preview.body.length < 200 || preview.body.includes("环境异常") || preview.body.includes("完成验证")) {
+          await onSend(`用户想将链接 ${detectedUrl} 的内容入库到知识库，但抓取到的内容被反爬拦截。请告诉用户：去 Raw Library 页面，选择 URL 标签，粘贴链接后点击 Ingest 入库；或手动复制文章内容粘贴到输入框。不要给出代码示例。`);
+          return;
         }
-      })();
+
+        // Ingest to Raw Library (non-fatal — don't block AI message on ingest failure)
+        try {
+          await ingestRawEntry({
+            source: "url",
+            title: preview.title || detectedUrl,
+            body: preview.body,
+            source_url: detectedUrl,
+          });
+        } catch (ingestErr) {
+          console.warn("[composer] Raw Library ingest failed (non-fatal):", ingestErr);
+        }
+
+        // Send fetched content to AI with clear instruction
+        const enriched = `[系统：用户发送了一个链接，系统已自动抓取内容并入库到 Raw Library。请基于以下抓取内容回答用户，确认入库成功，并简要总结文章要点。不要说"无法访问链接"。]\n\n标题：${preview.title}\n来源：${detectedUrl}\n\n${preview.body.slice(0, 6000)}\n\n---\n用户原始消息：${finalMessage}`;
+        await onSend(enriched);
+      } catch (err) {
+        console.warn("[composer] URL fetch failed:", err);
+        // Fetch failed — guide user to Raw Library page instead
+        await onSend(`用户想将链接 ${detectedUrl} 的内容入库到知识库，但系统自动抓取失败。请告诉用户：去 Raw Library 页面，选择 URL 标签，粘贴链接后点击 Ingest 入库。不要给出代码示例。`);
+      }
       return;
     }
 
-    void onSend(finalMessage);
-    setValue("");
-    setAttachments([]);
-    setUploadError(null);
-    if (textareaRef.current) {
-      textareaRef.current.style.height = "auto";
-    }
-  }, [value, attachments, isBusy, onSend, textareaRef]);
+    // Normal (non-URL) message path
+    resetComposer();
+    await onSend(finalMessage);
+  }, [value, attachments, isBusy, onSend, textareaRef, resetComposer]);
 
   const handleStop = useCallback(() => {
     onStop?.();
@@ -494,7 +504,7 @@ export function Composer({
     if (e.key === "Enter" && !e.shiftKey) {
       if (showSlashPalette) return; // palette handles Enter via document listener
       e.preventDefault();
-      handleSend();
+      void handleSend();
     }
 
     // Clear on Escape
@@ -711,7 +721,7 @@ export function Composer({
                   ? "bg-primary shadow-sm hover:shadow-md hover:scale-105 active:scale-95"
                   : "bg-primary/40 pointer-events-none",
               )}
-              onClick={handleSend}
+              onClick={() => void handleSend()}
               disabled={!value.trim() && attachments.length === 0}
               aria-label="发送"
             >

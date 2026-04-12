@@ -432,6 +432,8 @@ pub fn app(state: AppState) -> Router {
         .route("/api/desktop/markitdown/convert", post(markitdown_convert_handler))
         // ── WeChat article fetch (Playwright) ──
         .route("/api/desktop/wechat-fetch", post(wechat_fetch_handler))
+        // ── Auto-install Python dependencies ──
+        .route("/api/desktop/python-deps/install", post(install_python_deps_handler))
         // ── Storage migration ──
         .route("/api/desktop/storage/migrate", post(migrate_storage_handler))
         // ── Multi-provider registry (restored for ClawWiki Cloud gateway) ──
@@ -3673,4 +3675,53 @@ async fn wechat_fetch_handler(
         "source": result.source,
         "raw_id": raw_id,
     })))
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Python dependency auto-installer
+// ═══════════════════════════════════════════════════════════════
+
+#[derive(Deserialize)]
+struct InstallDepsRequest {
+    #[serde(default = "default_pkg_all")]
+    package: String,
+}
+fn default_pkg_all() -> String { "all".to_string() }
+
+async fn install_python_deps_handler(
+    Json(body): Json<InstallDepsRequest>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let mut steps: Vec<serde_json::Value> = Vec::new();
+    let mut all_ok = true;
+
+    let py = tokio::process::Command::new("python").args(["--version"]).output().await;
+    match py {
+        Ok(o) if o.status.success() => {
+            steps.push(serde_json::json!({"step":"python","ok":true,"output":String::from_utf8_lossy(&o.stdout).trim().to_string()}));
+        }
+        _ => {
+            steps.push(serde_json::json!({"step":"python","ok":false,"output":"Python not found"}));
+            return Ok(Json(serde_json::json!({"ok":false,"steps":steps})));
+        }
+    }
+
+    if body.package == "markitdown" || body.package == "all" {
+        let o = tokio::process::Command::new("python").args(["-m","pip","install","--upgrade","markitdown[all]"]).output().await
+            .map_err(|e|(StatusCode::INTERNAL_SERVER_ERROR,Json(ErrorResponse{error:format!("{e}")})))?;
+        let ok = o.status.success();
+        if !ok { all_ok = false; }
+        steps.push(serde_json::json!({"step":"markitdown","ok":ok,"output":format!("{}\n{}",String::from_utf8_lossy(&o.stdout),String::from_utf8_lossy(&o.stderr)).trim().to_string()}));
+    }
+
+    if body.package == "playwright" || body.package == "all" {
+        let o1 = tokio::process::Command::new("python").args(["-m","pip","install","--upgrade","playwright"]).output().await
+            .map_err(|e|(StatusCode::INTERNAL_SERVER_ERROR,Json(ErrorResponse{error:format!("{e}")})))?;
+        let o2 = tokio::process::Command::new("python").args(["-m","playwright","install","chromium"]).output().await
+            .map_err(|e|(StatusCode::INTERNAL_SERVER_ERROR,Json(ErrorResponse{error:format!("{e}")})))?;
+        let ok = o1.status.success() && o2.status.success();
+        if !ok { all_ok = false; }
+        steps.push(serde_json::json!({"step":"playwright","ok":ok}));
+    }
+
+    Ok(Json(serde_json::json!({"ok":all_ok,"steps":steps})))
 }

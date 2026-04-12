@@ -181,9 +181,6 @@ interface MarkItDownCheckResult {
 }
 
 function MarkItDownSection() {
-  const [showInstallHint, setShowInstallHint] = useState(false);
-  const [copied, setCopied] = useState(false);
-
   const checkQuery = useQuery<MarkItDownCheckResult>({
     queryKey: ["markitdown", "check"],
     queryFn: () => fetchJson<MarkItDownCheckResult>("/api/desktop/markitdown/check"),
@@ -193,16 +190,6 @@ function MarkItDownSection() {
 
   const data = checkQuery.data;
   const isLoading = checkQuery.isLoading;
-
-  const handleCopyInstallCmd = async () => {
-    try {
-      await navigator.clipboard.writeText("pip install 'markitdown[all]'");
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    } catch {
-      // clipboard API may be unavailable
-    }
-  };
 
   return (
     <SettingGroup
@@ -236,52 +223,9 @@ function MarkItDownSection() {
         </div>
       </SettingRow>
 
-      {/* Install hint */}
+      {/* Auto-install */}
       {!isLoading && !data?.available && (
-        <div className="space-y-2">
-          <div className="flex items-center justify-between">
-            <div className="flex-1">
-              <div className="text-body-sm text-foreground">一键安装</div>
-              <div className="text-caption text-muted-foreground">
-                在终端中运行以下命令安装 MarkItDown
-              </div>
-            </div>
-            <Button
-              variant="outline"
-              size="sm"
-              className="text-body-sm"
-              onClick={() => setShowInstallHint((v) => !v)}
-            >
-              <Terminal className="mr-1.5 size-3.5" />
-              {showInstallHint ? "收起" : "安装指引"}
-            </Button>
-          </div>
-
-          {showInstallHint && (
-            <div className="rounded-md border border-border bg-muted/40 px-3 py-2">
-              <div className="flex items-center gap-1.5">
-                <code className="flex-1 text-caption text-muted-foreground">
-                  pip install &apos;markitdown[all]&apos;
-                </code>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="size-7 shrink-0"
-                  onClick={handleCopyInstallCmd}
-                >
-                  {copied ? (
-                    <Check className="size-3.5 text-green-500" />
-                  ) : (
-                    <Copy className="size-3.5" />
-                  )}
-                </Button>
-              </div>
-              <p className="mt-1.5 text-caption text-muted-foreground">
-                安装完成后请点击右上角刷新按钮重新检测。
-              </p>
-            </div>
-          )}
-        </div>
+        <AutoInstallSection onInstalled={() => checkQuery.refetch()} />
       )}
 
       {/* Supported formats */}
@@ -303,6 +247,102 @@ function MarkItDownSection() {
         </SettingRow>
       )}
     </SettingGroup>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/*  Auto-install Python dependencies                                    */
+/* ------------------------------------------------------------------ */
+
+interface InstallStep {
+  step: string;
+  ok: boolean;
+  output?: string;
+}
+
+function AutoInstallSection({ onInstalled }: { onInstalled: () => void }) {
+  const [installing, setInstalling] = useState(false);
+  const [steps, setSteps] = useState<InstallStep[]>([]);
+  const [error, setError] = useState<string | null>(null);
+
+  const handleInstall = async () => {
+    setInstalling(true);
+    setError(null);
+    setSteps([]);
+    try {
+      const result = await fetchJson<{ ok: boolean; steps: InstallStep[] }>(
+        "/api/desktop/python-deps/install",
+        { method: "POST", body: JSON.stringify({ package: "all" }) },
+        300_000, // 5 min timeout for pip install
+      );
+      setSteps(result.steps);
+      if (result.ok) {
+        onInstalled();
+      } else {
+        setError("部分组件安装失败，请查看下方日志");
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setInstalling(false);
+    }
+  };
+
+  const stepLabels: Record<string, string> = {
+    python: "Python 环境",
+    markitdown: "MarkItDown",
+    playwright: "Playwright + Chromium",
+  };
+
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center justify-between">
+        <div className="flex-1">
+          <div className="text-body-sm text-foreground">自动安装</div>
+          <div className="text-caption text-muted-foreground">
+            一键安装 MarkItDown + Playwright（需要 Python 3.10+）
+          </div>
+        </div>
+        <Button
+          variant="outline"
+          size="sm"
+          className="text-body-sm"
+          disabled={installing}
+          onClick={handleInstall}
+        >
+          {installing ? (
+            <><Loader2 className="mr-1.5 size-3.5 animate-spin" />安装中...</>
+          ) : (
+            <><Terminal className="mr-1.5 size-3.5" />一键安装</>
+          )}
+        </Button>
+      </div>
+
+      {/* Install log */}
+      {steps.length > 0 && (
+        <div className="space-y-1.5 rounded-md border border-border bg-muted/30 px-3 py-2">
+          {steps.map((s) => (
+            <div key={s.step} className="flex items-center gap-2 text-caption">
+              {s.ok ? (
+                <CheckCircle2 className="size-3.5 shrink-0 text-green-500" />
+              ) : (
+                <XCircle className="size-3.5 shrink-0 text-red-500" />
+              )}
+              <span className={s.ok ? "text-foreground" : "text-red-500"}>
+                {stepLabels[s.step] ?? s.step}
+              </span>
+              {s.ok && <span className="text-muted-foreground/50">✓</span>}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {error && (
+        <div className="rounded-md border border-red-500/30 bg-red-500/5 px-3 py-2 text-caption text-red-500">
+          {error}
+        </div>
+      )}
+    </div>
   );
 }
 

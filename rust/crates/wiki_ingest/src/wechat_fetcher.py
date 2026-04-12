@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 """
 WeChat Article Fetcher — uses Playwright to render mp.weixin.qq.com pages
 and extract the article content as Markdown.
@@ -131,6 +132,11 @@ def get_chrome_user_data_dir() -> str:
 
 
 def main():
+    # Force UTF-8 on Windows (prevents GBK encoding issues)
+    if sys.platform == "win32":
+        sys.stdout.reconfigure(encoding="utf-8")
+        sys.stdin.reconfigure(encoding="utf-8")
+
     try:
         raw = sys.stdin.read()
         req = json.loads(raw)

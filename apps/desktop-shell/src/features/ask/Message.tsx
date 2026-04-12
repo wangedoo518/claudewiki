@@ -9,16 +9,7 @@
  * wires it to the ask_runtime stream.
  */
 
-import { memo, useState, useMemo, useRef, useEffect } from "react";
-
-/** Timestamp when the MessageList module first loaded. Messages rendered
- *  within 3s of this are "old" (page load / conversation switch) and
- *  skip the sentence reveal animation. Messages arriving later are "new". */
-let moduleLoadTime = Date.now();
-/** Reset on HMR to avoid stale timestamps */
-if (import.meta.hot) {
-  import.meta.hot.accept(() => { moduleLoadTime = Date.now(); });
-}
+import { memo, useState, useMemo } from "react";
 import ReactMarkdown from "react-markdown";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import { oneDark } from "react-syntax-highlighter/dist/esm/styles/prism";
@@ -258,31 +249,6 @@ function UserMessage({ content }: { content: string }) {
 function AssistantMessage({ content, usage }: { content: string; usage?: { inputTokens: number; outputTokens: number } }) {
   const [copied, setCopied] = useState(false);
 
-  // Sentence-by-sentence reveal for NEW messages only.
-  // "New" = rendered more than 3s after module load (not a page refresh).
-  const mountTimeRef = useRef(Date.now());
-  const isNew = mountTimeRef.current - moduleLoadTime > 3000;
-  const sentences = useMemo(() => {
-    if (!isNew) return null;
-    // Split by Chinese/English sentence endings, keeping delimiters
-    return content.split(/(?<=[。！？.!?\n])/);
-  }, [content, isNew]);
-
-  const [visibleCount, setVisibleCount] = useState(isNew ? 1 : (sentences?.length ?? 0));
-
-  useEffect(() => {
-    if (!sentences || visibleCount >= sentences.length) return;
-    const timer = setTimeout(() => {
-      setVisibleCount((c) => Math.min(c + 1, sentences.length));
-    }, 80); // ~80ms per sentence
-    return () => clearTimeout(timer);
-  }, [visibleCount, sentences]);
-
-  const displayContent = sentences
-    ? sentences.slice(0, visibleCount).join("")
-    : content;
-  const isRevealing = sentences ? visibleCount < sentences.length : false;
-
   const handleCopy = () => {
     void navigator.clipboard.writeText(content);
     setCopied(true);
@@ -311,10 +277,7 @@ function AssistantMessage({ content, usage }: { content: string; usage?: { input
 
         {/* Message body — 15px, generous line height */}
         <div className="text-[15px] leading-[1.8] text-foreground">
-          <MarkdownContent content={displayContent} />
-          {isRevealing && (
-            <span className="ask-blink-cursor ml-0.5 inline-block h-[1.1em] w-[2px] translate-y-[2px] bg-foreground/70" />
-          )}
+          <MarkdownContent content={content} />
         </div>
 
         {/* Action row: Copy + output tokens */}

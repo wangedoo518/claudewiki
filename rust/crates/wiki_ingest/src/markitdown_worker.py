@@ -18,6 +18,11 @@ import os
 
 
 def main():
+    # Force UTF-8 on Windows
+    if sys.platform == "win32":
+        sys.stdout.reconfigure(encoding="utf-8")
+        sys.stdin.reconfigure(encoding="utf-8")
+
     try:
         raw = sys.stdin.read()
         req = json.loads(raw)

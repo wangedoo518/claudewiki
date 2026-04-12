@@ -1,42 +1,59 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-WeChat Article Fetcher — uses Playwright to render mp.weixin.qq.com pages
-and extract the article content as Markdown.
+Web Article Fetcher — Playwright + defuddle two-stage pipeline.
 
-Bypasses WeChat's anti-scraping by using a real browser with the user's
-existing Chrome profile (already logged into WeChat).
+Stage 1: Playwright renders the page in a real browser (bypasses JS anti-scraping)
+Stage 2: defuddle (Node.js) extracts article content as clean Markdown
 
-Request (stdin JSON):
-  {"url": "https://mp.weixin.qq.com/s/xxx"}
+Falls back to CSS selector extraction if defuddle is unavailable.
 
-Response (stdout JSON):
-  {"ok": true, "title": "...", "author": "...", "publish_time": "...", "markdown": "..."}
-  {"ok": false, "error": "..."}
-
-Install: pip install playwright && python -m playwright install chromium
+stdin:  {"url": "https://mp.weixin.qq.com/s/xxx"}
+stdout: {"ok": true, "title": "...", "author": "...", "markdown": "..."}
+error:  {"ok": false, "error": "..."}
 """
 
 import json
 import sys
 import os
 import re
+import subprocess
+import random
 
 
-def extract_article(page) -> dict:
-    """Extract article content from a rendered WeChat page."""
+def defuddle_extract(html: str, url: str) -> dict | None:
+    """Try defuddle Node.js worker for content extraction."""
+    worker = os.path.join(os.path.dirname(os.path.abspath(__file__)), "defuddle_worker.js")
+    if not os.path.exists(worker):
+        return None
 
-    # Wait for the main content to load
+    # Check node_modules exists
+    node_modules = os.path.join(os.path.dirname(worker), "node_modules")
+    if not os.path.exists(node_modules):
+        return None
+
     try:
-        page.wait_for_selector(".rich_media_content", timeout=15000)
-    except Exception:
-        # Fallback: wait for any article-like content
-        try:
-            page.wait_for_selector("article, .content, #js_content", timeout=10000)
-        except Exception:
-            pass
+        req = json.dumps({"html": html, "url": url}, ensure_ascii=False)
+        result = subprocess.run(
+            ["node", worker],
+            input=req,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            encoding="utf-8",
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            data = json.loads(result.stdout)
+            if data.get("ok") and data.get("markdown") and len(data["markdown"]) > 50:
+                return data
+    except Exception as e:
+        print(f"[wechat_fetcher] defuddle failed: {e}", file=sys.stderr)
 
-    # Extract title
+    return None
+
+
+def css_selector_extract(page) -> dict:
+    """Fallback: extract using WeChat-specific CSS selectors."""
     title = ""
     for sel in [".rich_media_title", "#activity-name", "h1"]:
         el = page.query_selector(sel)
@@ -47,7 +64,6 @@ def extract_article(page) -> dict:
     if not title:
         title = page.title() or "Untitled"
 
-    # Extract author
     author = ""
     for sel in ["#js_name", ".profile_nickname", ".rich_media_meta_nickname"]:
         el = page.query_selector(sel)
@@ -56,7 +72,6 @@ def extract_article(page) -> dict:
             if author:
                 break
 
-    # Extract publish time
     publish_time = ""
     for sel in ["#publish_time", ".rich_media_meta_text"]:
         el = page.query_selector(sel)
@@ -65,7 +80,6 @@ def extract_article(page) -> dict:
             if publish_time:
                 break
 
-    # Extract main content as HTML then convert to markdown
     content_html = ""
     for sel in [".rich_media_content", "#js_content", "article", ".content"]:
         el = page.query_selector(sel)
@@ -75,39 +89,21 @@ def extract_article(page) -> dict:
                 break
 
     if not content_html or len(content_html) < 50:
-        # Last resort: get full page text
-        content_html = page.query_selector("body").inner_text() if page.query_selector("body") else ""
-        markdown = content_html
+        body = page.query_selector("body")
+        markdown = body.inner_text() if body else ""
     else:
-        markdown = html_to_markdown(content_html)
+        markdown = basic_html_to_markdown(content_html)
 
     return {
         "title": title,
         "author": author,
-        "publish_time": publish_time,
+        "published": publish_time,
         "markdown": markdown,
     }
 
 
-def html_to_markdown(html: str) -> str:
-    """Convert HTML to Markdown. Uses markitdown if available, else basic regex."""
-    try:
-        from markitdown import MarkItDown
-        import tempfile
-        # Write HTML to temp file and convert
-        with tempfile.NamedTemporaryFile(suffix=".html", mode="w", encoding="utf-8", delete=False) as f:
-            f.write(html)
-            tmp_path = f.name
-        try:
-            md = MarkItDown()
-            result = md.convert(tmp_path)
-            return result.text_content
-        finally:
-            os.unlink(tmp_path)
-    except ImportError:
-        pass
-
-    # Fallback: basic HTML → text conversion
+def basic_html_to_markdown(html: str) -> str:
+    """Basic HTML → Markdown fallback (regex-based)."""
     text = re.sub(r"<br\s*/?>", "\n", html)
     text = re.sub(r"<p[^>]*>", "\n\n", text)
     text = re.sub(r"</p>", "", text)
@@ -121,18 +117,7 @@ def html_to_markdown(html: str) -> str:
     return text.strip()
 
 
-def get_chrome_user_data_dir() -> str:
-    """Find the user's Chrome profile directory for cookie reuse."""
-    if sys.platform == "win32":
-        return os.path.join(os.environ.get("LOCALAPPDATA", ""), "Google", "Chrome", "User Data")
-    elif sys.platform == "darwin":
-        return os.path.expanduser("~/Library/Application Support/Google/Chrome")
-    else:
-        return os.path.expanduser("~/.config/google-chrome")
-
-
 def main():
-    # Force UTF-8 on Windows (prevents GBK encoding issues)
     if sys.platform == "win32":
         sys.stdout.reconfigure(encoding="utf-8")
         sys.stdin.reconfigure(encoding="utf-8")
@@ -143,53 +128,33 @@ def main():
         url = req.get("url", "").strip()
 
         if not url:
-            json.dump({"ok": False, "error": "URL is empty"}, sys.stdout)
-            return
-
-        if "mp.weixin.qq.com" not in url and "weixin.qq.com" not in url:
-            json.dump({"ok": False, "error": "Not a WeChat URL"}, sys.stdout)
+            json.dump({"ok": False, "error": "URL is empty"}, sys.stdout, ensure_ascii=False)
             return
 
         try:
             from playwright.sync_api import sync_playwright
         except ImportError:
-            json.dump({
-                "ok": False,
-                "error": "Playwright not installed. Run: pip install playwright && python -m playwright install chromium"
-            }, sys.stdout)
+            json.dump({"ok": False, "error": "Playwright 未安装"}, sys.stdout, ensure_ascii=False)
             return
 
         with sync_playwright() as p:
-            # Use Chromium with stealth settings
             browser = p.chromium.launch(
                 headless=True,
-                args=[
-                    "--disable-blink-features=AutomationControlled",
-                    "--no-sandbox",
-                ]
+                args=["--disable-blink-features=AutomationControlled", "--no-sandbox"]
             )
-
             context = browser.new_context(
                 user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
                 viewport={"width": 1280, "height": 900},
                 locale="zh-CN",
             )
-
-            # Bypass webdriver detection
-            context.add_init_script("""
-                Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-            """)
-
+            context.add_init_script("Object.defineProperty(navigator, 'webdriver', { get: () => undefined });")
             page = context.new_page()
-
-            # Set headers for stealth
             page.set_extra_http_headers({
                 "Referer": "https://mp.weixin.qq.com/",
                 "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
             })
 
-            # Navigate with retry (WeChat pages sometimes need a second load)
-            import random
+            # Navigate with retry
             loaded = False
             for attempt in range(2):
                 try:
@@ -204,42 +169,41 @@ def main():
                     except Exception:
                         if attempt == 0:
                             page.wait_for_timeout(random.randint(1000, 3000))
-                            continue
 
             if not loaded:
-                json.dump({"ok": False, "error": "页面加载失败，请稍后重试"}, sys.stdout, ensure_ascii=False)
+                json.dump({"ok": False, "error": "页面加载失败"}, sys.stdout, ensure_ascii=False)
                 browser.close()
                 return
 
-            # Random delay to avoid detection patterns
             page.wait_for_timeout(random.randint(1500, 3000))
 
-            # Check for CAPTCHA / verification page
+            # Check for CAPTCHA
             page_text = page.inner_text("body")
             if "环境异常" in page_text or "完成验证" in page_text:
-                json.dump({
-                    "ok": False,
-                    "error": "WeChat anti-scraping triggered. Please open the URL in your browser first to pass verification."
-                }, sys.stdout)
+                json.dump({"ok": False, "error": "微信反爬验证触发"}, sys.stdout, ensure_ascii=False)
                 browser.close()
                 return
 
-            # Extract article
-            article = extract_article(page)
+            # Stage 2: Extract content
+            # Try defuddle first (best quality)
+            full_html = page.content()
+            article = defuddle_extract(full_html, url)
+
+            if not article:
+                # Fallback: CSS selector extraction
+                article = css_selector_extract(page)
+
             browser.close()
 
-            if not article["markdown"] or len(article["markdown"]) < 50:
-                json.dump({
-                    "ok": False,
-                    "error": "Article content too short or extraction failed"
-                }, sys.stdout)
+            if not article.get("markdown") or len(article.get("markdown", "")) < 50:
+                json.dump({"ok": False, "error": "文章内容提取失败或内容过短"}, sys.stdout, ensure_ascii=False)
                 return
 
             json.dump({
                 "ok": True,
-                "title": article["title"],
-                "author": article["author"],
-                "publish_time": article["publish_time"],
+                "title": article.get("title", ""),
+                "author": article.get("author", ""),
+                "publish_time": article.get("published", ""),
                 "markdown": article["markdown"],
             }, sys.stdout, ensure_ascii=False)
 

@@ -61,12 +61,8 @@ pub async fn check_environment() -> Result<String, String> {
 }
 
 /// Fetch a WeChat article via Playwright and return as IngestResult.
+/// Fetch any URL via Playwright + defuddle. Works for WeChat and all other sites.
 pub async fn fetch_wechat_article(url: &str) -> Result<IngestResult, crate::IngestError> {
-    if !url.contains("weixin.qq.com") {
-        return Err(crate::IngestError::Invalid(
-            "Not a WeChat URL".to_string(),
-        ));
-    }
 
     let worker = worker_script_path();
     let request = serde_json::json!({ "url": url });

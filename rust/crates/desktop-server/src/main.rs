@@ -298,5 +298,16 @@ async fn auto_install_python_deps() {
         eprintln!("[auto-install] playwright done");
     }
 
+    // defuddle (Node.js content extraction)
+    let defuddle_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../wiki_ingest/src");
+    if !defuddle_dir.join("node_modules/defuddle").exists() {
+        eprintln!("[auto-install] installing defuddle (npm)...");
+        let _ = tokio::process::Command::new("npm")
+            .args(["install", "--prefix", &defuddle_dir.to_string_lossy()])
+            .output().await;
+        eprintln!("[auto-install] defuddle done");
+    }
+
     eprintln!("[auto-install] all deps ready");
 }

@@ -1005,12 +1005,92 @@ async fn append_message(
     Path(id): Path<String>,
     Json(payload): Json<AppendDesktopMessageRequest>,
 ) -> ApiResult<Json<AppendDesktopMessageResponse>> {
+    // Intercept WeChat URLs: fetch via Playwright, ingest, and replace message
+    let final_message = intercept_url(&payload.message).await
+        .unwrap_or_else(|| payload.message.clone());
+
     let session = state
         .desktop()
-        .append_user_message(&id, payload.message)
+        .append_user_message(&id, final_message)
         .await
         .map_err(into_api_error)?;
     Ok(Json(AppendDesktopMessageResponse { session }))
+}
+
+/// If the message contains a URL, try to fetch and ingest it.
+/// WeChat URLs → Playwright + defuddle; other URLs → simple HTTP fetch.
+/// Returns None if no URL found or all fetch methods fail.
+async fn intercept_url(message: &str) -> Option<String> {
+    // Quick check: does the message contain any URL?
+    let url = message.split_whitespace()
+        .find(|w| w.starts_with("http://") || w.starts_with("https://"))?;
+    let url = url.trim_end_matches(|c: char| !c.is_ascii() || matches!(c, '.' | ',' | ')' | ']'));
+
+    eprintln!("[intercept_url] URL detected: {url}");
+
+    let is_wechat = url.contains("weixin.qq.com");
+
+    // Strategy 1: For non-WeChat URLs, try simple HTTP fetch first (fast)
+    if !is_wechat {
+        match wiki_ingest::url::fetch_and_body(url).await {
+            Ok(result) if result.body.len() > 200
+                && !result.body.contains("环境异常")
+                && !result.body.contains("完成验证") =>
+            {
+                eprintln!("[intercept_url] simple fetch OK: title={}", result.title);
+                // Ingest
+                if let Ok(paths) = resolve_wiki_root_for_handler() {
+                    let fm = wiki_store::RawFrontmatter::for_paste(&result.source, result.source_url.clone());
+                    if let Ok(entry) = wiki_store::write_raw_entry(&paths, &result.source, &result.title, &result.body, &fm) {
+                        let _ = wiki_store::append_new_raw_task(&paths, &entry, "url-fetch");
+                        eprintln!("[intercept_url] ingested as raw #{}", entry.id);
+                    }
+                }
+                return Some(format!(
+                    "[系统：用户发送了链接，已抓取内容并入库。请基于以下内容回答用户。]\n\n\
+                     标题：{}\n\n{}\n\n---\n用户原始消息：{}",
+                    result.title, &result.body[..result.body.len().min(6000)], message
+                ));
+            }
+            _ => {
+                eprintln!("[intercept_url] simple fetch failed or content too short, trying Playwright...");
+            }
+        }
+    }
+
+    // Strategy 2: Playwright fetch (for WeChat or failed simple fetch)
+    eprintln!("[intercept_url] Playwright fetch: {url}");
+    match wiki_ingest::wechat_fetch::fetch_wechat_article(url).await {
+        Ok(result) if result.body.len() > 100 => {
+            eprintln!("[intercept_url] Playwright fetch OK: title={}", result.title);
+
+            // Ingest to raw library
+            if let Ok(paths) = resolve_wiki_root_for_handler() {
+                let fm = wiki_store::RawFrontmatter::for_paste(&result.source, result.source_url.clone());
+                if let Ok(entry) = wiki_store::write_raw_entry(&paths, &result.source, &result.title, &result.body, &fm) {
+                    let _ = wiki_store::append_new_raw_task(&paths, &entry, "wechat-fetch");
+                    eprintln!("[append_message] ingested as raw #{}", entry.id);
+                }
+            }
+
+            // Return enriched message for LLM
+            Some(format!(
+                "[系统：用户发送了微信文章链接，已通过 Playwright 抓取并入库。请基于以下内容回答用户。]\n\n\
+                 标题：{}\n\n{}\n\n---\n用户原始消息：{}",
+                result.title,
+                &result.body[..result.body.len().min(6000)],
+                message
+            ))
+        }
+        Ok(_) => {
+            eprintln!("[append_message] WeChat fetch returned too little content");
+            None
+        }
+        Err(e) => {
+            eprintln!("[append_message] WeChat fetch failed: {e}");
+            None
+        }
+    }
 }
 
 async fn stream_session_events(

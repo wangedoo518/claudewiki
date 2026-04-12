@@ -1,0 +1,8 @@
+{
+  "private": true,
+  "description": "defuddle content extraction worker for ClawWiki",
+  "dependencies": {
+    "defuddle": "^0.16.0",
+    "linkedom": "^0.18.0"
+  }
+}

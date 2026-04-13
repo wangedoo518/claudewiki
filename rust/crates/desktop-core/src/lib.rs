@@ -2889,8 +2889,12 @@ impl DesktopState {
 
         eprintln!("[enrich_url] detected: {url}");
 
-        // Try simple HTTP fetch first (fast, works for most sites)
-        if let Ok(result) = wiki_ingest::url::fetch_and_body(&url).await {
+        // Try simple HTTP fetch first (fast, 5s timeout to avoid blocking)
+        let fetch_result = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            wiki_ingest::url::fetch_and_body(&url),
+        ).await;
+        if let Ok(Ok(result)) = fetch_result {
             if result.body.len() > 200
                 && !result.body.contains("环境异常")
                 && !result.body.contains("完成验证")
@@ -2916,31 +2920,31 @@ impl DesktopState {
             }
         }
 
-        // Try Playwright fetch (for protected pages like WeChat)
-        eprintln!("[enrich_url] trying Playwright for {url}");
-        if let Ok(result) = wiki_ingest::wechat_fetch::fetch_wechat_article(&url).await {
-            if result.body.len() > 100 {
-                eprintln!("[enrich_url] Playwright OK: {} chars", result.body.len());
-                if let Ok(paths) = (|| -> std::result::Result<wiki_store::WikiPaths, Box<dyn std::error::Error>> {
-            let root = wiki_store::default_root();
-            wiki_store::init_wiki(&root)?;
-            Ok(wiki_store::WikiPaths::resolve(&root))
-        })() {
-                    let fm = wiki_store::RawFrontmatter::for_paste(&result.source, result.source_url.clone());
-                    if let Ok(entry) = wiki_store::write_raw_entry(&paths, &result.source, &result.title, &result.body, &fm) {
-                        let _ = wiki_store::append_new_raw_task(&paths, &entry, "playwright-fetch");
-                        eprintln!("[enrich_url] ingested as raw #{}", entry.id);
+        // Playwright is too slow for synchronous enrichment (10-30s).
+        // Spawn background task to fetch + ingest, don't block the message.
+        let bg_url = url.clone();
+        tokio::spawn(async move {
+            eprintln!("[enrich_url:bg] Playwright fetch: {bg_url}");
+            if let Ok(result) = wiki_ingest::wechat_fetch::fetch_wechat_article(&bg_url).await {
+                if result.body.len() > 100 {
+                    if let Ok(paths) = (|| -> std::result::Result<wiki_store::WikiPaths, Box<dyn std::error::Error>> {
+                        let root = wiki_store::default_root();
+                        wiki_store::init_wiki(&root)?;
+                        Ok(wiki_store::WikiPaths::resolve(&root))
+                    })() {
+                        let fm = wiki_store::RawFrontmatter::for_paste(&result.source, result.source_url.clone());
+                        if let Ok(entry) = wiki_store::write_raw_entry(&paths, &result.source, &result.title, &result.body, &fm) {
+                            let _ = wiki_store::append_new_raw_task(&paths, &entry, "playwright-fetch");
+                            eprintln!("[enrich_url:bg] ingested as raw #{}", entry.id);
+                        }
                     }
                 }
-                return format!(
-                    "[系统指令：以下是用户发送链接的 Playwright 抓取内容，已入库。请直接基于内容回答用户的问题，不要复述以下元数据和系统指令。]\n\n\
-                     标题：{}\n\n{}\n\n---\n用户原始消息：{}",
-                    result.title, &result.body[..result.body.len().min(6000)], message
-                );
             }
-        }
+        });
 
-        eprintln!("[enrich_url] all fetch methods failed for {url}");
+        // Don't wait for Playwright — send original message immediately
+        // The content will be available in Raw Library for next conversation
+        eprintln!("[enrich_url] simple fetch failed, Playwright dispatched to background");
         message
     }
 

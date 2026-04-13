@@ -3307,20 +3307,27 @@ impl DesktopState {
                 // No managed auth credentials available — fall back to the old
                 // synchronous turn executor (no local tool execution).
                 tokio::spawn(async move {
-                    // Use enriched content for LLM (if URL was fetched)
-                    let llm_message = if has_enrichment { enriched.clone() } else { message.clone() };
+                    // Pass original message to turn executor (not enriched).
+                    // Enriched content goes through CLAWWIKI_CONTEXT env var
+                    // so execute_live_turn can inject it into system prompt.
+                    if has_enrichment {
+                        std::env::set_var("CLAWWIKI_URL_CONTEXT", &enriched);
+                    }
                     state
                         .run_background_turn(
                             session_id,
                             session,
                             previous_message_count,
                             DesktopTurnRequest {
-                                message: llm_message,
+                                message: message.clone(),
                                 project_path,
                             },
                             turn_executor,
                         )
                         .await;
+                    if has_enrichment {
+                        std::env::remove_var("CLAWWIKI_URL_CONTEXT");
+                    }
                 });
             }
         }
@@ -4545,6 +4552,13 @@ fn execute_live_turn(session: RuntimeSession, request: DesktopTurnRequest) -> De
             )
         }
     };
+
+    // Inject URL-fetched content into system prompt (ephemeral, not stored in session)
+    if let Ok(url_context) = std::env::var("CLAWWIKI_URL_CONTEXT") {
+        if !url_context.is_empty() {
+            system_prompt.push(url_context);
+        }
+    }
 
     // feat(W9): inject wiki/index.md as context into the system prompt
     // so the LLM can reference the user's external brain when answering

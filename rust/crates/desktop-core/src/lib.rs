@@ -1016,6 +1016,11 @@ struct DesktopDispatchStore {
 struct DesktopTurnRequest {
     message: String,
     project_path: String,
+    /// Enriched URL content (fetched via wiki_ingest) to inject into
+    /// the system prompt for this turn only. Replaces the old global
+    /// `CLAWWIKI_URL_CONTEXT` env var that raced across concurrent
+    /// requests.
+    url_context: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -3308,11 +3313,9 @@ impl DesktopState {
                 // synchronous turn executor (no local tool execution).
                 tokio::spawn(async move {
                     // Pass original message to turn executor (not enriched).
-                    // Enriched content goes through CLAWWIKI_CONTEXT env var
-                    // so execute_live_turn can inject it into system prompt.
-                    if has_enrichment {
-                        std::env::set_var("CLAWWIKI_URL_CONTEXT", &enriched);
-                    }
+                    // Enriched content travels inside the request struct so
+                    // execute_live_turn can inject it into the system prompt
+                    // without racing on a global env var.
                     state
                         .run_background_turn(
                             session_id,
@@ -3321,13 +3324,15 @@ impl DesktopState {
                             DesktopTurnRequest {
                                 message: message.clone(),
                                 project_path,
+                                url_context: if has_enrichment {
+                                    Some(enriched.clone())
+                                } else {
+                                    None
+                                },
                             },
                             turn_executor,
                         )
                         .await;
-                    if has_enrichment {
-                        std::env::remove_var("CLAWWIKI_URL_CONTEXT");
-                    }
                 });
             }
         }
@@ -4553,10 +4558,12 @@ fn execute_live_turn(session: RuntimeSession, request: DesktopTurnRequest) -> De
         }
     };
 
-    // Inject URL-fetched content into system prompt (ephemeral, not stored in session)
-    if let Ok(url_context) = std::env::var("CLAWWIKI_URL_CONTEXT") {
+    // Inject URL-fetched content into system prompt (ephemeral, not stored in session).
+    // The content travels inside the per-turn request struct instead of a global
+    // env var, so concurrent requests never overwrite each other.
+    if let Some(ref url_context) = request.url_context {
         if !url_context.is_empty() {
-            system_prompt.push(url_context);
+            system_prompt.push(url_context.clone());
         }
     }
 

@@ -70,6 +70,23 @@ fn lock_inbox_writes() -> MutexGuard<'static, ()> {
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
+/// Process-global guard that serializes `write_raw_entry` calls.
+/// `next_raw_id()` reads the directory to compute `max(id) + 1`.
+/// Without this guard, two concurrent writers can both observe the
+/// same max id, producing duplicate filenames (TOCTOU race). The
+/// guard covers the entire read-id → write-file critical section.
+///
+/// Poison recovery: same rationale as `INBOX_WRITE_GUARD` — the
+/// on-disk state is always well-defined after a panic.
+static RAW_WRITE_GUARD: OnceLock<Mutex<()>> = OnceLock::new();
+
+fn lock_raw_writes() -> MutexGuard<'static, ()> {
+    RAW_WRITE_GUARD
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 /// Process-global guard that serializes `append_wiki_log` and
 /// `rebuild_wiki_index` calls. Same reasoning as `INBOX_WRITE_GUARD`:
 /// two concurrent appenders can race on read-modify-write (load file,
@@ -692,6 +709,11 @@ pub fn write_raw_entry(
     body: &str,
     frontmatter: &RawFrontmatter,
 ) -> Result<RawEntry> {
+    // Serialize the entire read-id → write-file section so two
+    // concurrent callers (e.g. main thread + tokio::spawn) cannot
+    // observe the same max id from next_raw_id().
+    let _guard = lock_raw_writes();
+
     // Resolve next id and ensure raw/ exists.
     fs::create_dir_all(&paths.raw).map_err(|e| WikiStoreError::io(paths.raw.clone(), e))?;
     let id = next_raw_id(paths)?;
@@ -769,7 +791,11 @@ pub fn read_raw_entry(paths: &WikiPaths, id: u32) -> Result<(RawEntry, String)> 
     Ok((entry, body))
 }
 
-/// Delete a raw entry by id. Removes the .md file from disk.
+/// Delete a raw entry by id. Removes the .md file from disk and
+/// cascades to remove any orphaned inbox entries that reference
+/// this raw id via `source_raw_id`. Without this cascade, deleting
+/// a raw entry leaves dangling inbox items that point at a
+/// non-existent source, producing confusing 404s in the Inbox UI.
 pub fn delete_raw_entry(paths: &WikiPaths, id: u32) -> Result<()> {
     let entries = list_raw_entries(paths)?;
     let entry = entries
@@ -778,6 +804,20 @@ pub fn delete_raw_entry(paths: &WikiPaths, id: u32) -> Result<()> {
         .ok_or_else(|| WikiStoreError::NotFound(id))?;
     let path = paths.raw.join(&entry.filename);
     fs::remove_file(&path).map_err(|e| WikiStoreError::io(path, e))?;
+
+    // Cascade: remove orphaned inbox entries referencing this raw id.
+    // Uses the INBOX_WRITE_GUARD to serialize against concurrent inbox
+    // mutations (same pattern as append_inbox_pending / resolve_inbox_entry).
+    let _guard = lock_inbox_writes();
+    if let Ok(mut inbox) = load_inbox_file(paths) {
+        let before = inbox.len();
+        inbox.retain(|e| e.source_raw_id != Some(id));
+        if inbox.len() != before {
+            // Best-effort: if save fails, the raw file is already gone
+            // and the orphaned inbox entries will be harmless stale items.
+            let _ = save_inbox_file(paths, &inbox);
+        }
+    }
     Ok(())
 }
 

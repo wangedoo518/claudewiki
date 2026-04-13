@@ -147,7 +147,22 @@ pub async fn propose_for_raw_entry(
     })?;
 
     // Step 5 — parse as JSON and validate.
-    parse_proposal(&raw_json, raw_id)
+    // On parse failure, log the raw LLM response (first 200 chars) so
+    // maintainer failures are debuggable. The error still propagates
+    // so the caller (HTTP handler) can show the user a meaningful
+    // status — we intentionally do NOT auto-reject here, letting the
+    // user decide how to handle the bad response.
+    match parse_proposal(&raw_json, raw_id) {
+        Ok(proposal) => Ok(proposal),
+        Err(e) => {
+            eprintln!("[maintainer] LLM response parse failed for raw_id={raw_id}: {e}");
+            eprintln!(
+                "[maintainer] raw response preview: {}",
+                raw_json.chars().take(200).collect::<String>()
+            );
+            Err(e)
+        }
+    }
 }
 
 /// Extract the first `OutputContentBlock::Text` out of a

@@ -3238,13 +3238,11 @@ impl DesktopState {
                 };
 
                 let mut session_for_loop = session;
+                // Only push the original user message (URL only).
+                // Do NOT inject enriched content here — the callback
+                // writes session_for_loop back to storage, so anything
+                // pushed here becomes permanent.
                 session_for_loop.messages.push(user_message);
-                // Inject fetched article content as ephemeral context (not persisted)
-                if has_enrichment {
-                    session_for_loop.messages.push(
-                        ConversationMessage::user_text(enriched.clone())
-                    );
-                }
 
                 tokio::spawn(async move {
                     // Drop guard: best-effort synchronous cleanup using

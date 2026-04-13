@@ -2949,10 +2949,12 @@ impl DesktopState {
         session_id: &str,
         message: String,
     ) -> Result<DesktopSessionDetail, DesktopStateError> {
-        // URL interception at the core level — works regardless of caller
-        let message = Self::maybe_enrich_url(message).await;
-
-        let user_message = ConversationMessage::user_text(message.clone());
+        // URL interception: enrich for LLM but show original to user
+        let enriched = Self::maybe_enrich_url(message.clone()).await;
+        // User bubble shows the original message (just the URL)
+        let user_message = ConversationMessage::user_text(message);
+        // LLM receives the enriched version (with fetched article content)
+        let message = enriched;
         let session_id = session_id.to_string();
 
         let (detail, sender, session, previous_message_count, project_path) = {

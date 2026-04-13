@@ -276,7 +276,7 @@ function AssistantMessage({ content, usage }: { content: string; usage?: { input
         )}
 
         {/* Message body — 15px, generous line height */}
-        <div className="text-[15px] leading-[1.8] text-foreground">
+        <div className="overflow-hidden text-[15px] leading-[1.8] text-foreground">
           <MarkdownContent content={content} />
         </div>
 

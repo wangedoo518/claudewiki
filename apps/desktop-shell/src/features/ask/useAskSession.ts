@@ -102,9 +102,9 @@ export interface UseAskSessionResult {
  */
 export function useAskSession(): UseAskSessionResult {
   const queryClient = useQueryClient();
-  // Never trust localStorage on init — always validate via ensureMutation.
-  // This prevents the "session not found" error when the stored ID is stale.
-  const [activeId, setActiveId] = useState<string | null>(null);
+  // Read from localStorage on init. ensureMutation validates on first mount.
+  // If the stored ID is stale (404), ensureMutation clears it and creates new.
+  const [activeId, setActiveId] = useState<string | null>(() => readActiveSessionId());
   const [errorMessage, setErrorMessage] = useState<string | undefined>();
 
   // Step 1 — ensure an active session exists. If localStorage had a
@@ -165,14 +165,23 @@ export function useAskSession(): UseAskSessionResult {
 
   const detailQuery = useQuery({
     queryKey: askSessionKeys.detail(activeId),
-    queryFn: () => {
+    queryFn: async () => {
       if (!activeId) {
-        return Promise.reject(new Error("no active session"));
+        throw new Error("no active session");
       }
-      return getSession(activeId);
+      try {
+        return await getSession(activeId);
+      } catch (err) {
+        // Session not found (404) — clear stale ID and create new
+        console.warn("[ask] session not found, clearing stale ID");
+        writeActiveSessionId(null);
+        setActiveId(null);
+        throw err;
+      }
     },
     enabled: activeId !== null,
     staleTime: 5_000,
+    retry: false, // Don't retry 404s — let ensureMutation handle it
     refetchInterval: (q) => {
       const data = q.state.data as DesktopSessionDetail | undefined;
       const currentState = data?.turn_state;

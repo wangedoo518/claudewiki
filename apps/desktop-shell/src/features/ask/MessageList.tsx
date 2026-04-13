@@ -125,6 +125,7 @@ export const MessageList = memo(function MessageList({
               width: "100%",
               transform: `translateY(${virtualItem.start}px)`,
               padding: "4px 16px",
+              overflow: "hidden",
             }}
           >
             {item.kind === "tool-group" ? (

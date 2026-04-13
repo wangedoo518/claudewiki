@@ -24,7 +24,7 @@ export function AskPage() {
     onSwitchSession,
   } = useAskSession();
 
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(true);
 
   // Wire SSE subscription for real-time streaming + permission requests
   useAskSSE(sessionId, isTurnActive);

@@ -80,7 +80,7 @@ export function SessionSidebar({
   }
 
   return (
-    <div className="flex h-full w-[220px] shrink-0 flex-col border-r border-border/50 bg-sidebar-background">
+    <div className="flex h-full w-[180px] shrink-0 flex-col border-r border-border/50 bg-sidebar-background">
       {/* Header + collapse + new button */}
       <div className="flex items-center justify-between border-b border-border/50 px-3 py-2.5">
         <span className="text-[12px] font-semibold text-sidebar-foreground">

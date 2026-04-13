@@ -282,20 +282,19 @@ async fn auto_install_python_deps() {
         eprintln!("[auto-install] markitdown done");
     }
 
-    // playwright
+    // playwright (pip package only — NO chromium download!)
+    // wechat_fetcher.py uses find_local_chrome() to use the system's
+    // Chrome/Edge instead of downloading a separate Chromium binary.
     let ok = tokio::process::Command::new("python")
         .args(["-c", "from playwright.sync_api import sync_playwright"])
         .output().await
         .map(|o| o.status.success()).unwrap_or(false);
     if !ok {
-        eprintln!("[auto-install] installing playwright + chromium...");
+        eprintln!("[auto-install] installing playwright pip package...");
         let _ = tokio::process::Command::new("python")
             .args(["-m", "pip", "install", "--upgrade", "--quiet", "playwright"])
             .output().await;
-        let _ = tokio::process::Command::new("python")
-            .args(["-m", "playwright", "install", "chromium"])
-            .output().await;
-        eprintln!("[auto-install] playwright done");
+        eprintln!("[auto-install] playwright pip done (using system Chrome/Edge, no Chromium download)");
     }
 
     // defuddle (Node.js content extraction)

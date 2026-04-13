@@ -88,10 +88,10 @@ export function DashboardPage() {
           className="text-foreground"
           style={{ fontSize: 18, fontWeight: 600, fontFamily: "var(--font-serif, Lora, serif)" }}
         >
-          Dashboard
+          仪表盘
         </h1>
         <p className="mt-1 text-muted-foreground/60" style={{ fontSize: 11 }}>
-          我的外脑今天长了多少 -- 粘贴 / 转发一份新素材，微信漏斗自动进 Raw Library
+          我的外脑今天长了多少 -- 粘贴 / 转发一份新素材，微信漏斗自动进素材库
         </p>
       </section>
 

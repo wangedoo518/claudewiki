@@ -17,17 +17,17 @@ export function GeneralSettings() {
   const setLanguage = useSettingsStore((state) => state.setLanguage);
 
   const themes: { value: ThemeMode; label: string }[] = [
-    { value: "light", label: "Light" },
-    { value: "dark", label: "Dark" },
-    { value: "system", label: "System" },
+    { value: "light", label: "浅色" },
+    { value: "dark", label: "深色" },
+    { value: "system", label: "跟随系统" },
   ];
 
   const fontSizes = [12, 13, 14, 15, 16];
 
   return (
     <div className="space-y-4">
-      <SettingGroup title="Appearance">
-        <SettingRow label="Theme" description="Choose your preferred color scheme">
+      <SettingGroup title="外观">
+        <SettingRow label="主题" description="选择你偏好的配色方案">
           <div className="flex gap-1">
             {themes.map((t) => (
               <Button
@@ -42,7 +42,7 @@ export function GeneralSettings() {
             ))}
           </div>
         </SettingRow>
-        <SettingRow label="Font Size" description="Editor and terminal font size">
+        <SettingRow label="字体大小" description="编辑器和终端字体大小">
           <div className="flex gap-1">
             {fontSizes.map((size) => (
               <Button
@@ -60,10 +60,10 @@ export function GeneralSettings() {
       </SettingGroup>
 
       <SettingGroup
-        title="Language"
-        description="Application display language"
+        title="语言"
+        description="应用显示语言"
       >
-        <SettingRow label="Language">
+        <SettingRow label="语言">
           <div className="flex gap-1">
             {LANGUAGES.map((lang) => (
               <Button

@@ -877,7 +877,7 @@ function SpecialFilePanel({ kind }: { kind: "index" | "log" }) {
         <p className="mt-1.5 text-muted-foreground" style={{ fontSize: "12px", lineHeight: "1.5" }}>
           {meta.description}
         </p>
-        <div className="mt-1 font-mono text-muted-foreground/40" style={{ fontSize: "11px" }}>
+        <div className="mt-1 font-mono text-muted-foreground/40" style={{ fontSize: "11px", wordBreak: "break-all" }}>
           {data.path}
         </div>
       </div>
@@ -952,6 +952,7 @@ function SpecialFilePanel({ kind }: { kind: "index" | "log" }) {
                     return (
                       <code
                         className="block overflow-auto rounded-md bg-muted/40 p-3 font-mono text-caption"
+                        style={{ wordBreak: "break-all" }}
                         {...props}
                       >
                         {children}
@@ -961,6 +962,7 @@ function SpecialFilePanel({ kind }: { kind: "index" | "log" }) {
                   return (
                     <code
                       className="rounded bg-muted/40 px-1 py-0.5 font-mono text-caption"
+                      style={{ wordBreak: "break-all" }}
                       {...props}
                     >
                       {children}

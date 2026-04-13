@@ -117,6 +117,36 @@ def basic_html_to_markdown(html: str) -> str:
     return text.strip()
 
 
+def find_local_chrome() -> str | None:
+    """Find Chrome or Edge executable on the local machine."""
+    import platform
+    candidates = []
+    if platform.system() == "Windows":
+        for env in ["PROGRAMFILES", "PROGRAMFILES(X86)", "LOCALAPPDATA"]:
+            base = os.environ.get(env, "")
+            if base:
+                candidates.extend([
+                    os.path.join(base, "Google", "Chrome", "Application", "chrome.exe"),
+                    os.path.join(base, "Microsoft", "Edge", "Application", "msedge.exe"),
+                ])
+    elif platform.system() == "Darwin":
+        candidates.extend([
+            "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+            "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+        ])
+    else:
+        # Linux
+        candidates.extend([
+            "/usr/bin/google-chrome", "/usr/bin/google-chrome-stable",
+            "/usr/bin/chromium-browser", "/usr/bin/chromium",
+            "/usr/bin/microsoft-edge",
+        ])
+    for path in candidates:
+        if os.path.isfile(path):
+            return path
+    return None
+
+
 def main():
     if sys.platform == "win32":
         sys.stdout.reconfigure(encoding="utf-8")
@@ -138,10 +168,28 @@ def main():
             return
 
         with sync_playwright() as p:
-            browser = p.chromium.launch(
-                headless=True,
-                args=["--disable-blink-features=AutomationControlled", "--no-sandbox"]
-            )
+            # Use local Chrome/Edge instead of downloading Chromium
+            browser = None
+            local_chrome = find_local_chrome()
+            if local_chrome:
+                try:
+                    browser = p.chromium.launch(
+                        executable_path=local_chrome,
+                        headless=True,
+                        args=["--disable-blink-features=AutomationControlled", "--no-sandbox"]
+                    )
+                except Exception:
+                    pass
+            # Fallback to Playwright's bundled Chromium
+            if not browser:
+                try:
+                    browser = p.chromium.launch(
+                        headless=True,
+                        args=["--disable-blink-features=AutomationControlled", "--no-sandbox"]
+                    )
+                except Exception as e:
+                    json.dump({"ok": False, "error": f"无法启动浏览器: {e}"}, sys.stdout, ensure_ascii=False)
+                    return
             context = browser.new_context(
                 user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
                 viewport={"width": 1280, "height": 900},

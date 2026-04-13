@@ -219,7 +219,7 @@ function UserMessage({ content }: { content: string }) {
   return (
     <div className="group/user flex items-start justify-end gap-2">
       <div className="flex max-w-[75%] flex-col items-end gap-1">
-        <div className="whitespace-pre-wrap rounded-2xl bg-foreground px-4 py-2.5 text-[14px] leading-relaxed text-background">
+        <div className="whitespace-pre-wrap rounded-2xl bg-foreground px-4 py-2.5 text-[14px] leading-relaxed text-background" style={{ overflowWrap: "break-word", wordBreak: "break-word" }}>
           {content}
         </div>
         <div className="flex items-center gap-1 opacity-0 transition-opacity group-hover/user:opacity-100">
@@ -275,8 +275,8 @@ function AssistantMessage({ content, usage }: { content: string; usage?: { input
           </div>
         )}
 
-        {/* Message body — 15px, generous line height */}
-        <div className="overflow-hidden text-[15px] leading-[1.8] text-foreground">
+        {/* Message body — 15px, generous line height, break long URLs */}
+        <div className="overflow-hidden text-[15px] leading-[1.8] text-foreground" style={{ overflowWrap: "break-word", wordBreak: "break-word" }}>
           <MarkdownContent content={content} />
         </div>
 

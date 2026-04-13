@@ -278,16 +278,16 @@
     }
   },
   "settings": {
-    "title": "Settings",
-    "general": "General",
-    "provider": "Providers",
-    "mcp": "MCP Servers",
-    "permissions": "Permissions",
-    "shortcuts": "Shortcuts",
-    "data": "Data",
-    "about": "About",
-    "loading": "Loading desktop settings...",
-    "comingSoon": "Coming soon"
+    "title": "设置",
+    "general": "常规",
+    "provider": "模型服务",
+    "mcp": "MCP 服务",
+    "permissions": "权限",
+    "shortcuts": "快捷键",
+    "data": "数据",
+    "about": "关于",
+    "loading": "正在加载桌面设置...",
+    "comingSoon": "即将支持"
   },
   "agent": {
     "status": {

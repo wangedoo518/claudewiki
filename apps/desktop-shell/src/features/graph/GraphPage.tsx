@@ -61,7 +61,7 @@ export function GraphPage() {
           className="text-foreground"
           style={{ fontSize: 18, fontWeight: 600, fontFamily: "var(--font-serif, Lora, serif)" }}
         >
-          Graph
+          知识图谱
         </h1>
         <p className="mt-1 text-muted-foreground/60" style={{ fontSize: 11 }}>
           知识图谱 -- 拖拽节点、滚轮缩放、悬停高亮关联

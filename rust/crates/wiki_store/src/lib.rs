@@ -2211,16 +2211,49 @@ pub fn append_new_raw_task(
     entry: &RawEntry,
     origin: &str,
 ) -> Result<InboxEntry> {
-    let title = format!("New raw entry #{:05}", entry.id);
-    let description = format!(
-        "Raw entry `{}` was ingested from {origin}. \
-         Proposed action: summarise into a concept page.",
-        entry.filename
-    );
+    // Read the raw entry body to extract a meaningful title and description
+    let (display_title, description) = match read_raw_entry(paths, entry.id) {
+        Ok((_entry, body)) => {
+            // Extract title from first # heading or first line
+            let first_heading = body.lines()
+                .find(|l| l.starts_with("# "))
+                .map(|l| l.trim_start_matches('#').trim().to_string());
+            let title = first_heading
+                .or_else(|| {
+                    // Use first non-empty, non-metadata line as title
+                    body.lines()
+                        .find(|l| !l.is_empty() && !l.starts_with('_') && !l.starts_with("---"))
+                        .map(|l| l.chars().take(60).collect::<String>())
+                })
+                .unwrap_or_else(|| format!("素材 #{:05}", entry.id));
+            // Description: first 150 chars of body (skip metadata lines)
+            let preview: String = body.lines()
+                .filter(|l| !l.is_empty() && !l.starts_with('_') && !l.starts_with('#') && !l.starts_with("---") && !l.starts_with("!["))
+                .take(3)
+                .collect::<Vec<_>>()
+                .join(" ")
+                .chars()
+                .take(150)
+                .collect();
+            let desc = if preview.is_empty() {
+                format!("来源：{origin}。建议操作：总结为概念知识页面。")
+            } else {
+                format!("{preview}...")
+            };
+            (title, desc)
+        }
+        Err(_) => {
+            // Fallback: use filename-based description
+            (
+                format!("素材 #{:05}", entry.id),
+                format!("来源：{origin}。建议操作：总结为概念知识页面。"),
+            )
+        }
+    };
     append_inbox_pending(
         paths,
         InboxKind::NewRaw,
-        &title,
+        &display_title,
         &description,
         Some(entry.id),
     )

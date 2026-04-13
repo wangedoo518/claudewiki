@@ -167,7 +167,7 @@ export function InboxPage() {
         </aside>
         <main className="flex min-w-0 flex-1 flex-col overflow-hidden">
           {selectedEntry ? (
-            <EntryDetail entry={selectedEntry} />
+            <EntryDetail key={selectedEntry.id} entry={selectedEntry} />
           ) : (
             <EntryPlaceholder />
           )}
@@ -339,9 +339,6 @@ function EntryDetail({ entry }: { entry: InboxEntry }) {
   // entry #3 should not leak into the view for entry #4). We key the
   // reset effect on `entry.id`.
   const [proposal, setProposal] = useState<WikiPageProposal | null>(null);
-  useEffect(() => {
-    setProposal(null);
-  }, [entry.id]);
 
   // Quick approve/reject without writing anything (backwards compat).
   const resolveMutation = useMutation({

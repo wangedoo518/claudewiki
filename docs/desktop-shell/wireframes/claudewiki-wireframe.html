@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>ClaudeWiki — Product Wireframe v1.0</title>
+<title>ClaudeWiki — Product Wireframe v1.1</title>
 <style>
   :root {
     --bg-primary: #faf9f6;
@@ -147,8 +147,24 @@
   .frontmatter { display: flex; gap: 12px; align-items: center; padding: 8px 0 16px; flex-wrap: wrap; }
   .fm-tag { font-size: 11px; padding: 3px 10px; border-radius: 12px; font-weight: 500; }
   .fm-tag.confidence { background: #dcfce7; color: #166534; }
+  .fm-tag.confidence.medium { background: #fef9c3; color: #854d0e; }
+  .fm-tag.confidence.low { background: var(--bg-input); color: var(--text-tertiary); }
+  .fm-tag.confidence.contested { background: #fee2e2; color: #991b1b; }
   .fm-tag.source { background: var(--accent-bg); color: var(--text-accent); }
   .fm-tag.updated { background: var(--bg-input); color: var(--text-tertiary); }
+
+  /* Supersession */
+  .supersession { border: 1px solid #fef3c7; border-radius: var(--radius-sm); margin: 12px 0; overflow: hidden; }
+  .supersession-header { display: flex; align-items: center; gap: 6px; padding: 8px 12px; background: #fffbeb; font-size: 12px; font-weight: 600; color: #92400e; }
+  .supersession-body { padding: 10px 12px; font-size: 13px; }
+  .supersession-old { color: var(--text-tertiary); text-decoration: line-through; }
+  .supersession-new { color: var(--text-primary); font-weight: 500; }
+  .supersession-meta { font-size: 11px; color: var(--text-tertiary); margin-top: 4px; }
+
+  /* Crystallization */
+  .crystallize-bar { display: flex; align-items: center; gap: 8px; padding: 8px 12px; margin: 8px 0; border: 1px dashed var(--accent); border-radius: var(--radius-sm); background: var(--accent-bg); font-size: 12px; color: var(--text-accent); }
+  .crystallize-bar button { padding: 4px 12px; background: var(--accent); color: white; border: none; border-radius: var(--radius-xs); font-size: 12px; cursor: pointer; margin-left: auto; }
+  .crystallize-bar button:hover { opacity: 0.9; }
 
   /* Backlinks Section */
   .backlinks { border-top: 1px solid var(--border); margin-top: 24px; padding-top: 16px; }
@@ -518,6 +534,12 @@
                 <span style="font-size:12px;color:var(--text-tertiary)">来源: concepts/transformer-arch · people/vaswani</span>
               </div>
             </div>
+            <!-- Crystallization prompt -->
+            <div class="crystallize-bar">
+              <span>💎</span>
+              <span>存入 Wiki？</span>
+              <button>存入</button>
+            </div>
           </div>
           <div class="chat-panel-input">
             <div class="mini-input">
@@ -534,7 +556,7 @@
           <div class="wiki-content">
             <h1>Transformer 架构</h1>
             <div class="frontmatter">
-              <span class="fm-tag confidence">confidence: high</span>
+              <span class="fm-tag confidence" title="自动计算: 3 sources, newest < 30d, 无冲突">confidence: high</span>
               <span class="fm-tag source">3 sources</span>
               <span class="fm-tag updated">更新于 2h 前</span>
             </div>
@@ -549,6 +571,16 @@
               <li><strong>Layer Normalization + Residual Connection</strong> — 保证深层网络的训练稳定性</li>
               <li>Encoder-Decoder 结构可根据任务灵活组合 — GPT 只用 Decoder，BERT 只用 Encoder</li>
             </ul>
+
+            <!-- Supersession: 判断变迁记录 (v1.1 新增) -->
+            <div class="supersession">
+              <div class="supersession-header">📋 判断变迁 · Supersession</div>
+              <div class="supersession-body">
+                <div class="supersession-old">旧观点：Transformer 无法处理超长序列，受限于 O(n²) 复杂度</div>
+                <div class="supersession-new">→ 新观点：线性注意力变体已实现 O(n) 复杂度，超长序列不再是根本限制</div>
+                <div class="supersession-meta">2026-04-12 · 来源: raw/2026-04-12-url-015.md</div>
+              </div>
+            </div>
 
             <h2>关键引用</h2>
             <blockquote>
@@ -588,16 +620,33 @@
             </div>
           </div>
         </div>
-        <!-- Right Chat Panel (same as above) -->
+        <!-- Right Chat Panel with Crystallization -->
         <div class="chat-panel">
           <div class="chat-panel-header">
             Ask your Wiki
             <button style="background:none;border:none;color:var(--text-tertiary);cursor:pointer">✕</button>
           </div>
           <div class="chat-panel-body">
-            <div style="color:var(--text-tertiary);font-size:13px;text-align:center;padding:40px 20px">
-              浏览 Wiki 时随时提问。<br>
-              /query 会基于索引页和反链回答。
+            <div class="chat-msg user">
+              <div class="bubble">Transformer 相比 RNN 在工程实践上有哪些优势？</div>
+            </div>
+            <div class="chat-msg assistant">
+              <div class="bubble">
+                根据 <a class="wikilink" href="#">[[concepts/transformer-arch]]</a> 和 <a class="wikilink" href="#">[[comparisons/rnn-vs-transformer]]</a>：
+                <br><br>
+                <strong>工程优势</strong>：
+                <br>1. <strong>并行训练</strong> — Self-Attention 天然支持并行，GPU 利用率远高于 RNN 的序列依赖
+                <br>2. <strong>梯度流动</strong> — Residual Connection 避免梯度消失，深层网络训练稳定
+                <br>3. <strong>模块化</strong> — Encoder/Decoder 可独立组合，适配不同任务
+                <br><br>
+                <span style="font-size:12px;color:var(--text-tertiary)">来源: 2 wiki pages · 3 raw entries</span>
+              </div>
+            </div>
+            <!-- Crystallization bar (v1.1 新增) -->
+            <div class="crystallize-bar">
+              <span>💎</span>
+              <span>这个回答有价值，存入 Wiki？</span>
+              <button onclick="alert('已写入 raw/entries/ → 下次 /absorb 自动吸收')">存入 Wiki</button>
             </div>
           </div>
           <div class="chat-panel-input">
@@ -670,31 +719,40 @@
 
           <div class="inbox-item">
             <div class="inbox-item-header">
-              <span class="type">⚠ 冲突检测</span>
+              <span class="type">⚠ 冲突 · Supersession</span>
               <span class="time">20 分钟前</span>
             </div>
             <div class="inbox-item-body">
-              <strong>topics/rag.md</strong> 与新摄入素材观点不一致：
-              <br>已有页面认为 "RAG 适合企业知识库"，但新素材（Karpathy LLM Wiki）论证 "结构化 Wiki 优于 RAG"。
+              <strong>topics/rag.md</strong> <span class="fm-tag confidence contested" style="font-size:10px;padding:2px 6px">contested</span>
+              <br><br>
+              <span class="supersession-old">已有观点：RAG 适合企业知识库</span>
+              <br>
+              <span class="supersession-new">→ 新素材观点：结构化 Wiki 优于 RAG（Karpathy 范式）</span>
               <br><br>
               <span style="font-size:12px;color:var(--text-tertiary)">来源: raw/2026-04-14-url-042.md → topics/rag.md</span>
+              <br>
+              <span style="font-size:12px;color:var(--text-tertiary)">采纳后：旧观点记入 superseded 字段，不直接覆盖</span>
             </div>
             <div class="inbox-actions">
-              <button class="approve">✓ 采纳新观点</button>
+              <button class="approve">✓ 采纳新观点（记录变迁）</button>
               <button class="reject">✕ 保留原有</button>
             </div>
           </div>
 
           <div class="inbox-item">
             <div class="inbox-item-header">
-              <span class="type">⚠ 冲突检测</span>
+              <span class="type">⚠ 冲突 · Supersession</span>
               <span class="time">1h 前</span>
             </div>
             <div class="inbox-item-body">
-              <strong>concepts/agent-orchestration.md</strong>：新素材认为 "多 Agent 编排是过度工程"，与已有页面的 "Agent 编排层是必要的" 矛盾。
+              <strong>concepts/agent-orchestration.md</strong> <span class="fm-tag confidence contested" style="font-size:10px;padding:2px 6px">contested</span>
+              <br><br>
+              <span class="supersession-old">已有观点：Agent 编排层是必要的</span>
+              <br>
+              <span class="supersession-new">→ 新素材观点：多 Agent 编排是过度工程，agentic_loop + SKILL.md 就够了</span>
             </div>
             <div class="inbox-actions">
-              <button class="approve">✓ 采纳新观点</button>
+              <button class="approve">✓ 采纳新观点（记录变迁）</button>
               <button class="reject">✕ 保留原有</button>
             </div>
           </div>
@@ -706,10 +764,25 @@
             </div>
             <div class="inbox-item-body">
               /absorb 建议创建新概念页 <a class="wikilink" href="#">[[concepts/cognitive-compound-interest]]</a>（认知复利），从 3 个 raw entries 中提取。
+              <br>
+              <span style="font-size:12px;color:var(--text-tertiary)">预估 confidence: high（3 sources, newest &lt; 7d, 无冲突）</span>
             </div>
             <div class="inbox-actions">
               <button class="approve">✓ 创建页面</button>
               <button class="reject">✕ 跳过</button>
+            </div>
+          </div>
+
+          <div class="inbox-item" style="opacity:0.6">
+            <div class="inbox-item-header" style="background:#f0fdf4;border-color:#dcfce7">
+              <span class="type" style="color:#166534">💎 Crystallization</span>
+              <span class="time">3h 前</span>
+            </div>
+            <div class="inbox-item-body">
+              /query 回答已自动写入 <code>raw/entries/2026-04-14-query-transformer-engineering.md</code>，等待下次 /absorb 吸收。
+            </div>
+            <div class="inbox-actions">
+              <button class="approve" style="opacity:0.5" disabled>✓ 已自动处理</button>
             </div>
           </div>
         </div>
@@ -786,6 +859,26 @@
           <div class="settings-card" style="flex-direction:column;align-items:flex-start;gap:4px">
             <div style="font-size:24px;font-weight:600">156</div>
             <div style="font-size:12px;color:var(--text-tertiary)">反链关系</div>
+          </div>
+        </div>
+
+        <h4 style="margin-top:16px">Confidence 分布</h4>
+        <div style="display:flex;gap:8px;margin-top:8px;align-items:center">
+          <span class="fm-tag confidence" style="font-size:11px">high: 52</span>
+          <span class="fm-tag confidence medium" style="font-size:11px">medium: 28</span>
+          <span class="fm-tag confidence low" style="font-size:11px">low: 7</span>
+          <span class="fm-tag confidence contested" style="font-size:11px">contested: 2</span>
+        </div>
+        <p style="margin-top:8px">自动计算规则: sources≥3 + newest&lt;30d + 无冲突 → high</p>
+      </div>
+
+      <div class="settings-section">
+        <h4>💎 Crystallization</h4>
+        <p>/query 回答自动写入 raw/entries/，下次 /absorb 吸收进 Wiki</p>
+        <div class="settings-card">
+          <div>
+            <div style="font-size:13px">已结晶: <strong>14 条</strong> query 回答 → Wiki</div>
+            <div style="font-size:12px;color:var(--text-tertiary)">认知复利闭环: 问得越多 → Wiki 越强</div>
           </div>
         </div>
       </div>

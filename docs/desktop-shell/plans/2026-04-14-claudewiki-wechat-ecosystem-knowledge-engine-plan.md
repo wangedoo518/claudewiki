@@ -248,7 +248,58 @@ agentic_loop 执行 SKILL /absorb
   · 记录变更日志
 ```
 
-### 4.3 Schema 驱动的知识质量保障
+### 4.3 Confidence 自动计算（借鉴 LLM Wiki v2）
+
+> 来源：rohitg00/llm-wiki-v2 — Memory Lifecycle 中的 confidence scoring 思路。
+> 但不引入其 forgetting curve / hybrid search / multi-agent 等过度工程。
+
+每个 Wiki 页的 frontmatter `confidence` 字段由 `/absorb` 自动计算，不再手动标注：
+
+```
+confidence 规则（写入 SKILL.md /absorb 段）：
+  - source_count ≥ 3 且 newest_source < 30天 且 无冲突 → high
+  - source_count ≥ 2 且 newest_source < 90天              → medium
+  - 其他                                                   → low
+  - 有未解决冲突（Inbox 中）                                → contested
+```
+
+### 4.4 Supersession（判断变迁记录）
+
+当 `/absorb` 检测到新信息与已有判断矛盾，且用户在 Inbox 中选择"采纳新观点"时：
+- 旧观点**不直接覆盖**，而是在 changelog 中显式记录判断变迁
+- Wiki 页更新后 frontmatter 添加 `superseded` 字段
+
+```yaml
+---
+title: RAG 与知识库
+confidence: high
+superseded:
+  - claim: "RAG 适合企业知识库"
+    replaced_by: "结构化 Wiki 优于 RAG（Karpathy 范式）"
+    date: 2026-04-14
+    source: raw/2026-04-14-url-042.md
+---
+```
+
+这样知识不只是"最新状态"，而是带有**判断演化历史**的活文档。
+
+### 4.5 Crystallization（对话结晶）
+
+`/query` 的回答如果产生了高价值内容，应沉淀回 Wiki 而非一次性丢弃。
+
+流程：
+1. 用户通过 Chat 或微信提问 → `/query` 生成回答
+2. 回答写入 `raw/entries/{date}_query-{slug}.md`（source_type: query）
+3. 下一次 `/absorb` 自动将高质量 query 结果吸收进 Wiki 页
+4. 形成闭环：**问得越多 → Wiki 越强 → 回答越准**
+
+```
+用户提问 → /query 回答 → 写入 raw/ → /absorb 吸收 → Wiki 更强
+     ▲                                                    │
+     └────────────── 认知复利闭环 ◄─────────────────────────┘
+```
+
+### 4.6 Schema 驱动的知识质量保障
 
 Schema 层是区分"聊天机器人"和"认知系统"的关键。定义：
 
@@ -263,7 +314,8 @@ Schema 层是区分"聊天机器人"和"认知系统"的关键。定义：
 - related_concepts: 必填，≥2 个反链
 - sources: 必填，引用 Raw 条目 ID
 - last_updated: 自动填充
-- confidence: low/medium/high
+- confidence: 自动计算（见 4.3）
+- superseded: 可选，判断变迁记录（见 4.4）
 
 ## person_page
 - name: 必填
@@ -273,7 +325,7 @@ Schema 层是区分"聊天机器人"和"认知系统"的关键。定义：
 - sources: 引用 Raw 条目
 ```
 
-### 4.4 知识巡检（Patrol）
+### 4.7 知识巡检（Patrol）
 
 Schema 中定义巡检规则，agentic_loop 定期执行 SKILL `/patrol`：
 
@@ -284,6 +336,8 @@ Schema 中定义巡检规则，agentic_loop 定期执行 SKILL `/patrol`：
 | 冲突积压检测 | 每日 | Inbox 中超过 3 天未处理 → 微信推送提醒 |
 | 索引完整性 | 每次摄入后 | _index.md 是否包含所有页面 |
 | 模板合规性 | 每次维护后 | Wiki 页是否符合 Schema 模板 |
+| **Confidence 衰减** | 每周 | source 超过 90 天未更新的 high → medium |
+| **Crystallization 检查** | 每次 /query 后 | 回答是否已写入 raw/entries/ |
 
 ---
 

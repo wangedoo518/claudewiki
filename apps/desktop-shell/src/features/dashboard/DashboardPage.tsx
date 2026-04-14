@@ -32,7 +32,8 @@ import {
   Inbox as InboxIcon,
   ArrowRight,
 } from "lucide-react";
-import { listRawEntries, listInboxEntries, listWikiPages } from "@/features/ingest/persist";
+import { listRawEntries, listInboxEntries, getWikiStats, getAbsorbLog, getPatrolReport, triggerPatrol } from "@/features/ingest/persist";
+// useSettingsStore / useWikiTabStore available for future Quick Action routing.
 import { getBootstrap } from "@/features/settings/api/client";
 import { getBrokerStatus } from "@/features/settings/api/private-cloud";
 import { cn } from "@/lib/utils";
@@ -43,6 +44,7 @@ const dashboardKeys = {
   broker: () => ["broker", "status"] as const,
   inbox: () => ["wiki", "inbox", "list"] as const,
   wikiPages: () => ["wiki", "pages", "list"] as const,
+  stats: () => ["wiki", "stats"] as const,
 };
 
 export function DashboardPage() {
@@ -73,10 +75,25 @@ export function DashboardPage() {
     staleTime: 15_000,
   });
 
-  const wikiQuery = useQuery({
-    queryKey: dashboardKeys.wikiPages(),
-    queryFn: () => listWikiPages(),
+  // wikiQuery removed in v2 — stat cards now use statsQuery.data.wiki_count.
+
+  // v2: WikiStats from the new /api/wiki/stats endpoint.
+  const statsQuery = useQuery({
+    queryKey: dashboardKeys.stats(),
+    queryFn: () => getWikiStats(),
     staleTime: 15_000,
+  });
+
+  // v2: ActivityFeed + PatrolSummary data.
+  const absorbLogQuery = useQuery({
+    queryKey: [...dashboardKeys.stats(), "absorb-log"],
+    queryFn: () => getAbsorbLog(10),
+    staleTime: 15_000,
+  });
+  const patrolQuery = useQuery({
+    queryKey: [...dashboardKeys.stats(), "patrol-report"],
+    queryFn: () => getPatrolReport(),
+    staleTime: 60_000,
   });
 
   // Derive "today's new ingests" on the client so we don't need a
@@ -87,7 +104,8 @@ export function DashboardPage() {
   const todayDate = formatLocalDate(new Date());
   const rawEntries = rawQuery.data?.entries ?? [];
   const totalIngests = rawEntries.length;
-  const todaysIngests = rawEntries.filter((e) => e.date === todayDate).length;
+  const todaysIngests = statsQuery.data?.today_ingest_count
+    ?? rawEntries.filter((e) => e.date === todayDate).length;
 
   const brokerStatus = privateCloudEnabled ? brokerQuery.data : undefined;
   const brokerError =
@@ -97,16 +115,18 @@ export function DashboardPage() {
 
   return (
     <div className="flex h-full flex-col overflow-y-auto">
-      {/* Hero */}
+      {/* Hero — 07-dashboard.md §6.1 */}
       <section className="border-b border-border/50 px-8 py-6">
         <h1
           className="text-foreground"
           style={{ fontSize: 18, fontWeight: 600, fontFamily: "var(--font-serif, Lora, serif)" }}
         >
-          仪表盘
+          你的外脑
         </h1>
         <p className="mt-1 text-muted-foreground/60" style={{ fontSize: 11 }}>
-          我的外脑今天长了多少 -- 粘贴 / 转发一份新素材，微信漏斗自动进素材库
+          {statsQuery.data
+            ? `${statsQuery.data.wiki_count} 篇知识页面 · 知识速率 ${statsQuery.data.knowledge_velocity.toFixed(1)} 页/天`
+            : "加载中..."}
         </p>
       </section>
 
@@ -149,10 +169,10 @@ export function DashboardPage() {
         )}
         <StatCard
           icon={Brain}
-          label="已维护页面"
-          value={wikiQuery.isLoading ? "…" : String(Array.isArray(wikiQuery.data?.pages) ? wikiQuery.data.pages.length : 0)}
-          hint={wikiQuery.error ? "加载失败" : `知识页面`}
-          tint={wikiQuery.error ? "var(--color-error)" : "var(--deeptutor-purple, var(--agent-purple))"}
+          label="本周新增"
+          value={statsQuery.isLoading ? "…" : String(statsQuery.data?.week_new_pages ?? 0)}
+          hint={`共 ${statsQuery.data?.wiki_count ?? 0} 个知识页面`}
+          tint="var(--deeptutor-purple, var(--agent-purple))"
           link="/wiki"
         />
         <StatCard
@@ -193,11 +213,11 @@ export function DashboardPage() {
         </div>
       </section>
 
-      {/* Recent raw entries */}
-      <section className="min-h-0 flex-1 px-8 pb-6 pt-4">
+      {/* Activity Feed — 07-dashboard.md §6.3 */}
+      <section className="px-8 py-4">
         <div className="mb-3 flex items-baseline justify-between">
           <h2 className="uppercase tracking-widest text-muted-foreground/60" style={{ fontSize: 11 }}>
-            最近入库
+            最近动态
           </h2>
           <Link
             to="/raw"
@@ -207,11 +227,125 @@ export function DashboardPage() {
             查看全部 →
           </Link>
         </div>
-        <RecentEntries
-          isLoading={rawQuery.isLoading}
-          error={rawQuery.error}
-          entries={rawEntries.slice(-5).reverse()}
-        />
+        {absorbLogQuery.data?.entries && absorbLogQuery.data.entries.length > 0 ? (
+          <div className="space-y-1.5">
+            {absorbLogQuery.data.entries.slice(0, 8).map((entry, i) => (
+              <div
+                key={`${entry.entry_id}-${i}`}
+                className="flex items-center gap-2 rounded-md px-2 py-1.5 text-[12px] hover:bg-foreground/5 transition-colors"
+              >
+                <span className="text-muted-foreground/60 w-12 shrink-0 text-[11px]">
+                  {entry.timestamp.slice(11, 16)}
+                </span>
+                <span className={
+                  entry.action === "create"
+                    ? "text-[var(--deeptutor-ok,#3F8F5E)]"
+                    : entry.action === "update"
+                      ? "text-[var(--color-primary)]"
+                      : "text-muted-foreground"
+                }>
+                  {entry.action === "create" ? "新建" : entry.action === "update" ? "更新" : "跳过"}
+                </span>
+                <span className="flex-1 truncate text-foreground">
+                  {entry.page_title ?? entry.page_slug ?? `raw #${entry.entry_id}`}
+                </span>
+                {entry.page_category && (
+                  <span className="shrink-0 rounded bg-primary/10 px-1.5 py-0.5 text-[9px] text-primary">
+                    {entry.page_category}
+                  </span>
+                )}
+              </div>
+            ))}
+          </div>
+        ) : (
+          <RecentEntries
+            isLoading={rawQuery.isLoading}
+            error={rawQuery.error}
+            entries={rawEntries.slice(-5).reverse()}
+          />
+        )}
+      </section>
+
+      {/* Patrol Summary — 07-dashboard.md §6.5 */}
+      <section className="px-8 pb-6">
+        <div className="rounded-md border border-border/40 px-4 py-3">
+          <div className="mb-2 flex items-center justify-between">
+            <h3 className="text-[11px] font-semibold uppercase tracking-widest text-muted-foreground/60">
+              知识质量
+            </h3>
+            <button
+              onClick={() => triggerPatrol().then(() => patrolQuery.refetch())}
+              className="rounded px-2 py-0.5 text-[11px] text-primary hover:bg-primary/10 transition-colors"
+            >
+              立即巡检
+            </button>
+          </div>
+          {patrolQuery.data ? (
+            <div className="flex flex-wrap gap-2">
+              {patrolQuery.data.summary.schema_violations > 0 && (
+                <span className="rounded-full bg-[var(--color-destructive)]/10 px-2 py-0.5 text-[10px] text-[var(--color-destructive)]">
+                  {patrolQuery.data.summary.schema_violations} schema 违规
+                </span>
+              )}
+              {patrolQuery.data.summary.orphans > 0 && (
+                <span className="rounded-full bg-[var(--deeptutor-warn,#C88B1A)]/10 px-2 py-0.5 text-[10px] text-[var(--deeptutor-warn,#C88B1A)]">
+                  {patrolQuery.data.summary.orphans} 孤儿页
+                </span>
+              )}
+              {patrolQuery.data.summary.stubs > 0 && (
+                <span className="rounded-full bg-[var(--deeptutor-warn,#C88B1A)]/10 px-2 py-0.5 text-[10px] text-[var(--deeptutor-warn,#C88B1A)]">
+                  {patrolQuery.data.summary.stubs} stub
+                </span>
+              )}
+              {patrolQuery.data.summary.stale > 0 && (
+                <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] text-muted-foreground">
+                  {patrolQuery.data.summary.stale} 过期
+                </span>
+              )}
+              {patrolQuery.data.summary.oversized > 0 && (
+                <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] text-muted-foreground">
+                  {patrolQuery.data.summary.oversized} 超长
+                </span>
+              )}
+              {Object.values(patrolQuery.data.summary).every((v) => v === 0) && (
+                <span className="text-[11px] text-[var(--deeptutor-ok,#3F8F5E)]">
+                  全部通过
+                </span>
+              )}
+              <span className="text-[10px] text-muted-foreground/50">
+                {patrolQuery.data.checked_at.slice(0, 10)}
+              </span>
+            </div>
+          ) : (
+            <p className="text-[11px] text-muted-foreground/50">
+              尚未运行巡检
+            </p>
+          )}
+        </div>
+      </section>
+
+      {/* Quick Actions — 07-dashboard.md §6.6 */}
+      <section className="px-8 pb-6">
+        <div className="flex gap-3">
+          <Link
+            to="/inbox"
+            className="flex items-center gap-1.5 rounded-md border border-border/40 px-4 py-2 text-[12px] text-foreground transition-colors hover:border-primary/30"
+          >
+            <InboxIcon className="size-3.5" /> 开始维护
+          </Link>
+          <Link
+            to="/graph"
+            className="flex items-center gap-1.5 rounded-md border border-border/40 px-4 py-2 text-[12px] text-foreground transition-colors hover:border-primary/30"
+          >
+            查看图谱
+          </Link>
+          <Link
+            to="/wiki"
+            className="flex items-center gap-1.5 rounded-md border border-border/40 px-4 py-2 text-[12px] text-foreground transition-colors hover:border-primary/30"
+          >
+            打开 Wiki
+          </Link>
+        </div>
       </section>
     </div>
   );

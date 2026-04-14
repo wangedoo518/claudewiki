@@ -5,6 +5,7 @@ import { Sidebar } from "./Sidebar";
 import { CLAWWIKI_DEFAULT_ROUTE } from "./clawwiki-routes";
 import { DashboardPage } from "@/features/dashboard/DashboardPage";
 import { AskPage } from "@/features/ask/AskPage";
+import { ChatSidePanel } from "@/features/ask/ChatSidePanel";
 import { InboxPage } from "@/features/inbox/InboxPage";
 import { RawLibraryPage } from "@/features/raw/RawLibraryPage";
 import { WikiExplorerPage } from "@/features/wiki/WikiExplorerPage";
@@ -12,28 +13,24 @@ import { GraphPage } from "@/features/graph/GraphPage";
 import { SchemaEditorPage } from "@/features/schema/SchemaEditorPage";
 import { WeChatBridgePage } from "@/features/wechat/WeChatBridgePage";
 import { SettingsPage } from "@/features/settings/SettingsPage";
+import { SettingsModal } from "@/features/settings/SettingsModal";
+import { useSettingsStore } from "@/state/settings-store";
 
 /**
- * ClawWikiShell — the canonical (post-D2 override) application shell.
+ * ClawWikiShell — v2 dual-tab shell (Chat | Wiki).
  *
- * Selected instead of `AppShell` when `settings-store.clawwikiShell`
- * is true. Layout:
+ * Layout (per ia-layout.md §1):
  *
- *   ┌───────────┬─────────────────────────────────────┐
- *   │           │                                     │
- *   │  Sidebar  │    main (Routes outlet)             │
- *   │  220 / 56 │                                     │
- *   │           │                                     │
- *   └───────────┴─────────────────────────────────────┘
+ *   ┌───────────┬─────────────────────────┬───────────────┐
+ *   │           │                         │ ChatSidePanel │
+ *   │  Sidebar  │    main (Routes)        │ (Wiki mode)   │
+ *   │  220 / 56 │                         │  320px        │
+ *   │           │                         │               │
+ *   └───────────┴─────────────────────────┴───────────────┘
  *
- * No TabBar. No top chrome. Only the sidebar + the active route's
- * page component. Status bar shows up only on Ask and Inbox (added
- * in S3/S4 when those pages promote from stubs to real surfaces).
- *
- * Every route is wrapped in a `PageTransition` + individual
- * `ErrorBoundary` so a single exploding page does not take down the
- * rest of the shell. The top-level ErrorBoundary catches shell-wide
- * crashes (e.g. Sidebar throwing).
+ * The Sidebar has a Chat/Wiki mode toggle at the top.
+ * ChatSidePanel appears on the right only in Wiki mode.
+ * All existing routes remain compatible.
  */
 function PageTransition({ children }: { children: ReactNode }) {
   const location = useLocation();
@@ -45,6 +42,11 @@ function PageTransition({ children }: { children: ReactNode }) {
 }
 
 export function ClawWikiShell() {
+  const appMode = useSettingsStore((s) => s.appMode);
+
+  // ChatSidePanel is visible in wiki mode and non-ask/chat routes.
+  const showChatPanel = appMode === "wiki";
+
   return (
     <ErrorBoundary>
       <div className="flex h-screen w-screen overflow-hidden bg-background text-foreground">
@@ -131,7 +133,11 @@ export function ClawWikiShell() {
             </Routes>
           </ErrorBoundary>
         </main>
+        {/* Right-side Chat panel — visible in Wiki mode per ia-layout.md §4 */}
+        <ChatSidePanel visible={showChatPanel} />
       </div>
+      {/* Global Settings Modal — 08-settings-modal.md */}
+      <SettingsModal />
     </ErrorBoundary>
   );
 }

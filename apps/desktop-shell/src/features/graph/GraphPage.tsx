@@ -11,6 +11,8 @@ import { useNavigate } from "react-router-dom";
 import { Loader2, Network } from "lucide-react";
 import { getWikiGraph, listRawEntries } from "@/features/ingest/persist";
 import { ForceGraph } from "./ForceGraph";
+import { useSettingsStore } from "@/state/settings-store";
+import { useWikiTabStore } from "@/state/wiki-tab-store";
 
 export function GraphPage() {
   const navigate = useNavigate();
@@ -61,7 +63,18 @@ export function GraphPage() {
           <ForceGraph
             graphData={graphData}
             rawEntries={entries}
-            onClickConcept={(slug) => navigate(`/wiki?page=${slug}`)}
+            onClickConcept={(slug) => {
+              // v2: open in Wiki Tab instead of navigating.
+              useSettingsStore.getState().setAppMode("wiki");
+              useWikiTabStore.getState().openTab({
+                id: slug,
+                kind: "article",
+                slug,
+                title: slug,
+                closable: true,
+              });
+              navigate("/wiki");
+            }}
             onClickRaw={() => navigate("/raw")}
           />
         )}

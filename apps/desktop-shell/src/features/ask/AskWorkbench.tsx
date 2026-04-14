@@ -28,6 +28,8 @@ import {
   Play,
 } from "lucide-react";
 import { AskHeader } from "./AskHeader";
+import { useWikiQuery } from "./useWikiQuery";
+import { WikiQueryMessage } from "./WikiQueryMessage";
 import { MessageList } from "./MessageList";
 import { Composer } from "./Composer";
 import { ConversationScroller } from "./ConversationScroller";
@@ -244,8 +246,23 @@ export function AskWorkbench({
   // Input ref for focus shortcut
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
-  // Wrap onSend: detect URLs → fetch content → prepend to message → send
+  // v2: Wiki query hook for ?-prefixed questions.
+  const wikiQuery = useWikiQuery();
+
+  // Wrap onSend: detect ? prefix → wiki query; detect URLs → fetch; else → session send
   const handleSendWithUrlFetch = useCallback(async (message: string) => {
+    // ?-prefix: route to /query (wiki knowledge Q&A)
+    const trimmed = message.trimStart();
+    if (trimmed.startsWith("?") || trimmed.startsWith("/query ")) {
+      const question = trimmed.startsWith("/query ")
+        ? trimmed.slice(7).trim()
+        : trimmed.slice(1).trim();
+      if (question) {
+        wikiQuery.queryWiki(question);
+        return;
+      }
+    }
+
     const url = extractUrl(message);
     console.log("[ask-url] message:", message.slice(0, 100), "extracted url:", url);
     if (url) {
@@ -292,7 +309,7 @@ export function AskWorkbench({
       addSystemMessage("URL 抓取失败，发送原始消息。");
     }
     await onSend(message);
-  }, [onSend, addSystemMessage]);
+  }, [onSend, addSystemMessage, wikiQuery]);
 
   return (
     <div className="flex flex-1 overflow-hidden">
@@ -351,6 +368,17 @@ export function AskWorkbench({
             streamingContent={streamingContent}
             isStreaming={isRunning && !pendingPermission}
           />
+
+          {/* v2: Wiki query result (? prefix) — not stored in session history */}
+          {(wikiQuery.isQuerying || wikiQuery.answer || wikiQuery.error) && (
+            <WikiQueryMessage
+              question={wikiQuery.question}
+              answer={wikiQuery.answer}
+              sources={wikiQuery.sources}
+              isStreaming={wikiQuery.isQuerying}
+              error={wikiQuery.error}
+            />
+          )}
 
           {/* Permission dialog rendered inside scroller for flow */}
           {pendingPermission && (

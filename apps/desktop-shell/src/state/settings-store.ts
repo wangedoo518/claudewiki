@@ -8,6 +8,9 @@ export type PermissionMode =
   | "acceptEdits"
   | "bypassPermissions"
   | "plan";
+/** v2 dual-tab shell mode. Per ia-layout.md §2. */
+export type AppMode = "chat" | "wiki";
+
 export type McpTransport = "stdio" | "sse" | "http" | "ws" | "sdk";
 export type McpScope = "local" | "user" | "project";
 
@@ -27,6 +30,17 @@ export interface UserMcpServer {
 }
 
 export interface SettingsState {
+  /** v2 dual-tab mode: Chat vs Wiki. */
+  appMode: AppMode;
+  setAppMode: (mode: AppMode) => void;
+  /** Right-side chat panel collapsed in Wiki mode. */
+  chatPanelCollapsed: boolean;
+  setChatPanelCollapsed: (collapsed: boolean) => void;
+  /** Settings Modal open state (08-settings-modal.md). */
+  settingsModalOpen: boolean;
+  openSettingsModal: () => void;
+  closeSettingsModal: () => void;
+
   theme: ThemeMode;
   warwolfTheme: boolean;
   language: string;
@@ -76,6 +90,8 @@ export interface SettingsState {
 
 type PersistedSettingsState = Pick<
   SettingsState,
+  | "appMode"
+  | "chatPanelCollapsed"
   | "theme"
   | "warwolfTheme"
   | "language"
@@ -89,6 +105,8 @@ type PersistedSettingsState = Pick<
 >;
 
 const defaultSettingsState: PersistedSettingsState = {
+  appMode: "chat",
+  chatPanelCollapsed: false,
   theme: "system",
   warwolfTheme: true,
   language: "en",
@@ -142,6 +160,11 @@ export const useSettingsStore = create<SettingsState>()(
   persist(
     (set, get) => ({
       ...createInitialSettingsState(),
+      setAppMode: (appMode) => set({ appMode }),
+      setChatPanelCollapsed: (chatPanelCollapsed) => set({ chatPanelCollapsed }),
+      settingsModalOpen: false,
+      openSettingsModal: () => set({ settingsModalOpen: true }),
+      closeSettingsModal: () => set({ settingsModalOpen: false }),
       setTheme: (theme) => set({ theme }),
       setWarwolfTheme: (warwolfTheme) => set({ warwolfTheme }),
       setLanguage: (language) => set({ language }),

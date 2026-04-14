@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import { Link, useLocation } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
+import { useSettingsStore } from "@/state/settings-store";
 import {
   CLAWWIKI_ROUTES,
   type ClawWikiRoute,
@@ -113,6 +114,9 @@ export function Sidebar() {
           </div>
         ) : null}
       </div>
+
+      {/* v2 Chat/Wiki mode toggle — ia-layout.md §2 */}
+      <ModeToggle collapsed={collapsed} />
 
       {/* Scrollable nav groups */}
       <nav className="flex flex-1 flex-col gap-0.5 overflow-y-auto px-2 py-3 scrollbar-none">
@@ -271,5 +275,41 @@ function SidebarItem({ route, active, collapsed, badge }: SidebarItemProps) {
         </>
       ) : null}
     </Link>
+  );
+}
+
+/**
+ * Chat/Wiki mode toggle — per ia-layout.md §2.
+ * Two buttons: [Chat] [Wiki]. Active mode has accent background + primary text.
+ */
+function ModeToggle({ collapsed }: { collapsed: boolean }) {
+  const appMode = useSettingsStore((s) => s.appMode);
+  const setAppMode = useSettingsStore((s) => s.setAppMode);
+
+  if (collapsed) return null;
+
+  return (
+    <div className="flex h-9 flex-shrink-0 items-center gap-1 border-b border-sidebar-border px-2">
+      <button
+        onClick={() => setAppMode("chat")}
+        className={`flex-1 rounded-md px-2 py-1 text-[12px] font-medium transition-colors ${
+          appMode === "chat"
+            ? "bg-sidebar-accent text-primary font-semibold"
+            : "text-muted-foreground hover:bg-sidebar-accent/50"
+        }`}
+      >
+        Chat
+      </button>
+      <button
+        onClick={() => setAppMode("wiki")}
+        className={`flex-1 rounded-md px-2 py-1 text-[12px] font-medium transition-colors ${
+          appMode === "wiki"
+            ? "bg-sidebar-accent text-primary font-semibold"
+            : "text-muted-foreground hover:bg-sidebar-accent/50"
+        }`}
+      >
+        Wiki
+      </button>
+    </div>
   );
 }

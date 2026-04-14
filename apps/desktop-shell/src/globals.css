@@ -645,3 +645,34 @@
 .theme-deeptutor .ask-serif {
   font-family: var(--font-family-dt-serif, "Lora", Georgia, serif);
 }
+
+/* ==============================================================
+   Knowledge Graph — Rowboat 原版点阵画布 + 交互光标
+   ============================================================== */
+.graph-view {
+  background-color: var(--color-background);
+  user-select: none;
+}
+.graph-view::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background-image: radial-gradient(oklch(0.5 0 0 / 0.15) 1px, transparent 1px);
+  background-size: 40px 40px;
+  pointer-events: none;
+}
+.dark .graph-view::before {
+  background-image: radial-gradient(oklch(0.7 0 0 / 0.08) 1px, transparent 1px);
+}
+.graph-view > svg {
+  position: relative;
+  z-index: 1;
+  cursor: grab;
+}
+.graph-view:active > svg {
+  cursor: grabbing;
+}
+.graph-view text {
+  pointer-events: none;
+  user-select: none;
+}

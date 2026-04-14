@@ -159,6 +159,8 @@ export interface WikiGraphNode {
   id: string;
   label: string;
   kind: "raw" | "concept";
+  /** Fine-grained category for semantic coloring on the graph. */
+  category: "raw" | "concept" | "people" | "topic" | "compare";
 }
 
 export interface WikiGraphEdge {

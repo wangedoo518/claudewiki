@@ -1037,6 +1037,10 @@ pub struct WikiPageSummary {
     pub created_at: String,
     /// File size in bytes (for the listing UI).
     pub byte_size: u64,
+    /// Wiki category: "concept", "people", "topic", or "compare".
+    /// Set by `list_all_wiki_pages` from the directory the page
+    /// lives in. Defaults to "concept" for backward compatibility.
+    pub category: String,
 }
 
 /// Validate a wiki page slug. Rules match `slugify` output plus the
@@ -1185,9 +1189,13 @@ pub fn list_wiki_pages(paths: &WikiPaths) -> Result<Vec<WikiPageSummary>> {
 /// Graph page and other surfaces that want the full picture.
 pub fn list_all_wiki_pages(paths: &WikiPaths) -> Result<Vec<WikiPageSummary>> {
     let mut all: Vec<WikiPageSummary> = Vec::new();
-    for (_cat_name, subdir) in WIKI_CATEGORIES {
+    for (cat_name, subdir) in WIKI_CATEGORIES {
         let dir = paths.wiki.join(subdir);
         let mut pages = list_pages_in_dir(&dir)?;
+        // Stamp each page with the category it was found under.
+        for p in &mut pages {
+            p.category = cat_name.to_string();
+        }
         all.append(&mut pages);
     }
     all.sort_by(|a, b| a.slug.cmp(&b.slug));
@@ -1228,9 +1236,12 @@ pub struct WikiGraphNode {
     /// Display label — title for raw entries (or filename if title
     /// is missing), title or slug for concept pages.
     pub label: String,
-    /// Node category: "raw" or "concept". Drives node coloring on
-    /// the frontend (Karpathy three-layer visualization).
+    /// Node kind: "raw" or "concept". Coarse-grained node type.
     pub kind: String,
+    /// Fine-grained category: "raw" for raw entries, or one of
+    /// "concept"/"people"/"topic"/"compare" for wiki pages.
+    /// Drives semantic coloring on the frontend graph visualization.
+    pub category: String,
 }
 
 /// A directed edge in the wiki graph: `from` references `to`.
@@ -1275,7 +1286,7 @@ pub struct WikiGraph {
 /// graph (not an error).
 pub fn build_wiki_graph(paths: &WikiPaths) -> Result<WikiGraph> {
     let raws = list_raw_entries(paths).unwrap_or_default();
-    let concepts = list_wiki_pages(paths).unwrap_or_default();
+    let concepts = list_all_wiki_pages(paths).unwrap_or_default();
 
     let raw_count = raws.len();
     let concept_count = concepts.len();
@@ -1297,6 +1308,7 @@ pub fn build_wiki_graph(paths: &WikiPaths) -> Result<WikiGraph> {
             id: format!("raw-{}", raw.id),
             label,
             kind: "raw".to_string(),
+            category: "raw".to_string(),
         });
     }
 
@@ -1312,6 +1324,7 @@ pub fn build_wiki_graph(paths: &WikiPaths) -> Result<WikiGraph> {
             id: format!("wiki-{}", concept.slug),
             label,
             kind: "concept".to_string(),
+            category: concept.category.clone(),
         });
 
         // Edge: concept → raw via source_raw_id frontmatter.
@@ -1326,8 +1339,13 @@ pub fn build_wiki_graph(paths: &WikiPaths) -> Result<WikiGraph> {
         // feat(Q): backlink edges — parse internal markdown links
         // in the body. For each `[...](concepts/target.md)` found,
         // emit a `references` edge from this concept to the target.
+        let subdir = WIKI_CATEGORIES
+            .iter()
+            .find(|(name, _)| *name == concept.category)
+            .map(|(_, dir)| *dir)
+            .unwrap_or(WIKI_CONCEPTS_SUBDIR);
         let concept_file =
-            paths.wiki.join(WIKI_CONCEPTS_SUBDIR).join(format!("{}.md", concept.slug));
+            paths.wiki.join(subdir).join(format!("{}.md", concept.slug));
         if let Ok(content) = fs::read_to_string(&concept_file) {
             let body = strip_frontmatter(&content);
             for target_slug in extract_internal_links(body) {
@@ -1448,6 +1466,7 @@ pub fn list_backlinks(paths: &WikiPaths, target_slug: &str) -> Result<Vec<WikiPa
                 source_raw_id,
                 created_at,
                 byte_size: metadata.len(),
+                category: "concept".to_string(),
             });
         }
     }
@@ -1578,6 +1597,7 @@ pub fn search_wiki_pages(paths: &WikiPaths, query: &str) -> Result<Vec<WikiSearc
                 source_raw_id,
                 created_at,
                 byte_size: metadata.len(),
+                category: "concept".to_string(),
             },
             score,
             snippet,
@@ -1689,6 +1709,7 @@ fn parse_wiki_file(path: &Path, slug: &str) -> Result<WikiPageSummary> {
         source_raw_id,
         created_at,
         byte_size: metadata.len(),
+        category: "concept".to_string(), // overridden by list_all_wiki_pages
     })
 }
 

@@ -433,6 +433,31 @@ Wiki Tab 的 ChatSidePanel 挂载
   → onSend → 追加到同一 session → Chat Tab 同步可见 (通过 React Query invalidate)
 ```
 
+### 7.6 思考中 loading fallback (OpenAiCompat 兼容)
+
+`StreamingMessage` 在 `isStreaming && !content` 时会展示分阶段的 "思考中 / 深度思考中 / 准备回复" 指示器。但 Claude Code 风格的 provider (text_delta 流) 与 OpenAiCompat 风格的 provider (Kimi / DeepSeek, **非流式**, 一次性返回完整响应) 行为差异明显:
+
+| Provider 类型 | turn_state 变化 | text_delta 事件 | StreamingMessage 表现 |
+|--------------|----------------|----------------|--------------------|
+| Claude Code (SSE 流式) | idle → running → idle | 连续触发 | 先显示 "思考中", 内容到达后平滑切换到 markdown |
+| OpenAiCompat (Kimi/DeepSeek) | idle → running (短暂) → idle | **不触发** | 可能一闪而过, 用户感知不到 |
+
+为兜底 OpenAiCompat 场景, `ChatSidePanel` 在 header 下方额外渲染一个 loading fallback 卡片:
+
+```tsx
+const streamingContent = useStreamingStore((s) => s.streamingContent);
+const showLoadingFallback = isTurnActive && !streamingContent;
+// ...
+{showLoadingFallback && (
+  <div role="status" aria-live="polite" className="flex items-center gap-2 ...">
+    <Loader2 className="size-3 animate-spin ..." />
+    <span className="text-[11px] ...">思考中...</span>
+  </div>
+)}
+```
+
+触发条件 `isTurnActive && !streamingContent`: 只要后端在处理且还没有 text_delta 流入, 就保持 loading 条可见; text_delta 一到达则自动隐藏, 让 `StreamingMessage` 的 markdown 渲染接管。side panel 的 tiny header strip 同时显示文本 "思考中...", 二者互为 belt-and-suspenders, 不会同时消失。
+
 ---
 
 ## 8. 测试计划

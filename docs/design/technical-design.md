@@ -678,8 +678,9 @@ v2 定义四个一级 SKILL 命令, 均通过 Chat Tab 输入框触发:
 | 参数 | 类型 | 必填 | 默认值 | 说明 |
 |------|------|------|--------|------|
 | `slug` | `string` | 否 | - | 指定 slug 时仅返回该页面的反向链接; 省略时返回完整索引 |
+| `format` | `string` | 否 | `wrapped` | `raw` 时返回裸 `BacklinksIndex` HashMap (见下); 其他/缺省时返回包装结构。仅在 `slug` 未指定时生效 |
 
-#### Response (200 OK) -- 完整索引
+#### Response (200 OK) -- 完整索引 (默认, `format=wrapped`)
 
 ```json
 {
@@ -691,6 +692,19 @@ v2 定义四个一级 SKILL 命令, 均通过 Chat Tab 输入框触发:
   "total_backlinks": 23
 }
 ```
+
+#### Response (200 OK) -- `?format=raw` (裸 HashMap)
+
+用于 CLI / 外部工具直接反序列化为 `BacklinksIndex` 类型。
+
+```json
+{
+  "transformer-architecture": ["attention-mechanism", "bert-overview"],
+  "rag-overview": ["transformer-architecture"]
+}
+```
+
+> **何时使用 raw**: 调用方已持有 `list_all_wiki_pages` 或 `wiki_stats` 可独立计算 `total_*` 指标时, 直接消费原始索引比丢弃包装字段更直观。UI 侧继续使用包装格式 (默认)。
 
 #### Response (200 OK) -- 指定 slug
 
@@ -1274,6 +1288,33 @@ pub struct FieldValidation {
 - `people`: type, status, owner, schema, title, summary, affiliation, role, created_at
 - `topic`: type, status, owner, schema, title, summary, subtopics, created_at
 - `compare`: type, status, owner, schema, title, summary, item_a, item_b, created_at
+
+#### 3.7.1 SchemaTemplateInfo (API DTO, 新增)
+
+`SchemaTemplate` 是内部验证对象, 由 `validate_frontmatter` 消费, 字段精简、保留运行时所需的 `FieldType` / `FieldValidation`。
+而 `GET /api/wiki/schema/templates` (§2.9) 面向前端模板选择 UI, 需要展示名称、写作提示和磁盘路径等元数据, 这些并非验证所需。两种诉求正交, 因此引入独立的响应 DTO:
+
+```rust
+/// API-facing template metadata (technical-design.md §2.9 response shape).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SchemaTemplateInfo {
+    pub category: String,       // file stem, e.g. "concept"
+    pub display_name: String,   // 中文显示名, e.g. "概念"
+    pub fields: Vec<TemplateFieldInfo>,
+    pub body_hint: String,      // 模板 body 部分(frontmatter 之后), 作为写作提示
+    pub file_path: String,      // .clawwiki/schema/templates/<category>.md
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct TemplateFieldInfo {
+    pub name: String,
+    pub required: bool,         // 所有 frontmatter 字段默认为 true
+    pub field_type: String,     // 当前统一为 "String"; 预留日后按值类型推断
+    pub description: String,
+}
+```
+
+加载器 `wiki_store::load_schema_template_infos(paths) -> Result<Vec<SchemaTemplateInfo>>` 扫描 `schema/templates/*.md`, 每个文件产出一个 `SchemaTemplateInfo`。display_name 通过内置映射表补全 (`concept→概念`, `people→人物`, `topic→主题`, `compare→对比`); 未知分类回退为原始字符串。结果按 `category` 字母序排序以保证 API 稳定。
 
 ### 3.8 PatrolIssue (新增)
 

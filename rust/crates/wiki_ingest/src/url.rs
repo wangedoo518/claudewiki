@@ -90,6 +90,12 @@ pub async fn fetch_and_body(url: &str) -> Result<IngestResult> {
     let content_type = extract_content_type(&headers_snapshot);
     let (title, body) = shape_ingest_output(url, &bytes, content_type.as_deref())?;
 
+    // Post-extraction cleanup: HTML-entity decode + drop broken data URIs.
+    // Both this path and `wechat_fetch::fetch_wechat_article` go through
+    // the same sanitiser so the raw layer stays clean regardless of which
+    // pipeline produced the markdown.
+    let body = crate::sanitize_markdown(&body);
+
     Ok(IngestResult {
         title,
         body,

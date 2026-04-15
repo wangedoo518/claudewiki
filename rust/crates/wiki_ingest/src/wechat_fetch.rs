@@ -127,7 +127,12 @@ pub async fn fetch_wechat_article(url: &str) -> Result<IngestResult, crate::Inge
     let publish_time = response.get("publish_time").and_then(|v| v.as_str()).unwrap_or("");
     let markdown = response.get("markdown").and_then(|v| v.as_str()).unwrap_or("").to_string();
 
-    // Build frontmatter-style body
+    // Build frontmatter-style body. Author / published lines stay raw
+    // (single-line metadata, no HTML entities expected) but the article
+    // markdown itself goes through `sanitize_markdown` to decode HTML
+    // entities and drop truncated data:image/svg+xml stubs that defuddle
+    // sometimes leaks through (regression from 2026-04 mp.weixin grab).
+    let cleaned_markdown = crate::sanitize_markdown(&markdown);
     let mut body = String::new();
     if !author.is_empty() {
         body.push_str(&format!("_Author: {author}_\n\n"));
@@ -135,7 +140,7 @@ pub async fn fetch_wechat_article(url: &str) -> Result<IngestResult, crate::Inge
     if !publish_time.is_empty() {
         body.push_str(&format!("_Published: {publish_time}_\n\n"));
     }
-    body.push_str(&markdown);
+    body.push_str(&cleaned_markdown);
 
     Ok(IngestResult {
         title: if title.is_empty() { "WeChat Article".to_string() } else { title },

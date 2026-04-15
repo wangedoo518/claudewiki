@@ -31,7 +31,8 @@
  * essentially reimplementing that hook under the Ask namespace.
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
+// Regression fix for 2026-04 "empty conversation pile-up": no auto-create on mount.
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   appendMessage,
@@ -97,23 +98,42 @@ export interface UseAskSessionResult {
 }
 
 /**
- * Main hook. Idempotent: mounting twice in the same shell is a
- * no-op because React Query dedupes the underlying queries.
+ * Main hook. Session lifecycle policy (regression guard — see commit
+ * history for the "8 empty conversations" bug from 2026-04):
+ *
+ *   We NEVER auto-create a session on mount. Creation happens only
+ *   when the user actually performs an action — either sending their
+ *   first message or clicking "新建对话" and then sending. Mounting
+ *   the hook (from AskPage, ChatSidePanel, route re-entry, strict-mode
+ *   double-invoke, etc.) just reads the persisted id from localStorage
+ *   and is a pure read: zero side effects to the backend.
+ *
+ *   Fallout of a stale/missing id: detailQuery gets a 404, we clear
+ *   the id, and the UI falls back to the WelcomeScreen until the user
+ *   sends. This is intentional — silently recreating was the source
+ *   of the empty-conversation pile-up, because any 404 (including
+ *   ones caused by React concurrent rendering re-mounting the hook
+ *   before it finished a prior create) triggered another create.
+ *
+ *   Use `onResetSession` to intentionally start fresh; the actual
+ *   POST still waits for the first message.
  */
 export function useAskSession(): UseAskSessionResult {
   const queryClient = useQueryClient();
-  // Read from localStorage on init. ensureMutation validates on first mount.
-  // If the stored ID is stale (404), ensureMutation clears it and creates new.
+  // Read from localStorage on init. No mutate on mount — creation is
+  // deferred until the first user action (send/reset-then-send).
   const [activeId, setActiveId] = useState<string | null>(() => readActiveSessionId());
   const [errorMessage, setErrorMessage] = useState<string | undefined>();
 
-  // Step 1 — ensure an active session exists. If localStorage had a
-  // stale id that the backend rejects (404) we clear it and let the
-  // next render retry.
+  // Step 1 — ensure an active session exists. Triggered ONLY by
+  // `onSend` when activeId is null. Not fired automatically on mount,
+  // to avoid the strict-mode + re-entry session pile-up bug.
   const ensureMutation = useMutation({
     mutationFn: async () => {
       // Fast path: an id is already in localStorage and backend
-      // confirms it exists.
+      // confirms it exists. `readActiveSessionId()` is read again here
+      // because another hook instance (e.g. ChatSidePanel ↔ AskPage
+      // hand-off) may have written a fresh id since this hook mounted.
       const persisted = readActiveSessionId();
       if (persisted) {
         try {
@@ -124,8 +144,6 @@ export function useAskSession(): UseAskSessionResult {
           console.warn("[ask] stored session not found, recreating", err);
         }
       }
-      // Create a fresh session at the canonical wiki root. The
-      // backend defaults `project_path` to cwd so we leave it empty.
       const created = await createSession({
         title: "Ask · new conversation",
       });
@@ -144,18 +162,6 @@ export function useAskSession(): UseAskSessionResult {
     },
   });
 
-  // Kick off the ensure on first mount. We deliberately don't guard
-  // against re-entry with a ref — React Query's mutation is already
-  // idempotent when mutate() is called from an effect, and the
-  // strict-mode double-invoke on dev just creates two sessions the
-  // first time (acceptable for MVP).
-  useEffect(() => {
-    if (!activeId && !ensureMutation.isPending) {
-      ensureMutation.mutate();
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- mutate is stable
-  }, [activeId]);
-
   // Step 2 — poll the session detail. Only refetch on an interval
   // while the turn is active; idle turns use the standard staleTime
   // behavior and don't hammer the backend.
@@ -172,7 +178,9 @@ export function useAskSession(): UseAskSessionResult {
       try {
         return await getSession(activeId);
       } catch (err) {
-        // Session not found (404) — clear stale ID and create new
+        // Session not found (404) — clear stale ID. We do NOT
+        // recreate automatically; the UI falls back to WelcomeScreen
+        // until the user sends their first message.
         console.warn("[ask] session not found, clearing stale ID");
         writeActiveSessionId(null);
         setActiveId(null);
@@ -181,7 +189,7 @@ export function useAskSession(): UseAskSessionResult {
     },
     enabled: activeId !== null,
     staleTime: 5_000,
-    retry: false, // Don't retry 404s — let ensureMutation handle it
+    retry: false,
     refetchOnMount: "always",
     refetchInterval: (q) => {
       const data = q.state.data as DesktopSessionDetail | undefined;
@@ -196,22 +204,19 @@ export function useAskSession(): UseAskSessionResult {
     },
   });
 
-  // Step 3 — send message mutation. On success, optimistically
-  // replace the cached session with the snapshot the append route
-  // returned; detail poll will pick up the turn-state flip to idle
-  // on its next tick.
+  // Step 3 — send message mutation. The mutation takes the session id
+  // as a parameter rather than closing over `activeId`, so `onSend`
+  // can hand in a freshly-created id (from ensureMutation.mutateAsync)
+  // in the same call without waiting for a React re-render.
   const sendMutation = useMutation({
-    mutationFn: async (text: string) => {
-      if (!activeId) throw new Error("no active session");
-      return appendMessage(activeId, text);
+    mutationFn: async ({ sessionId, text }: { sessionId: string; text: string }) => {
+      return appendMessage(sessionId, text);
     },
-    onSuccess: (response) => {
-      if (activeId) {
-        queryClient.setQueryData(
-          askSessionKeys.detail(activeId),
-          response.session
-        );
-      }
+    onSuccess: (response, variables) => {
+      queryClient.setQueryData(
+        askSessionKeys.detail(variables.sessionId),
+        response.session
+      );
       setErrorMessage(undefined);
     },
     onError: (err) => {
@@ -221,16 +226,27 @@ export function useAskSession(): UseAskSessionResult {
 
   const onSend = useCallback(
     async (text: string) => {
-      if (!activeId) {
-        setErrorMessage("Session not ready yet — try again in a moment.");
-        return;
+      // Lazy-create path: only reach createSession when the user
+      // actually wants to send something and has no session yet.
+      let idToUse = activeId;
+      if (!idToUse) {
+        try {
+          const created = await ensureMutation.mutateAsync();
+          idToUse = created.id;
+        } catch (err) {
+          setErrorMessage(
+            err instanceof Error ? err.message : "Failed to create session"
+          );
+          return;
+        }
       }
-      await sendMutation.mutateAsync(text);
+      await sendMutation.mutateAsync({ sessionId: idToUse, text });
     },
-    [activeId, sendMutation]
+    [activeId, sendMutation, ensureMutation]
   );
 
   const onResetSession = useCallback(() => {
+    // Clear — no immediate POST. Next user message creates the session.
     writeActiveSessionId(null);
     setActiveId(null);
     setErrorMessage(undefined);

@@ -79,6 +79,24 @@ export async function deleteSession(
   );
 }
 
+/**
+ * Delete every empty (zero-message) idle session in one call. Pass
+ * `except` to preserve the session the user is currently staring at.
+ * Added as one-click recovery for the pre-fix useAskSession bug that
+ * piled up empty "Ask · new conversation" entries.
+ */
+export async function cleanupEmptySessions(
+  except?: string | null,
+): Promise<{ deleted_ids: string[]; deleted_count: number }> {
+  return fetchJson<{ deleted_ids: string[]; deleted_count: number }>(
+    "/api/desktop/sessions/cleanup-empty",
+    {
+      method: "POST",
+      body: JSON.stringify(except ? { except } : {}),
+    },
+  );
+}
+
 export async function renameSession(
   sessionId: string,
   title: string,

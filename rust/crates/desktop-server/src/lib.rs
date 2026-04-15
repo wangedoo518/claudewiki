@@ -378,6 +378,10 @@ pub fn app(state: AppState) -> Router {
             "/api/desktop/scheduled/{id}/run",
             post(run_scheduled_task_now),
         )
+        .route(
+            "/api/desktop/sessions/cleanup-empty",
+            post(cleanup_empty_sessions_handler),
+        )
         .route("/api/desktop/sessions/{id}", get(get_session).delete(delete_session_handler))
         .route("/api/desktop/sessions/{id}/messages", post(append_message))
         .route("/api/desktop/sessions/{id}/title", post(rename_session))
@@ -1190,6 +1194,33 @@ async fn delete_session_handler(
         .await
         .map_err(into_api_error)?;
     Ok(Json(serde_json::json!({ "deleted": deleted })))
+}
+
+/// Body: `{ "except": "<session-id>?" }` — optional session to preserve.
+/// Response: `{ "deleted_ids": ["...", ...], "deleted_count": N }`.
+///
+/// One-click recovery for leftover empty "Ask · new conversation" sessions
+/// produced by the pre-fix `useAskSession` that auto-created on every mount.
+#[derive(Deserialize, Default)]
+struct CleanupEmptyRequest {
+    #[serde(default)]
+    except: Option<String>,
+}
+
+async fn cleanup_empty_sessions_handler(
+    State(state): State<AppState>,
+    body: Option<Json<CleanupEmptyRequest>>,
+) -> Json<serde_json::Value> {
+    let req = body.map(|b| b.0).unwrap_or_default();
+    let deleted = state
+        .desktop
+        .cleanup_empty_sessions(req.except.as_deref())
+        .await;
+    let count = deleted.len();
+    Json(serde_json::json!({
+        "deleted_ids": deleted,
+        "deleted_count": count,
+    }))
 }
 
 async fn rename_session(

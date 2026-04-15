@@ -2275,6 +2275,48 @@ impl DesktopState {
         Ok(true)
     }
 
+    /// Delete every session that has zero messages AND is currently idle.
+    /// Optionally skip one session (so a freshly created session the user
+    /// is actively staring at isn't nuked mid-render). Returns the ids of
+    /// deleted sessions, so the caller can log / invalidate caches.
+    ///
+    /// Intended as a one-click recovery for the "8 empty conversations"
+    /// pile-up regression: legacy code auto-created a Session on every
+    /// mount, and after a few route switches users ended up with a wall
+    /// of placeholder entries. See [`useAskSession`] (frontend) for the
+    /// upstream fix.
+    pub async fn cleanup_empty_sessions(
+        &self,
+        except: Option<&str>,
+    ) -> Vec<String> {
+        let mut store = self.store.write().await;
+        let ids_to_remove: Vec<String> = store
+            .sessions
+            .iter()
+            .filter(|(id, record)| {
+                // Skip the session the caller wants to preserve.
+                if Some(id.as_str()) == except {
+                    return false;
+                }
+                // Only delete idle sessions — don't touch a running turn.
+                if !matches!(record.metadata.turn_state, DesktopTurnState::Idle) {
+                    return false;
+                }
+                record.session.messages.is_empty()
+            })
+            .map(|(id, _)| id.clone())
+            .collect();
+        for id in &ids_to_remove {
+            store.sessions.remove(id);
+        }
+        let had_removals = !ids_to_remove.is_empty();
+        drop(store);
+        if had_removals {
+            self.persist().await;
+        }
+        ids_to_remove
+    }
+
     pub async fn rename_session(
         &self,
         session_id: &str,
@@ -7365,5 +7407,162 @@ mod tests {
             n
         );
         std::env::temp_dir().join(suffix)
+    }
+
+    // ── Regression: empty-session cleanup (2026-04 bug) ─────────────
+    //
+    // Pre-fix, `useAskSession` auto-created a session on every mount,
+    // so route switches and strict-mode double invocations piled up
+    // 8+ empty "Ask · new conversation" entries. The frontend fix is
+    // to stop auto-creating; the backend fix is the cleanup helper
+    // that removes leftovers produced before the patch was deployed.
+
+    #[tokio::test]
+    async fn cleanup_empty_sessions_removes_zero_message_idle_sessions() {
+        let state = DesktopState::default();
+        // Take a snapshot of sessions that existed before the test (the
+        // default seed ships with a few non-empty records) so we can
+        // separate them from the ones we create here.
+        let baseline_ids: std::collections::HashSet<String> = state
+            .list_sessions()
+            .await
+            .into_iter()
+            .map(|s| s.id)
+            .collect();
+
+        // Create three empty sessions (simulating the regression).
+        let mut empty_ids = Vec::new();
+        for i in 0..3 {
+            let summary = state
+                .create_session(CreateDesktopSessionRequest {
+                    title: Some(format!("Ask · new conversation {i}")),
+                    project_name: None,
+                    project_path: None,
+                })
+                .await;
+            empty_ids.push(summary.id);
+        }
+
+        // Create one session with a real message — must survive cleanup.
+        let kept = state
+            .create_session(CreateDesktopSessionRequest {
+                title: Some("real work".to_string()),
+                project_name: None,
+                project_path: None,
+            })
+            .await;
+        state
+            .append_user_message(&kept.id, "hello".to_string())
+            .await
+            .expect("append should succeed");
+
+        // Wait for the turn to finish so state is idle before cleanup.
+        loop {
+            let detail = state.get_session(&kept.id).await.unwrap();
+            if detail.turn_state == DesktopTurnState::Idle {
+                break;
+            }
+            sleep(Duration::from_millis(10)).await;
+        }
+
+        let deleted = state.cleanup_empty_sessions(None).await;
+
+        // All three freshly-created empty ones got deleted …
+        for id in &empty_ids {
+            assert!(
+                deleted.contains(id),
+                "expected empty session {id} to be in deleted list"
+            );
+        }
+        // … and the session with a real message survived.
+        assert!(
+            !deleted.contains(&kept.id),
+            "session with messages must not be deleted"
+        );
+        let remaining: std::collections::HashSet<String> = state
+            .list_sessions()
+            .await
+            .into_iter()
+            .map(|s| s.id)
+            .collect();
+        assert!(remaining.contains(&kept.id));
+        for id in &empty_ids {
+            assert!(
+                !remaining.contains(id),
+                "empty session {id} should no longer be listed"
+            );
+        }
+        // Baseline (seeded) sessions that were non-empty should remain
+        // untouched; baseline sessions that were empty (if any) will
+        // also have been swept — that's expected behavior.
+        for id in &baseline_ids {
+            if !deleted.contains(id) {
+                assert!(remaining.contains(id));
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn cleanup_empty_sessions_honors_except_parameter() {
+        let state = DesktopState::default();
+        let a = state
+            .create_session(CreateDesktopSessionRequest {
+                title: None,
+                project_name: None,
+                project_path: None,
+            })
+            .await;
+        let b = state
+            .create_session(CreateDesktopSessionRequest {
+                title: None,
+                project_name: None,
+                project_path: None,
+            })
+            .await;
+
+        let deleted = state.cleanup_empty_sessions(Some(&a.id)).await;
+
+        assert!(!deleted.contains(&a.id), "except id must be preserved");
+        assert!(deleted.contains(&b.id), "other empty session should be deleted");
+        let remaining: std::collections::HashSet<String> = state
+            .list_sessions()
+            .await
+            .into_iter()
+            .map(|s| s.id)
+            .collect();
+        assert!(remaining.contains(&a.id));
+        assert!(!remaining.contains(&b.id));
+    }
+
+    #[tokio::test]
+    async fn cleanup_empty_sessions_leaves_running_sessions_alone() {
+        use super::DesktopTurnState as TS;
+
+        let state = DesktopState::default();
+        let running = state
+            .create_session(CreateDesktopSessionRequest {
+                title: None,
+                project_name: None,
+                project_path: None,
+            })
+            .await;
+
+        // Force the session into Running state directly in the store,
+        // mirroring what `append_user_message` does before dispatching
+        // the turn executor.
+        {
+            let mut store = state.store.write().await;
+            let record = store
+                .sessions
+                .get_mut(&running.id)
+                .expect("session just created");
+            record.metadata.turn_state = TS::Running;
+        }
+
+        let deleted = state.cleanup_empty_sessions(None).await;
+        assert!(
+            !deleted.contains(&running.id),
+            "running session must not be swept even if empty"
+        );
     }
 }

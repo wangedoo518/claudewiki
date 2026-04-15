@@ -15,9 +15,15 @@ import {
   Loader2,
   PanelLeftClose,
   PanelLeftOpen,
+  Sparkles,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { listSessions, deleteSession, renameSession } from "./api/client";
+import {
+  listSessions,
+  deleteSession,
+  renameSession,
+  cleanupEmptySessions,
+} from "./api/client";
 import type { DesktopSessionSummary } from "@/lib/tauri";
 
 const sessionListKeys = {
@@ -49,6 +55,24 @@ export function SessionSidebar({
   });
 
   const sessions = listQuery.data?.sessions ?? [];
+
+  // One-click cleanup for leftover empty "new conversation" sessions.
+  // Preserves the session the user currently has active (if any).
+  const cleanupMut = useMutation({
+    mutationFn: () => cleanupEmptySessions(activeSessionId),
+    onSuccess: (result) => {
+      void queryClient.invalidateQueries({ queryKey: sessionListKeys.all });
+      const count = result.deleted_count;
+      if (count === 0) {
+        window.alert("没有可清理的空会话");
+      } else {
+        window.alert(`已清理 ${count} 条空会话`);
+      }
+    },
+    onError: (err) => {
+      window.alert(`清理失败: ${err instanceof Error ? err.message : String(err)}`);
+    },
+  });
 
   // Group by bucket
   const today = sessions.filter((s) => s.bucket === "today");
@@ -94,6 +118,23 @@ export function SessionSidebar({
             title="新建对话"
           >
             <Plus className="size-3.5" />
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              if (window.confirm("清理所有空会话？当前激活的会话不会被删除。")) {
+                cleanupMut.mutate();
+              }
+            }}
+            disabled={cleanupMut.isPending}
+            className="rounded-md p-1 text-sidebar-foreground transition-colors hover:bg-sidebar-accent disabled:opacity-40"
+            title="清理空会话（保留当前会话）"
+          >
+            {cleanupMut.isPending ? (
+              <Loader2 className="size-3.5 animate-spin" />
+            ) : (
+              <Sparkles className="size-3.5" />
+            )}
           </button>
           <button
             type="button"

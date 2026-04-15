@@ -99,12 +99,12 @@ function useMarkdownComponents(): Components {
   return useMemo(
     (): Components => ({
       h1: ({ children }) => (
-        <h1 className="mb-4 mt-6 text-[24px] font-semibold leading-[1.3] text-[var(--color-foreground)]" style={{ fontFamily: 'var(--font-family-dt-serif, "Lora", serif)' }}>
+        <h1 className="mb-4 mt-6 text-[24px] font-semibold leading-[1.3] text-[var(--color-foreground)]">
           {children}
         </h1>
       ),
       h2: ({ children }) => (
-        <h2 className="mb-3 mt-5 text-[18px] font-semibold leading-[1.3] text-[var(--color-foreground)]" style={{ fontFamily: 'var(--font-family-dt-serif, "Lora", serif)' }}>
+        <h2 className="mb-3 mt-5 text-[18px] font-semibold leading-[1.3] text-[var(--color-foreground)]">
           {children}
         </h2>
       ),
@@ -133,14 +133,12 @@ function useMarkdownComponents(): Components {
         if (isBlock) {
           return (
             <pre className="my-3 overflow-x-auto rounded-lg bg-[var(--color-secondary)] p-4 text-[13px] leading-[1.5] dark:bg-[var(--color-card)]">
-              <code className={className} style={{ fontFamily: 'var(--font-family-dt-mono, monospace)' }}>
-                {children}
-              </code>
+              <code className={className}>{children}</code>
             </pre>
           );
         }
         return (
-          <code className="rounded bg-[var(--color-muted)] px-1.5 py-0.5 text-[14px]" style={{ fontFamily: 'var(--font-family-dt-mono, monospace)' }}>
+          <code className="rounded bg-[var(--color-muted)] px-1.5 py-0.5 text-[14px]">
             {children}
           </code>
         );
@@ -190,10 +188,7 @@ export function WikiArticle({ slug }: WikiArticleProps) {
   return (
     <div className="mx-auto max-w-[720px] px-8 py-6">
       {/* Title — component-spec.md §3.2 */}
-      <h1
-        className="mb-2 text-[24px] leading-[1.3] text-[var(--color-foreground)]"
-        style={{ fontFamily: 'var(--font-family-dt-serif, "Lora", serif)' }}
-      >
+      <h1 className="mb-2 text-[24px] leading-[1.3] text-[var(--color-foreground)]">
         {summary.title}
       </h1>
 

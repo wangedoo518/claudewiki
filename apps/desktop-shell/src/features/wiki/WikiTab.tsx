@@ -34,10 +34,7 @@ function SpecialFilePage({ kind }: { kind: "index" | "log" }) {
 
   return (
     <div className="mx-auto max-w-[720px] px-8 py-6">
-      <h1
-        className="mb-4 text-[24px] leading-[1.3] text-foreground"
-        style={{ fontFamily: 'var(--font-family-dt-serif, "Lora", serif)' }}
-      >
+      <h1 className="mb-4 text-[24px] leading-[1.3] text-foreground">
         {kind === "index" ? "Wiki" : "Changelog"}
       </h1>
       <pre className="whitespace-pre-wrap text-[14px] leading-[1.6] text-foreground">

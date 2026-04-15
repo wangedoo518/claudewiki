@@ -191,7 +191,7 @@ export function RawLibraryPage() {
           <div>
             <h1
               className="text-foreground"
-              style={{ fontSize: 18, fontWeight: 600, fontFamily: "var(--font-serif, Lora, serif)" }}
+              style={{ fontSize: 18, fontWeight: 600 }}
             >
               素材库
             </h1>
@@ -934,7 +934,6 @@ function FullScreenReader({
             style={{
               fontSize: 22,
               fontWeight: 600,
-              fontFamily: "var(--font-serif, Lora, serif)",
               lineHeight: 1.3,
             }}
           >
@@ -984,7 +983,6 @@ function FullScreenReader({
         <article
           className="prose prose-sm mx-auto max-w-3xl text-foreground/90"
           style={{
-            fontFamily: "var(--font-serif, Lora, serif)",
             fontSize: "16px",
             lineHeight: "1.8",
           }}
@@ -995,7 +993,6 @@ function FullScreenReader({
                 <h1
                   className="mb-4 mt-0 text-foreground"
                   style={{
-                    fontFamily: "var(--font-serif, Lora, serif)",
                     fontSize: "24px",
                     fontWeight: 600,
                     letterSpacing: "-0.01em",

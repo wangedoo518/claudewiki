@@ -118,10 +118,7 @@ export function DashboardPage() {
     <div className="flex h-full flex-col overflow-y-auto">
       {/* Hero — 07-dashboard.md §6.1 */}
       <section className="border-b border-border/50 px-8 py-6">
-        <h1
-          className="text-3xl font-medium text-foreground"
-          style={{ fontFamily: 'var(--font-family-dt-serif, "Lora", "Songti SC", Georgia, serif)' }}
-        >
+        <h1 className="text-3xl font-medium text-foreground">
           你的外脑
         </h1>
         <p className="mt-1 text-muted-foreground/60" style={{ fontSize: 11 }}>

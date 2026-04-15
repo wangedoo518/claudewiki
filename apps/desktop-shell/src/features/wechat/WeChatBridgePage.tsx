@@ -187,7 +187,7 @@ export function WeChatBridgePage() {
       <div className="shrink-0 border-b border-border/50 px-6 py-4">
         <h1
           className="text-foreground"
-          style={{ fontSize: 18, fontWeight: 600, fontFamily: "var(--font-serif, Lora, serif)" }}
+          style={{ fontSize: 18, fontWeight: 600 }}
         >
           WeChat Bridge
         </h1>

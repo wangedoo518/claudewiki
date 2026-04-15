@@ -642,7 +642,7 @@ function PageDetail({ slug }: { slug: string }) {
         </div>
         <h2
           className="mt-2 text-foreground"
-          style={{ fontFamily: "var(--font-serif, Lora, serif)", fontSize: "20px", fontWeight: 600, letterSpacing: "-0.01em", lineHeight: "1.3" }}
+          style={{ fontSize: "20px", fontWeight: 600, letterSpacing: "-0.01em", lineHeight: "1.3" }}
         >
           {summary.title || summary.slug}
         </h2>
@@ -672,7 +672,6 @@ function PageDetail({ slug }: { slug: string }) {
         <article
           className="prose prose-sm max-w-none text-foreground/90"
           style={{
-            fontFamily: "var(--font-serif, Lora, serif)",
             fontSize: "14px",
             lineHeight: "1.6",
           }}
@@ -682,7 +681,7 @@ function PageDetail({ slug }: { slug: string }) {
               h1: (props) => (
                 <h1
                   className="mb-3 mt-0 text-foreground"
-                  style={{ fontFamily: "var(--font-serif, Lora, serif)", fontSize: "18px", fontWeight: 600, letterSpacing: "-0.01em" }}
+                  style={{ fontSize: "18px", fontWeight: 600, letterSpacing: "-0.01em" }}
                   {...props}
                 />
               ),
@@ -860,7 +859,7 @@ function SpecialFilePanel({ kind }: { kind: "index" | "log" }) {
           />
           <h2
             className="text-foreground"
-            style={{ fontFamily: "var(--font-serif, Lora, serif)", fontSize: "20px", fontWeight: 600, letterSpacing: "-0.01em" }}
+            style={{ fontSize: "20px", fontWeight: 600, letterSpacing: "-0.01em" }}
           >
             {meta.label}
           </h2>
@@ -913,7 +912,7 @@ function SpecialFilePanel({ kind }: { kind: "index" | "log" }) {
         ) : (
           <article
             className="prose prose-sm max-w-none text-foreground/90"
-            style={{ fontFamily: "var(--font-serif, Lora, serif)", fontSize: "14px", lineHeight: "1.6" }}
+            style={{ fontSize: "14px", lineHeight: "1.6" }}
           >
             <ReactMarkdown
               components={{
@@ -921,7 +920,6 @@ function SpecialFilePanel({ kind }: { kind: "index" | "log" }) {
                   <h1
                     className="mb-3 mt-0 text-foreground"
                     style={{
-                      fontFamily: "var(--font-serif, Lora, serif)",
                       fontSize: "18px",
                       fontWeight: 600,
                       letterSpacing: "-0.01em",

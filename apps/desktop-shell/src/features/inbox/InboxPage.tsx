@@ -117,7 +117,7 @@ export function InboxPage() {
         <div>
           <h1
             className="text-foreground"
-            style={{ fontSize: 18, fontWeight: 600, fontFamily: "var(--font-serif, Lora, serif)" }}
+            style={{ fontSize: 18, fontWeight: 600 }}
           >
             Inbox
           </h1>
@@ -401,7 +401,7 @@ function EntryDetail({ entry }: { entry: InboxEntry }) {
         </div>
         <h2
           className="mt-2 text-foreground"
-          style={{ fontSize: 18, fontWeight: 600, fontFamily: "var(--font-serif, Lora, serif)" }}
+          style={{ fontSize: 18, fontWeight: 600 }}
         >
           {entry.title}
         </h2>
@@ -586,7 +586,7 @@ function ProposalPreview({ proposal }: { proposal: WikiPageProposal }) {
           </div>
           <div
             className="mt-1.5 text-foreground"
-            style={{ fontSize: 16, fontWeight: 600, fontFamily: "var(--font-serif, Lora, serif)" }}
+            style={{ fontSize: 16, fontWeight: 600 }}
           >
             {proposal.title}
           </div>

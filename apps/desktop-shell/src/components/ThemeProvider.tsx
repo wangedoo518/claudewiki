@@ -28,6 +28,19 @@ const ThemeContext = createContext<ThemeContextValue>({
   setWarwolf: () => {},
 });
 
+/**
+ * Idempotent theme-class application on `<html>`. Uses `classList.toggle`
+ * with explicit boolean to guarantee the OTHER class is always removed —
+ * prevents the "html has BOTH light AND dark" state that can creep in when
+ * external code (devtools manipulation, HMR race, prior buggy revision)
+ * forgets to strip the losing class.
+ */
+function applyThemeClass(resolved: ResolvedTheme) {
+  const root = document.documentElement;
+  root.classList.toggle("light", resolved === "light");
+  root.classList.toggle("dark", resolved === "dark");
+}
+
 export function ThemeProvider({ children }: { children: ReactNode }) {
   const theme = useSettingsStore((state) => state.theme);
   const warwolfTheme = useSettingsStore((state) => state.warwolfTheme);
@@ -49,10 +62,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
 
     const resolved = resolve();
     setResolvedTheme(resolved);
-
-    const root = document.documentElement;
-    root.classList.remove("light", "dark");
-    root.classList.add(resolved);
+    applyThemeClass(resolved);
   }, [theme]);
 
   // Listen for system theme changes
@@ -63,9 +73,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     const handler = (e: MediaQueryListEvent) => {
       const resolved = e.matches ? "dark" : "light";
       setResolvedTheme(resolved);
-      const root = document.documentElement;
-      root.classList.remove("light", "dark");
-      root.classList.add(resolved);
+      applyThemeClass(resolved);
     };
     mq.addEventListener("change", handler);
     return () => mq.removeEventListener("change", handler);

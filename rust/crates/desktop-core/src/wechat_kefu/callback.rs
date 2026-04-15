@@ -6,7 +6,6 @@
 //! with specific base64 padding chars (a false-negative validation bug).
 
 use base64::Engine;
-use sha2::Digest;
 
 #[derive(Debug, thiserror::Error)]
 pub enum CallbackError {
@@ -38,6 +37,7 @@ pub enum CallbackEvent {
 pub struct KefuCallback {
     token: String,
     aes_key: [u8; 32],
+    #[allow(dead_code)]
     corpid: String,
 }
 
@@ -87,11 +87,8 @@ impl KefuCallback {
         parts.sort_unstable();
         let joined = parts.concat();
 
-        use sha2::Sha256;
         // WeChat uses SHA1, not SHA256. Use the sha1 crate indirectly via raw computation.
-        // Actually, let's just implement SHA1 ourselves using the standard approach.
-        let digest = sha1_hex(joined.as_bytes());
-        digest
+        sha1_hex(joined.as_bytes())
     }
 
     /// Handle GET callback verification (echostr decryption).
@@ -147,8 +144,6 @@ impl KefuCallback {
     /// AES-256-CBC decrypt with PKCS7 unpadding.
     /// IV = first 16 bytes of the AES key.
     fn decrypt_aes_cbc(&self, cipher_b64: &str) -> Result<Vec<u8>, CallbackError> {
-        use aes_gcm::aead::generic_array::GenericArray;
-
         let ciphertext = base64::engine::general_purpose::STANDARD
             .decode(cipher_b64.as_bytes())
             .map_err(|e| CallbackError::Decryption(format!("base64 decode: {e}")))?;

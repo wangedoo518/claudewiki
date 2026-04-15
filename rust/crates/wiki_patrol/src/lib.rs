@@ -92,7 +92,7 @@ pub fn detect_schema_violations(paths: &WikiPaths) -> Vec<PatrolIssue> {
     let mut issues = Vec::new();
     for page in &all_pages {
         let content = match wiki_store::read_wiki_page(paths, &page.slug) {
-            Ok((_s, body)) => {
+            Ok((_s, _body)) => {
                 // Reconstruct full content with frontmatter for validation.
                 // read_wiki_page returns body without frontmatter, so we
                 // read the raw file instead.

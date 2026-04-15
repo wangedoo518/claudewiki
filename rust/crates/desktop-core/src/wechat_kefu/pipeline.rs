@@ -1027,6 +1027,7 @@ impl KefuPipeline {
         .await
     }
 
+    #[allow(dead_code)]
     async fn programmatically_resolve_cloudflare_turnstile(
         &self,
     ) -> Result<bool, PipelineError> {

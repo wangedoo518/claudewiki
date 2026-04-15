@@ -761,6 +761,70 @@ pub fn slugify(input: &str) -> String {
     }
 }
 
+/// Sources whose `body` we trust enough to skip anti-bot / low-quality
+/// validation inside `write_raw_entry`. These are user-authored inputs
+/// (short notes, text messages) where legitimate content can be very
+/// short and would trip the validator. Anything NOT in this allowlist
+/// (fetched URLs, WeChat articles, PDFs, etc.) runs through
+/// [`validate_raw_content`] before touching disk.
+const RAW_CONTENT_VALIDATION_EXEMPT: &[&str] = &[
+    "paste",        // user pasted text manually via UI
+    "wechat-text",  // inbound plain WeChat message (may be a one-liner)
+    "voice",        // transcript is whatever the user said
+    "query",        // Q&A crystallization — short answers are fine
+];
+
+/// Reject pages that look like anti-bot / captcha placeholders before
+/// they hit the raw layer. See
+/// `wiki_ingest::validate_fetched_content` for the primary fetch-time
+/// validator; this is the **last line of defense** that covers every
+/// write path (including callers that bypass wiki_ingest — e.g. the
+/// WeChat-iLink URL fetch that writes body as-is).
+///
+/// Intentionally does NOT have an upper length gate for marker hits.
+/// A real anti-bot page can be >1000 bytes once it inlines HTML skeleton
+/// / CSS / JS — the verification text might be buried but the marker
+/// still fires. We trade a small false-positive surface (legitimate
+/// articles that happen to contain "环境异常" verbatim) for not
+/// silently pollinating the Inbox with placeholder pages.
+fn validate_raw_content(body: &str) -> std::result::Result<(), String> {
+    let trimmed = body.trim();
+
+    if trimmed.len() < 50 {
+        return Err(format!("内容过短 ({} 字符)", trimmed.len()));
+    }
+
+    const ANTI_BOT_MARKERS: &[&str] = &[
+        "环境异常",
+        "完成验证后即可继续访问",
+        "请完成安全验证",
+        "人机验证",
+        "滑动验证",
+        "拼图验证",
+        "访问频繁",
+        "Access Denied",
+        "Please enable JavaScript",
+        "403 Forbidden",
+    ];
+    for marker in ANTI_BOT_MARKERS {
+        if trimmed.contains(marker) {
+            return Err(format!("反爬验证页: 包含 '{marker}'"));
+        }
+    }
+
+    let meaningful = trimmed
+        .chars()
+        .filter(|c| {
+            c.is_ascii_alphanumeric() || ('\u{4E00}'..='\u{9FFF}').contains(c)
+        })
+        .count();
+    if meaningful < 30 {
+        return Err(format!("实际文字过少 ({meaningful} 字符)"));
+    }
+
+    Ok(())
+}
+
 /// Write a new raw entry under `raw/`. Returns the resolved absolute
 /// path (for the HTTP response) so the caller can echo it back to the
 /// frontend if useful.
@@ -773,9 +837,18 @@ pub fn slugify(input: &str) -> String {
 /// or rewrite `body` — it lands on disk byte-for-byte after the
 /// frontmatter prefix.
 ///
+/// # Content validation
+///
+/// For fetched sources (everything outside [`RAW_CONTENT_VALIDATION_EXEMPT`])
+/// the body must pass [`validate_raw_content`]. This guards against
+/// anti-bot / verification placeholder pages polluting the Inbox when
+/// a caller forgot to pre-validate with
+/// `wiki_ingest::validate_fetched_content`.
+///
 /// Errors:
 ///   * I/O errors (filesystem full, permission denied, etc.)
-///   * `WikiStoreError::Invalid` if `slug` is empty after sanitization
+///   * `WikiStoreError::Invalid` if `slug` is empty after sanitization,
+///     or the body fails anti-bot / quality validation for a fetched source
 pub fn write_raw_entry(
     paths: &WikiPaths,
     source: &str,
@@ -783,6 +856,19 @@ pub fn write_raw_entry(
     body: &str,
     frontmatter: &RawFrontmatter,
 ) -> Result<RawEntry> {
+    // Last line of defense: for fetched sources, reject anti-bot pages
+    // and empty placeholders. Caller-side `validate_fetched_content`
+    // should normally catch these first, but the WeChat iLink path
+    // (and any future direct caller) might miss it — this guarantees
+    // the raw layer stays clean.
+    if !RAW_CONTENT_VALIDATION_EXEMPT.contains(&source) {
+        if let Err(reason) = validate_raw_content(body) {
+            return Err(WikiStoreError::Invalid(format!(
+                "内容验证失败 ({source}): {reason}"
+            )));
+        }
+    }
+
     // Serialize the entire read-id → write-file section so two
     // concurrent callers (e.g. main thread + tokio::spawn) cannot
     // observe the same max id from next_raw_id().
@@ -2357,12 +2443,149 @@ pub fn count_pending_inbox(paths: &WikiPaths) -> Result<usize> {
         .count())
 }
 
+/// Strip markdown noise so the leftover text is human-readable for
+/// titles / Inbox previews. Drops:
+///   - leading `#` heading markers
+///   - `_italic underscores_` wrapping single-line metadata
+///   - inline image markdown `![alt](url)` (whole construct gone)
+///   - inline link markdown `[label](url)` → keeps `label`
+///   - leading bullet markers (`-`, `*`, `+`)
+///   - tab/multi-space runs collapsed to one space
+///
+/// Intentionally regex-free (we don't pull `regex` into wiki_store
+/// for one helper) — a single linear pass over the bytes is plenty
+/// for the < 200 char strings these previews care about.
+fn strip_markdown_noise(line: &str) -> String {
+    let trimmed = line.trim();
+    // Strip leading heading hashes + bullet markers.
+    let after_marker = trimmed
+        .trim_start_matches(|c: char| c == '#' || c == '-' || c == '*' || c == '+' || c == '>' )
+        .trim_start();
+    // Strip `_..._` italics wrapping metadata lines (e.g. `_Author: x_`).
+    let body = if after_marker.starts_with('_') && after_marker.ends_with('_') && after_marker.len() > 1 {
+        &after_marker[1..after_marker.len() - 1]
+    } else {
+        after_marker
+    };
+
+    // UTF-8-safe scanner: copy non-marker bytes through verbatim and
+    // only special-case ASCII brackets / parens (all 1 byte). The
+    // original input is valid UTF-8 and we only ever skip whole
+    // ASCII-bounded constructs, so multi-byte CJK survives intact.
+    let bytes = body.as_bytes();
+    let mut buf: Vec<u8> = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        // Image: `![alt](url)` — drop the whole thing.
+        if bytes[i] == b'!' && i + 1 < bytes.len() && bytes[i + 1] == b'[' {
+            if let Some(close_bracket) = find_byte_from(bytes, b']', i + 2) {
+                if close_bracket + 1 < bytes.len() && bytes[close_bracket + 1] == b'(' {
+                    if let Some(close_paren) = find_byte_from(bytes, b')', close_bracket + 2) {
+                        i = close_paren + 1;
+                        continue;
+                    }
+                }
+            }
+        }
+        // Link: `[label](url)` — keep the label only.
+        if bytes[i] == b'[' {
+            if let Some(close_bracket) = find_byte_from(bytes, b']', i + 1) {
+                if close_bracket + 1 < bytes.len() && bytes[close_bracket + 1] == b'(' {
+                    if let Some(close_paren) = find_byte_from(bytes, b')', close_bracket + 2) {
+                        buf.extend_from_slice(&bytes[i + 1..close_bracket]);
+                        i = close_paren + 1;
+                        continue;
+                    }
+                }
+            }
+        }
+        buf.push(bytes[i]);
+        i += 1;
+    }
+    let out = String::from_utf8(buf)
+        .unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned());
+
+    // Squash runs of whitespace.
+    let mut squashed = String::with_capacity(out.len());
+    let mut prev_space = false;
+    for ch in out.chars() {
+        if ch.is_whitespace() {
+            if !prev_space {
+                squashed.push(' ');
+            }
+            prev_space = true;
+        } else {
+            squashed.push(ch);
+            prev_space = false;
+        }
+    }
+    squashed.trim().to_string()
+}
+
+/// First line of `body` that yields ≥ `min_chars` of human-readable
+/// text after `strip_markdown_noise`. Falls back to the first
+/// non-empty line if nothing else qualifies, then to a hard-cut of
+/// the whole body. Returns at most `max_chars` characters.
+///
+/// Italics-wrapped metadata lines like `_Author: 新智元_` or
+/// `_Published: 2026-04-15_` are skipped during the primary pass so
+/// they don't crowd out actual content as the title — they're still
+/// usable via the fallback if nothing better exists.
+fn extract_readable_title(body: &str, max_chars: usize) -> String {
+    const MIN_USEFUL_CHARS: usize = 5;
+    let mut fallback: Option<String> = None;
+    for line in body.lines() {
+        let raw_trim = line.trim();
+        // Italics-wrapped key: value metadata → skip in primary pass.
+        let is_metadata_line = raw_trim.starts_with('_')
+            && raw_trim.ends_with('_')
+            && raw_trim.len() > 2
+            && raw_trim[1..raw_trim.len() - 1].contains(": ");
+
+        let cleaned = strip_markdown_noise(line);
+        if cleaned.is_empty() {
+            continue;
+        }
+        if is_metadata_line {
+            // Save as fallback in case nothing else qualifies.
+            if fallback.is_none() {
+                fallback = Some(cleaned);
+            }
+            continue;
+        }
+        if cleaned.chars().count() >= MIN_USEFUL_CHARS {
+            return cleaned.chars().take(max_chars).collect();
+        }
+        if fallback.is_none() {
+            fallback = Some(cleaned);
+        }
+    }
+    if let Some(f) = fallback {
+        return f.chars().take(max_chars).collect();
+    }
+    body.chars().take(max_chars).collect::<String>().trim().to_string()
+}
+
+#[inline]
+fn find_byte_from(haystack: &[u8], needle: u8, from: usize) -> Option<usize> {
+    if from >= haystack.len() {
+        return None;
+    }
+    haystack[from..].iter().position(|&b| b == needle).map(|p| p + from)
+}
+
 /// Convenience wrapper for the two callers that currently append a
 /// `NewRaw` inbox task after a raw entry lands (desktop-server's
 /// HTTP ingest handler and wechat_ilink's on_message hook). Review
 /// nit #15: consolidates the title/description formatting so schema
 /// changes (e.g. adding an origin tag) don't need to be made in two
 /// call sites in lockstep.
+///
+/// Title / description are extracted with `extract_readable_title`,
+/// which strips markdown noise (image stubs, heading hashes, link
+/// wrappers) so the Inbox doesn't surface garbage like
+/// `### ![](https://mmbiz.qpic.cn/mmbiz_png/...)`. Regression from
+/// the 2026-04 mp.weixin pipeline.
 ///
 /// `origin` is a short, human-readable tag such as `"paste"` or
 /// `"WeChat user abcd1234"` that lands inside the description.
@@ -2371,30 +2594,20 @@ pub fn append_new_raw_task(
     entry: &RawEntry,
     origin: &str,
 ) -> Result<InboxEntry> {
-    // Read the raw entry body to extract a meaningful title and description
     let (display_title, description) = match read_raw_entry(paths, entry.id) {
         Ok((_entry, body)) => {
-            // Extract title from first # heading or first line
-            let first_heading = body.lines()
-                .find(|l| l.starts_with("# "))
-                .map(|l| l.trim_start_matches('#').trim().to_string());
-            let title = first_heading
-                .or_else(|| {
-                    // Use first non-empty, non-metadata line as title
-                    body.lines()
-                        .find(|l| !l.is_empty() && !l.starts_with('_') && !l.starts_with("---"))
-                        .map(|l| l.chars().take(60).collect::<String>())
-                })
-                .unwrap_or_else(|| format!("素材 #{:05}", entry.id));
-            // Description: first 150 chars of body (skip metadata lines)
-            let preview: String = body.lines()
-                .filter(|l| !l.is_empty() && !l.starts_with('_') && !l.starts_with('#') && !l.starts_with("---") && !l.starts_with("!["))
-                .take(3)
-                .collect::<Vec<_>>()
-                .join(" ")
-                .chars()
-                .take(150)
-                .collect();
+            // Pull a clean title from the body (skips images / metadata).
+            let title = {
+                let extracted = extract_readable_title(&body, 60);
+                if extracted.is_empty() {
+                    format!("素材 #{:05}", entry.id)
+                } else {
+                    extracted
+                }
+            };
+            // Description: first 150 chars of clean text. Use the full
+            // body so we can pick up text past metadata blocks.
+            let preview = extract_readable_title(&body, 150);
             let desc = if preview.is_empty() {
                 format!("来源：{origin}。建议操作：总结为概念知识页面。")
             } else {
@@ -2402,13 +2615,10 @@ pub fn append_new_raw_task(
             };
             (title, desc)
         }
-        Err(_) => {
-            // Fallback: use filename-based description
-            (
-                format!("素材 #{:05}", entry.id),
-                format!("来源：{origin}。建议操作：总结为概念知识页面。"),
-            )
-        }
+        Err(_) => (
+            format!("素材 #{:05}", entry.id),
+            format!("来源：{origin}。建议操作：总结为概念知识页面。"),
+        ),
     };
     append_inbox_pending(
         paths,
@@ -3746,6 +3956,164 @@ mod tests {
 
         let err = read_raw_entry(&paths, 999).unwrap_err();
         assert!(matches!(err, WikiStoreError::NotFound(999)));
+    }
+
+    // ── Regression: anti-bot content validation (2026-04) ───────────
+    //
+    // Pre-fix, WeChat-iLink and a few other paths wrote fetched bodies
+    // directly to raw/ without calling `wiki_ingest::validate_fetched_content`.
+    // Result: anti-bot placeholder pages ("环境异常 ... 完成验证后即可
+    // 继续访问 ... 去验证") ended up in the Inbox. The fix puts a
+    // second validation gate inside `write_raw_entry` that every
+    // caller traverses.
+
+    #[test]
+    fn write_raw_entry_rejects_short_anti_bot_page_for_wechat_url() {
+        let tmp = tempdir().unwrap();
+        init_wiki(tmp.path()).unwrap();
+        let paths = WikiPaths::resolve(tmp.path());
+
+        let body = "**\n\n## 环境异常\n\n当前环境异常，完成验证后即可继续访问。\n\n去验证";
+        let fm = RawFrontmatter::for_paste(
+            "wechat-url",
+            Some("https://mp.weixin.qq.com/s/abc".to_string()),
+        );
+        let err = write_raw_entry(&paths, "wechat-url", "**", body, &fm).unwrap_err();
+        assert!(matches!(err, WikiStoreError::Invalid(_)));
+        let msg = format!("{err}");
+        assert!(msg.contains("反爬") || msg.contains("内容验证失败"));
+    }
+
+    #[test]
+    fn write_raw_entry_rejects_long_anti_bot_page_with_html_skeleton() {
+        let tmp = tempdir().unwrap();
+        init_wiki(tmp.path()).unwrap();
+        let paths = WikiPaths::resolve(tmp.path());
+
+        // 18KB-style page: lots of HTML skeleton inflating the length
+        // but the actual text is the anti-bot block. This is what the
+        // mp.weixin.qq.com production incident looked like.
+        let skeleton = "<div class='wrap'></div>\n".repeat(800);
+        let body = format!(
+            "{skeleton}\n\n## 环境异常\n\n完成验证后即可继续访问。"
+        );
+        assert!(body.len() > 10_000, "body must be long enough to bypass old length gate");
+        let fm = RawFrontmatter::for_paste("url", Some("https://example.com/".to_string()));
+        let err = write_raw_entry(&paths, "url", "example", &body, &fm).unwrap_err();
+        assert!(matches!(err, WikiStoreError::Invalid(_)));
+    }
+
+    #[test]
+    fn write_raw_entry_allows_short_paste_from_user() {
+        let tmp = tempdir().unwrap();
+        init_wiki(tmp.path()).unwrap();
+        let paths = WikiPaths::resolve(tmp.path());
+
+        // User-authored sources are exempt: "paste" and "wechat-text"
+        // may legitimately be very short (e.g. "明天开会讨论产品方向").
+        let body = "明天开会讨论产品方向";
+        let fm = RawFrontmatter::for_paste("paste", None);
+        write_raw_entry(&paths, "paste", "idea", body, &fm).expect("paste short note should pass");
+
+        let fm2 = RawFrontmatter::for_paste("wechat-text", None);
+        write_raw_entry(&paths, "wechat-text", "msg", "你好", &fm2)
+            .expect("wechat-text short message should pass");
+    }
+
+    // ── extract_readable_title regression (2026-04 mp.weixin) ───
+    //
+    // Pre-fix, append_new_raw_task ran a naïve `find(starts_with("# "))`
+    // which missed `### ![](url)` and ended up surfacing the raw image
+    // markdown line as the Inbox title. The new helper strips heading
+    // markers, image stubs, and link wrappers before deciding what to
+    // show.
+
+    #[test]
+    fn extract_readable_title_skips_heading_with_image() {
+        let body = "_Author: 新智元_\n\n\
+            _Published: 2026年4月15日_\n\n\
+            ### ![](https://mmbiz.qpic.cn/mmbiz_png/abc123/640)\n\n\
+            新智元报道 编辑：好困";
+        let title = extract_readable_title(body, 30);
+        assert_eq!(title, "新智元报道 编辑：好困");
+    }
+
+    #[test]
+    fn extract_readable_title_strips_link_wrappers_keeps_label() {
+        let body = "[Claude Code](https://example.com/cc) 重构了桌面端";
+        let title = extract_readable_title(body, 60);
+        assert!(title.starts_with("Claude Code 重构"), "got: {title}");
+        assert!(!title.contains("http"), "url leaked: {title}");
+    }
+
+    #[test]
+    fn extract_readable_title_handles_pure_image_lines() {
+        let body = "![](https://example.com/a.png)\n\
+            ![](https://example.com/b.png)\n\
+            真正的标题文字";
+        let title = extract_readable_title(body, 30);
+        assert_eq!(title, "真正的标题文字");
+    }
+
+    #[test]
+    fn extract_readable_title_falls_back_when_only_short_lines() {
+        // Every line < 5 chars after stripping → first non-empty stripped
+        // line should still be returned, not "素材 #" placeholder (that
+        // happens at the caller level in append_new_raw_task).
+        let body = "a\n\nb\n\nc";
+        let title = extract_readable_title(body, 10);
+        assert_eq!(title, "a");
+    }
+
+    #[test]
+    fn extract_readable_title_truncates_to_max_chars() {
+        let body = "这是一段非常非常非常非常非常长的中文标题用来测试截断逻辑";
+        let title = extract_readable_title(body, 10);
+        assert_eq!(title.chars().count(), 10);
+    }
+
+    #[test]
+    fn extract_readable_title_prefers_content_over_metadata() {
+        // `_Author: ..._` italics-wrapped metadata is skipped during
+        // the primary pass so a real heading / paragraph wins.
+        let body = "_Author: 新智元_\n\n# 真正的标题";
+        let title = extract_readable_title(body, 30);
+        assert_eq!(title, "真正的标题", "real heading should win over metadata");
+    }
+
+    #[test]
+    fn extract_readable_title_falls_back_to_metadata_when_nothing_else() {
+        // If the body has nothing but metadata, we accept it as the
+        // fallback — better than the "素材 #N" placeholder.
+        let body = "_Author: 新智元_\n\n_Published: 2026-04-15_";
+        let title = extract_readable_title(body, 30);
+        assert!(
+            title.starts_with("Author") || title.starts_with("Published"),
+            "expected metadata fallback, got: {title}",
+        );
+    }
+
+    #[test]
+    fn write_raw_entry_allows_substantive_wechat_article() {
+        let tmp = tempdir().unwrap();
+        init_wiki(tmp.path()).unwrap();
+        let paths = WikiPaths::resolve(tmp.path());
+
+        // A real fetched article should pass — enough meaningful CJK
+        // characters, no anti-bot phrases.
+        let body = "# 今天的入库\n\n\
+            本文讨论了 Rust 异步编程的主要范式。async/await 语法让\
+            异步代码看起来像同步代码，但底层依赖 Future trait 和 \
+            executor 运行时。Tokio 是最广泛使用的运行时，提供任务\
+            调度器、定时器和 I/O 多路复用。理解 Pin 和 Unpin 对于\
+            处理自引用结构体至关重要。实际应用中，常见的陷阱包括\
+            借用检查器在 await 点的行为、以及 Send/Sync 约束。";
+        let fm = RawFrontmatter::for_paste(
+            "wechat-article",
+            Some("https://mp.weixin.qq.com/s/real".to_string()),
+        );
+        write_raw_entry(&paths, "wechat-article", "rust-async", body, &fm)
+            .expect("substantive article should pass");
     }
 
     #[test]

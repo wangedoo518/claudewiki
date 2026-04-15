@@ -553,12 +553,30 @@ fn ingest_wechat_text_to_wiki(
                             result.title,
                             result.body.len()
                         );
-                        (
-                            "wechat-url".to_string(),
-                            result.title,
-                            result.body,
-                            result.source_url,
-                        )
+                        // Pre-validate before write to get a clear log line
+                        // and a clean fallback to storing the raw text.
+                        // `write_raw_entry` will also re-validate (belt +
+                        // suspenders) but we'd prefer never to reach it
+                        // with a known-bad body.
+                        match wiki_ingest::validate_fetched_content(&result.body) {
+                            Ok(()) => (
+                                "wechat-url".to_string(),
+                                result.title,
+                                result.body,
+                                result.source_url,
+                            ),
+                            Err(reason) => {
+                                eprintln!(
+                                    "[wechat agent] URL body rejected by validator: {reason} — storing raw text instead"
+                                );
+                                (
+                                    "wechat-text".to_string(),
+                                    format!("WeChat · {}", short_openid(from_user_id)),
+                                    user_text.to_string(),
+                                    None,
+                                )
+                            }
+                        }
                     }
                     Ok(Err(fetch_err)) => {
                         eprintln!(

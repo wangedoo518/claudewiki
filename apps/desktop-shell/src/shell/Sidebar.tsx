@@ -1,5 +1,5 @@
-import { useMemo, useState } from "react";
-import { Link, useLocation } from "react-router-dom";
+import { useEffect, useMemo, useState } from "react";
+import { Link, useLocation, useNavigate } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { useSettingsStore } from "@/state/settings-store";
 import {
@@ -285,13 +285,46 @@ function SidebarItem({ route, active, collapsed, badge }: SidebarItemProps) {
 function ModeToggle({ collapsed }: { collapsed: boolean }) {
   const appMode = useSettingsStore((s) => s.appMode);
   const setAppMode = useSettingsStore((s) => s.setAppMode);
+  const navigate = useNavigate();
+  const location = useLocation();
+
+  // v2 bugfix: keep appMode in sync with the current route.
+  // When user clicks a Sidebar nav item (Ask/Wiki/Dashboard/etc.) the
+  // URL changes without going through ModeToggle. This effect mirrors
+  // the URL back into appMode so the toggle highlight and ChatSidePanel
+  // visibility stay consistent with what's actually displayed.
+  useEffect(() => {
+    const path = location.pathname;
+    if (path.startsWith("/ask") || path.startsWith("/chat")) {
+      if (appMode !== "chat") setAppMode("chat");
+    } else if (
+      path.startsWith("/wiki") ||
+      path.startsWith("/graph") ||
+      path.startsWith("/schema")
+    ) {
+      if (appMode !== "wiki") setAppMode("wiki");
+    }
+    // Other routes (dashboard, inbox, raw, wechat, settings) preserve
+    // whichever mode the user last chose.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [location.pathname]);
 
   if (collapsed) return null;
+
+  const switchMode = (mode: "chat" | "wiki") => {
+    setAppMode(mode);
+    // Sync the route so main content re-renders for the new mode.
+    if (mode === "chat" && !location.pathname.startsWith("/ask")) {
+      navigate("/ask");
+    } else if (mode === "wiki" && !location.pathname.startsWith("/wiki")) {
+      navigate("/wiki");
+    }
+  };
 
   return (
     <div className="flex h-9 flex-shrink-0 items-center gap-1 border-b border-sidebar-border px-2">
       <button
-        onClick={() => setAppMode("chat")}
+        onClick={() => switchMode("chat")}
         className={`flex-1 rounded-md px-2 py-1 text-[12px] font-medium transition-colors ${
           appMode === "chat"
             ? "bg-sidebar-accent text-primary font-semibold"
@@ -301,7 +334,7 @@ function ModeToggle({ collapsed }: { collapsed: boolean }) {
         Chat
       </button>
       <button
-        onClick={() => setAppMode("wiki")}
+        onClick={() => switchMode("wiki")}
         className={`flex-1 rounded-md px-2 py-1 text-[12px] font-medium transition-colors ${
           appMode === "wiki"
             ? "bg-sidebar-accent text-primary font-semibold"

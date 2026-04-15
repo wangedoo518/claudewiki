@@ -83,6 +83,15 @@ interface AskWorkbenchProps {
   projectPath?: string;
   providers?: ProviderOption[];
   onSwitchProvider?: (id: string) => void;
+  /** v2: compact mode for the ChatSidePanel (Wiki mode right-side chat).
+   * Tightens message spacing and Composer padding, hides the Agent panel
+   * toggle. All state visualization (streaming cursor, token counts,
+   * tool blocks, permission dialogs) is preserved. */
+  compact?: boolean;
+  /** v2: suppress the AskHeader row (model + agent-panel toggle).
+   * Intended for compact contexts where the parent already shows
+   * a label and where screen real estate is precious. */
+  hideHeader?: boolean;
 }
 
 export function AskWorkbench({
@@ -98,6 +107,8 @@ export function AskWorkbench({
   projectPath,
   providers,
   onSwitchProvider,
+  compact = false,
+  hideHeader = false,
 }: AskWorkbenchProps) {
   // Python deps auto-installed by backend on startup — no frontend action needed.
 
@@ -258,17 +269,19 @@ export function AskWorkbench({
   }, [onSend, addSystemMessage, wikiQuery]);
 
   return (
-    <div className="flex flex-1 overflow-hidden">
+    <div className={`flex flex-1 overflow-hidden ${compact ? "compact-ask" : ""}`}>
      <div className="flex flex-1 flex-col overflow-hidden">
-      <AskHeader
-        projectPath={projectPath}
-        modelLabel={modelLabel}
-        environmentLabel={environmentLabel}
-        isStreaming={isRunning}
-        agentCount={agentCount}
-        showAgentPanel={showAgentPanel}
-        onToggleAgentPanel={() => setShowAgentPanel((v) => !v)}
-      />
+      {!hideHeader && (
+        <AskHeader
+          projectPath={projectPath}
+          modelLabel={modelLabel}
+          environmentLabel={environmentLabel}
+          isStreaming={isRunning}
+          agentCount={agentCount}
+          showAgentPanel={showAgentPanel}
+          onToggleAgentPanel={() => setShowAgentPanel((v) => !v)}
+        />
+      )}
 
       {displayMessages.length === 0 && !isLoadingSession ? (
         <WelcomeScreen onShowDemo={() => setShowDemo(true)} />
@@ -376,7 +389,7 @@ export function AskWorkbench({
      </div>
 
       {/* Maintainer task tree side panel (CCD soul ④) */}
-      {showAgentPanel && (
+      {showAgentPanel && !compact && (
         <MaintainerTaskTree
           messages={displayMessages}
           onClose={() => setShowAgentPanel(false)}

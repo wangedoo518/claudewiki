@@ -1,83 +1,180 @@
 /**
  * ChatSidePanel — compact chat panel on the right side of Wiki mode.
- * Per component-spec.md §4 and ia-layout.md §4.
+ * Per component-spec.md §4 and 03-chat-tab.md §1 (compact variant).
  *
- * 320px wide, can be collapsed to 0.
- * Compact message list (8px gap) + single-line composer.
- * Shares session with the full Chat Tab via localStorage activeSessionId.
+ * v2 bugfix (session visualization): the side panel now wraps AskWorkbench
+ * with `compact` + `hideHeader` flags so it inherits all state UI:
+ *   - streaming cursor + shimmer
+ *   - token counts
+ *   - tool call blocks
+ *   - permission request dialog
+ *   - error banner
+ *   - provider switching
+ *
+ * Shares the same session as the main Chat Tab via useAskSession's
+ * localStorage persistence (ACTIVE_SESSION_STORAGE_KEY).
  */
 
-import { ChevronLeft, ChevronRight, Send } from "lucide-react";
+import { useCallback, useMemo } from "react";
+import { ChevronLeft, ChevronRight, Loader2 } from "lucide-react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+
 import { useSettingsStore } from "@/state/settings-store";
+import { useStreamingStore } from "@/state/streaming-store";
+import { useAskSession } from "./useAskSession";
+import { useAskSSE } from "./useAskSSE";
+import { AskWorkbench } from "./AskWorkbench";
+import { listProviders, activateProvider } from "@/features/settings/api/client";
 
-interface ChatSidePanelProps {
-  /** Only visible in wiki mode. */
-  visible: boolean;
-}
-
-export function ChatSidePanel({ visible }: ChatSidePanelProps) {
+export function ChatSidePanel() {
   const collapsed = useSettingsStore((s) => s.chatPanelCollapsed);
   const setCollapsed = useSettingsStore((s) => s.setChatPanelCollapsed);
 
-  if (!visible) return null;
-
-  const panelWidth = collapsed ? 0 : 320;
-
   return (
-    <div
-      className="relative flex flex-col border-l border-[var(--color-border)] bg-[var(--color-background)] overflow-hidden"
-      style={{
-        width: panelWidth,
-        minWidth: collapsed ? 0 : 320,
-        transition: "width 200ms linear, min-width 200ms linear",
-      }}
-    >
-      {/* Collapse button — component-spec.md §4.4 */}
+    <div className="relative flex h-full">
+      {/* Collapse toggle — always visible, positioned OUTSIDE the panel. */}
       <button
         onClick={() => setCollapsed(!collapsed)}
-        className="absolute left-0 top-1/2 z-20 flex size-6 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full border border-[var(--color-border)] bg-[var(--color-background)] shadow-sm hover:bg-[var(--color-accent)]"
-        style={{ boxShadow: "var(--deeptutor-shadow-sm, 0 1px 3px rgba(45,43,40,0.04))" }}
+        aria-label={collapsed ? "展开 Chat 面板" : "折叠 Chat 面板"}
+        className="absolute top-1/2 z-20 flex size-6 -translate-y-1/2 items-center justify-center rounded-l-md border border-r-0 border-[var(--color-border)] bg-[var(--color-background)] shadow-sm hover:bg-[var(--color-accent)] transition-colors"
+        style={{
+          right: collapsed ? 0 : 320,
+          boxShadow: "var(--deeptutor-shadow-sm, 0 1px 3px rgba(45,43,40,0.04))",
+          transition: "right 200ms linear, background-color 150ms",
+        }}
       >
-        {collapsed ? (
-          <ChevronLeft className="size-3.5" />
-        ) : (
-          <ChevronRight className="size-3.5" />
-        )}
+        {collapsed ? <ChevronLeft className="size-3.5" /> : <ChevronRight className="size-3.5" />}
       </button>
 
-      {!collapsed && (
-        <>
-          {/* Header */}
-          <div className="flex h-10 items-center border-b border-[var(--color-border)] px-3">
-            <span className="text-[12px] font-semibold text-[var(--color-foreground)]">
-              Ask
-            </span>
-          </div>
+      {/* Actual panel — collapsed width = 0, kept in DOM so session
+          hooks don't unmount/remount. */}
+      <aside
+        className="flex flex-col border-l border-[var(--color-border)] bg-[var(--color-background)] overflow-hidden"
+        style={{
+          width: collapsed ? 0 : 320,
+          minWidth: collapsed ? 0 : 320,
+          transition: "width 200ms linear, min-width 200ms linear",
+        }}
+      >
+        {!collapsed && <ChatSidePanelBody />}
+      </aside>
+    </div>
+  );
+}
 
-          {/* Message area — compact spacing (8px gap vs 12px) */}
-          <div className="flex-1 overflow-y-auto p-3">
-            <div className="flex flex-col gap-2 text-[13px] leading-[1.5] text-[var(--color-muted-foreground)]">
-              <p className="text-center text-[12px]">
-                在这里向你的外脑提问...
-              </p>
-            </div>
-          </div>
+/**
+ * Inner body — only mounts when expanded. This keeps useAskSession
+ * from firing ensure-mutations while the panel is collapsed.
+ */
+function ChatSidePanelBody() {
+  // Same wiring as AskPage: session + SSE + providers.
+  const {
+    sessionId,
+    session,
+    isLoadingSession,
+    isSending,
+    isTurnActive,
+    errorMessage,
+    onSend,
+    onResetSession,
+  } = useAskSession();
 
-          {/* Compact Composer — component-spec.md §4.3 */}
-          <div className="border-t border-[var(--color-border)] p-2">
-            <div className="flex items-center gap-1.5">
-              <input
-                type="text"
-                placeholder="问点什么..."
-                className="h-9 flex-1 rounded-lg bg-[var(--color-secondary)] px-3 text-[13px] text-[var(--color-foreground)] placeholder:text-[var(--color-muted-foreground)] outline-none"
-              />
-              <button className="flex size-7 shrink-0 items-center justify-center rounded-full bg-[var(--color-primary)] text-white">
-                <Send className="size-3.5" />
-              </button>
-            </div>
-          </div>
-        </>
+  useAskSSE(sessionId, isTurnActive);
+
+  // Needed to decide whether the turn is visibly streaming text. OpenAiCompat
+  // providers (Kimi, DeepSeek, ...) don't broadcast `text_delta` SSE events,
+  // so streamingContent stays empty for the entire thinking phase — without
+  // an explicit indicator the side panel looks frozen to the user.
+  const streamingContent = useStreamingStore((s) => s.streamingContent);
+  const showLoadingFallback = isTurnActive && !streamingContent;
+
+  const providersQuery = useQuery({
+    queryKey: ["desktop", "providers"],
+    queryFn: () => listProviders(),
+    staleTime: 30_000,
+  });
+  const queryClient = useQueryClient();
+
+  const activeProvider = providersQuery.data
+    ? providersQuery.data.providers.find((p) => p.id === providersQuery.data.active)
+    : null;
+  const realModelLabel = useMemo(() => {
+    if (activeProvider) {
+      return activeProvider.display_name || activeProvider.model || activeProvider.id;
+    }
+    return session?.model_label;
+  }, [activeProvider, session?.model_label]);
+
+  const providerOptions = useMemo(
+    () =>
+      (providersQuery.data?.providers ?? []).map((p) => ({
+        id: p.id,
+        label: p.display_name || p.id,
+        model: p.model,
+        isActive: p.id === providersQuery.data?.active,
+      })),
+    [providersQuery.data],
+  );
+
+  const handleSwitchProvider = useCallback(
+    async (id: string) => {
+      try {
+        await activateProvider(id);
+        void queryClient.invalidateQueries({ queryKey: ["desktop", "providers"] });
+      } catch (err) {
+        console.error("[chat-side-panel] switch provider failed:", err);
+      }
+    },
+    [queryClient],
+  );
+
+  return (
+    <div className="flex h-full flex-col">
+      {/* Tiny header strip with model badge + streaming indicator.
+          Kept because AskHeader is hidden via hideHeader prop — users
+          still need to see which model is answering. */}
+      <div className="flex h-9 shrink-0 items-center justify-between border-b border-[var(--color-border)] px-3">
+        <span className="text-[12px] font-semibold text-[var(--color-foreground)]">Ask</span>
+        <span className="truncate text-[10px] text-[var(--color-muted-foreground)]">
+          {realModelLabel ?? "..."}
+          {isTurnActive && <span className="ml-1.5 text-[var(--color-primary)]">思考中...</span>}
+        </span>
+      </div>
+
+      {/* Loading fallback — visible while the backend is working but no
+          text_delta has arrived yet. Covers providers without streaming
+          (Kimi/DeepSeek via OpenAiCompat). StreamingMessage inside
+          AskWorkbench will take over once content begins to flow. */}
+      {showLoadingFallback && (
+        <div
+          role="status"
+          aria-live="polite"
+          className="flex items-center gap-2 border-b border-[var(--color-border)] bg-[var(--color-muted)]/40 px-3 py-2"
+        >
+          <Loader2 className="size-3 animate-spin text-[var(--color-primary)]" />
+          <span className="text-[11px] text-[var(--color-muted-foreground)]">
+            思考中...
+          </span>
+        </div>
       )}
+
+      {/* AskWorkbench in compact mode — inherits ALL state visualization. */}
+      <div className="min-h-0 flex-1">
+        <AskWorkbench
+          session={session}
+          isLoadingSession={isLoadingSession}
+          isSending={isSending}
+          errorMessage={errorMessage}
+          onSend={onSend}
+          onCreateSession={onResetSession}
+          modelLabel={realModelLabel}
+          environmentLabel={session?.environment_label}
+          providers={providerOptions}
+          onSwitchProvider={handleSwitchProvider}
+          compact={true}
+          hideHeader={true}
+        />
+      </div>
     </div>
   );
 }

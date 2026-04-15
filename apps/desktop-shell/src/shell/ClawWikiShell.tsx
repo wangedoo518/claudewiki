@@ -43,9 +43,19 @@ function PageTransition({ children }: { children: ReactNode }) {
 
 export function ClawWikiShell() {
   const appMode = useSettingsStore((s) => s.appMode);
+  const location = useLocation();
 
-  // ChatSidePanel is visible in wiki mode and non-ask/chat routes.
-  const showChatPanel = appMode === "wiki";
+  // v2 bugfix: ChatSidePanel shows ONLY when
+  //   (1) appMode is "wiki" (sidebar toggle chose Wiki), AND
+  //   (2) we're not currently on a Chat-dedicated route.
+  // Per ia-layout.md §4: "Chat 模式下隐藏（避免重复）". Since appMode
+  // is independent of the URL (persisted in localStorage), /ask can be
+  // active even when appMode=="wiki" — so we gate on the route too to
+  // prevent the dual-chatbox UX issue.
+  const isChatRoute =
+    location.pathname.startsWith("/ask") ||
+    location.pathname.startsWith("/chat");
+  const showChatPanel = appMode === "wiki" && !isChatRoute;
 
   return (
     <ErrorBoundary>
@@ -133,8 +143,10 @@ export function ClawWikiShell() {
             </Routes>
           </ErrorBoundary>
         </main>
-        {/* Right-side Chat panel — visible in Wiki mode per ia-layout.md §4 */}
-        <ChatSidePanel visible={showChatPanel} />
+        {/* Right-side Chat panel — wiki mode only, and never on Chat routes.
+            External conditional render (not a prop) avoids mounting then
+            immediately unmounting the heavy useAskSession hook. */}
+        {showChatPanel && <ChatSidePanel />}
       </div>
       {/* Global Settings Modal — 08-settings-modal.md */}
       <SettingsModal />

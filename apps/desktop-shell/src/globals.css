@@ -633,6 +633,26 @@
   box-shadow: var(--deeptutor-shadow-sm, 0 1px 3px rgba(45,43,40,0.04));
 }
 
+/* v2: Compact mode for AskWorkbench when rendered inside ChatSidePanel.
+ * Tightens spacing 33% (12px → 8px) per component-spec.md §4.2.
+ * All state visualization (streaming cursor, tool groups, token counts,
+ * permission dialog) remains intact — only visual density changes. */
+.compact-ask {
+  font-size: 13px;
+}
+.compact-ask [data-message-list] > * + * {
+  margin-top: 8px; /* message gap: 12px → 8px */
+}
+.compact-ask .ask-tool-group {
+  padding: 6px 8px;
+  font-size: 12px;
+}
+/* Composer sits at the bottom — keep usable but reduce padding. */
+.compact-ask textarea,
+.compact-ask input {
+  font-size: 13px;
+}
+
 /* DeepTutor syntax highlighter overrides */
 .theme-deeptutor pre[class*="language-"] {
   background: var(--color-msg-bash-bg) !important;

@@ -189,10 +189,7 @@ export function RawLibraryPage() {
       <div className="shrink-0 border-b border-border/50 px-6 py-4">
         <div className="flex items-start justify-between">
           <div>
-            <h1
-              className="text-foreground"
-              style={{ fontSize: 18, fontWeight: 600 }}
-            >
+            <h1 className="text-lg text-foreground">
               素材库
             </h1>
             <p className="mt-0.5 text-muted-foreground/60" style={{ fontSize: 11 }}>
@@ -929,14 +926,7 @@ function FullScreenReader({
       {/* Header */}
       <div className="shrink-0 border-b border-border/50 px-6 py-4">
         <div className="mx-auto flex max-w-3xl items-start justify-between">
-          <h1
-            className="min-w-0 flex-1 text-foreground"
-            style={{
-              fontSize: 22,
-              fontWeight: 600,
-              lineHeight: 1.3,
-            }}
-          >
+          <h1 className="min-w-0 flex-1 text-xl text-foreground">
             {entry.slug}
           </h1>
           <button
@@ -981,108 +971,30 @@ function FullScreenReader({
       {/* Content area */}
       <div className="flex-1 overflow-y-auto px-6 py-6">
         <article
-          className="prose prose-sm mx-auto max-w-3xl text-foreground/90"
+          className="markdown-content mx-auto max-w-3xl text-foreground/90"
           style={{
             fontSize: "16px",
             lineHeight: "1.8",
           }}
         >
+          {/* Typography by parent .markdown-content CSS. Link policy:
+              Raw content is scraped external text — it contains http/
+              https links to original sources, NOT wiki-internal refs
+              (those only appear in wiki/ pages written by the maintainer).
+              We do NOT run preprocessWikilinks or the full wiki-link
+              renderer; instead a minimal safe-link component opens all
+              URLs in a new tab with rel="noopener noreferrer". */}
           <ReactMarkdown
             components={{
-              h1: (props) => (
-                <h1
-                  className="mb-4 mt-0 text-foreground"
-                  style={{
-                    fontSize: "24px",
-                    fontWeight: 600,
-                    letterSpacing: "-0.01em",
-                  }}
-                  {...props}
-                />
-              ),
-              h2: (props) => (
-                <h2
-                  className="mb-3 mt-8 text-foreground"
-                  style={{ fontSize: "20px", fontWeight: 600 }}
-                  {...props}
-                />
-              ),
-              h3: (props) => (
-                <h3
-                  className="mb-2 mt-6 text-foreground"
-                  style={{ fontSize: "17px", fontWeight: 600 }}
-                  {...props}
-                />
-              ),
-              p: (props) => (
-                <p
-                  className="my-3 text-foreground/90"
-                  style={{ fontSize: "16px", lineHeight: "1.8" }}
-                  {...props}
-                />
-              ),
-              ul: (props) => (
-                <ul
-                  className="my-3 list-disc pl-6 text-foreground/90"
-                  style={{ fontSize: "16px", lineHeight: "1.8" }}
-                  {...props}
-                />
-              ),
-              ol: (props) => (
-                <ol
-                  className="my-3 list-decimal pl-6 text-foreground/90"
-                  style={{ fontSize: "16px", lineHeight: "1.8" }}
-                  {...props}
-                />
-              ),
-              code: ({ className, children, ...props }) => {
-                const isBlock = /language-/.test(className ?? "");
-                if (isBlock) {
-                  return (
-                    <code
-                      className="block overflow-auto rounded-md bg-muted/40 p-4 font-mono"
-                      style={{ fontSize: "14px", lineHeight: "1.6" }}
-                      {...props}
-                    >
-                      {children}
-                    </code>
-                  );
-                }
-                return (
-                  <code
-                    className="rounded bg-muted/40 px-1 py-0.5 font-mono"
-                    style={{ fontSize: "14px" }}
-                    {...props}
-                  >
-                    {children}
-                  </code>
-                );
-              },
-              blockquote: (props) => (
-                <blockquote
-                  className="my-4 border-l-4 border-border pl-4 italic text-foreground/80"
-                  style={{ fontSize: "16px", lineHeight: "1.8" }}
-                  {...props}
-                />
-              ),
               a: ({ href, children, ...props }) => (
                 <a
                   href={href}
-                  className="text-primary underline hover:no-underline"
                   target="_blank"
                   rel="noopener noreferrer"
                   {...props}
                 >
                   {children}
                 </a>
-              ),
-              img: ({ src, alt, ...props }) => (
-                <img
-                  src={src}
-                  alt={alt ?? ""}
-                  className="my-4 max-w-full rounded-md"
-                  {...props}
-                />
               ),
             }}
           >

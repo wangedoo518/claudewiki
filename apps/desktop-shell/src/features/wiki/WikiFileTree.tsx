@@ -39,11 +39,17 @@ interface TreeSection {
   linkTo?: string;
 }
 
+/** Every tree node carries an explicit action so there are no
+ *  "renders but click does nothing" dead nodes. If a node appears
+ *  in the tree, it MUST have one of these actions. */
+type TreeNodeAction =
+  | { type: "openTab"; tab: WikiTabItem }
+  | { type: "navigate"; to: string };
+
 interface TreeNode {
   id: string;
   label: string;
-  slug?: string;
-  kind: WikiTabItem["kind"];
+  action: TreeNodeAction;
 }
 
 /* ── Component ─────────────────────────────────────────────────── */
@@ -90,14 +96,16 @@ export function WikiFileTree() {
       linkTo: "/inbox",
     };
 
-    // Raw section (latest 20)
+    // Raw section (latest 20) — click navigates to /raw page.
+    // Entry-level deep-link (#/raw?entry=N) is a follow-up; for now
+    // every raw node lands on the library list page.
     const rawNodes: TreeNode[] = raws
       .slice(0, 20)
       .filter((r) => matchesFilter(r.slug) || matchesFilter(r.source))
       .map((r) => ({
         id: `raw-${r.id}`,
         label: `${r.slug} (${r.source})`,
-        kind: "raw" as const,
+        action: { type: "navigate" as const, to: "/raw" },
       }));
 
     const rawSection: TreeSection = {
@@ -125,8 +133,16 @@ export function WikiFileTree() {
           wikiChildren.push({
             id: `wiki-${p.slug}`,
             label: p.title || p.slug,
-            slug: p.slug,
-            kind: "article",
+            action: {
+              type: "openTab",
+              tab: {
+                id: p.slug,
+                kind: "article",
+                slug: p.slug,
+                title: p.title || p.slug,
+                closable: true,
+              },
+            },
           });
         }
       }
@@ -139,17 +155,39 @@ export function WikiFileTree() {
       children: wikiChildren,
     };
 
-    // Schema section
+    // Schema section — CLAUDE.md opens the dedicated /schema editor page,
+    // NOT a wiki tab (SchemaEditorPage is its own route, not a WikiTabItem).
     const schemaSection: TreeSection = {
       id: "schema",
       label: "Schema",
       icon: <ScrollText className="size-4" />,
       children: [
-        { id: "schema-claude", label: "CLAUDE.md", kind: "index" as const },
+        {
+          id: "schema-claude",
+          label: "CLAUDE.md",
+          action: { type: "navigate", to: "/schema" },
+        },
       ],
     };
 
-    return [inboxSection, rawSection, wikiSection, schemaSection];
+    // Log section — changelog / audit trail (opens as closable wiki tab)
+    const logSection: TreeSection = {
+      id: "log-section",
+      label: "Log",
+      icon: <FileText className="size-4" />,
+      children: [
+        {
+          id: "_log",
+          label: "Changelog",
+          action: {
+            type: "openTab",
+            tab: { id: "_log", kind: "log", title: "Log", closable: true },
+          },
+        },
+      ],
+    };
+
+    return [inboxSection, rawSection, wikiSection, schemaSection, logSection];
   }, [rawData, pagesData, inboxData, filter]);
 
   /* ── Handlers ──────────────────────────────────────────────── */
@@ -162,15 +200,13 @@ export function WikiFileTree() {
     });
   };
 
+  /** Unified action dispatch — every node carries its own action,
+   *  so there's no "renders but click does nothing" dead-node bug. */
   const handleNodeClick = (node: TreeNode) => {
-    if (node.kind === "article" && node.slug) {
-      openTab({
-        id: node.slug,
-        kind: "article",
-        slug: node.slug,
-        title: node.label,
-        closable: true,
-      });
+    if (node.action.type === "openTab") {
+      openTab(node.action.tab);
+    } else {
+      navigate(node.action.to);
     }
   };
 

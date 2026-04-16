@@ -5,18 +5,29 @@
  */
 
 import { useQuery } from "@tanstack/react-query";
-
+import ReactMarkdown from "react-markdown";
 import { useNavigate } from "react-router-dom";
 import { WikiFileTree } from "./WikiFileTree";
 import { WikiTabBar } from "./WikiTabBar";
 import { WikiArticle } from "./WikiArticle";
 import { SkillProgressCard } from "./SkillProgressCard";
+import {
+  preprocessWikilinks,
+  useWikiLinkRenderer,
+} from "./wiki-link-utils";
 import { useWikiTabStore } from "@/state/wiki-tab-store";
 import { getWikiIndex, getWikiLog, getWikiGraph, listRawEntries } from "@/features/ingest/persist";
 import { ForceGraph } from "@/features/graph/ForceGraph";
 
 /* ── Index/Log special page ────────────────────────────────────── */
+/** Renders `wiki/index.md` or `wiki/log.md` as full markdown with
+ *  wiki-link interception. These files are maintained by the
+ *  `wiki_maintainer` agent and frequently reference wiki pages via
+ *  `[[slug]]`, `[Title](concepts/slug.md)`, or `wiki://slug`. The
+ *  shared wiki-link renderer routes those to the tab store instead of
+ *  navigating the browser; external http/https links open in new tab. */
 function SpecialFilePage({ kind }: { kind: "index" | "log" }) {
+  const Anchor = useWikiLinkRenderer();
   const fetchFn = kind === "index" ? getWikiIndex : getWikiLog;
   const { data, isLoading } = useQuery({
     queryKey: ["wiki", kind],
@@ -32,14 +43,22 @@ function SpecialFilePage({ kind }: { kind: "index" | "log" }) {
     );
   }
 
+  const content = data?.content ?? "";
+
   return (
     <div className="mx-auto max-w-[720px] px-8 py-6">
       <h1 className="mb-4 text-[24px] leading-[1.3] text-foreground">
         {kind === "index" ? "Wiki" : "Changelog"}
       </h1>
-      <pre className="whitespace-pre-wrap text-[14px] leading-[1.6] text-foreground">
-        {data?.content ?? "No content yet."}
-      </pre>
+      {content ? (
+        <div className="markdown-content">
+          <ReactMarkdown components={{ a: Anchor }}>
+            {preprocessWikilinks(content)}
+          </ReactMarkdown>
+        </div>
+      ) : (
+        <p className="text-muted-foreground">No content yet.</p>
+      )}
     </div>
   );
 }
@@ -100,6 +119,8 @@ function WikiContent() {
   switch (activeTab.kind) {
     case "index":
       return <SpecialFilePage kind="index" />;
+    case "log":
+      return <SpecialFilePage kind="log" />;
     case "article":
       return activeTab.slug ? <WikiArticle slug={activeTab.slug} /> : null;
     case "graph":

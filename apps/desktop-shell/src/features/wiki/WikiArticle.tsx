@@ -96,57 +96,12 @@ function BacklinksSection({ slug }: { slug: string }) {
 function useMarkdownComponents(): Components {
   const Anchor = useWikiLinkRenderer();
 
-  return useMemo(
-    (): Components => ({
-      h1: ({ children }) => (
-        <h1 className="mb-4 mt-6 text-[24px] font-semibold leading-[1.3] text-[var(--color-foreground)]">
-          {children}
-        </h1>
-      ),
-      h2: ({ children }) => (
-        <h2 className="mb-3 mt-5 text-[18px] font-semibold leading-[1.3] text-[var(--color-foreground)]">
-          {children}
-        </h2>
-      ),
-      h3: ({ children }) => (
-        <h3 className="mb-2 mt-4 text-[15px] font-semibold text-[var(--color-foreground)]">
-          {children}
-        </h3>
-      ),
-      p: ({ children }) => (
-        <p className="my-4 text-[15px] leading-[1.7] text-[var(--color-foreground)]">
-          {children}
-        </p>
-      ),
-      ul: ({ children }) => <ul className="my-3 ml-5 list-disc space-y-1">{children}</ul>,
-      ol: ({ children }) => <ol className="my-3 ml-5 list-decimal space-y-1">{children}</ol>,
-      li: ({ children }) => (
-        <li className="text-[15px] leading-[1.7] text-[var(--color-foreground)]">{children}</li>
-      ),
-      blockquote: ({ children }) => (
-        <blockquote className="my-4 border-l-4 border-[var(--color-border)] pl-4 text-[var(--color-muted-foreground)] italic">
-          {children}
-        </blockquote>
-      ),
-      code: ({ className, children }) => {
-        const isBlock = className?.includes("language-");
-        if (isBlock) {
-          return (
-            <pre className="my-3 overflow-x-auto rounded-lg bg-[var(--color-secondary)] p-4 text-[13px] leading-[1.5] dark:bg-[var(--color-card)]">
-              <code className={className}>{children}</code>
-            </pre>
-          );
-        }
-        return (
-          <code className="rounded bg-[var(--color-muted)] px-1.5 py-0.5 text-[14px]">
-            {children}
-          </code>
-        );
-      },
-      a: Anchor,
-    }),
-    [Anchor],
-  );
+  // Heading / body / list / code / blockquote styling is handled by
+  // the .markdown-content class on the parent <div>. The ONLY custom
+  // component we keep is the wiki-link interceptor — it turns relative
+  // .md paths and wiki:// hrefs into tab-store navigations instead of
+  // letting the browser fall through to React Router's catch-all.
+  return useMemo((): Components => ({ a: Anchor }), [Anchor]);
 }
 
 /* ── Main component ────────────────────────────────────────────── */

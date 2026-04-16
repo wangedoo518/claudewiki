@@ -67,7 +67,7 @@ export function WikiQueryMessage({
         {/* Answer body — green left border */}
         <div className="border-l-2 border-[var(--deeptutor-ok,#3F8F5E)]/40 pl-3">
           {answer ? (
-            <div className="prose-sm text-[14px] leading-[1.6] text-[var(--color-foreground)]">
+            <div className="markdown-content text-[14px] leading-[1.6] text-foreground">
               <ReactMarkdown components={markdownComponents}>
                 {processedAnswer}
               </ReactMarkdown>

@@ -42,7 +42,7 @@ export function AskHeader({
       {/* Left: title + project path */}
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2">
-          <h1 className="ask-serif text-body font-semibold text-foreground">{title}</h1>
+          <h1 className="ask-serif text-body text-foreground">{title}</h1>
           {isStreaming && (
             <span className="flex items-center gap-1 text-caption" style={{ color: "var(--deeptutor-primary, var(--claude-orange))" }}>
               <span

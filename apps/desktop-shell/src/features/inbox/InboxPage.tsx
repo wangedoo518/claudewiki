@@ -115,10 +115,7 @@ export function InboxPage() {
       {/* Page head */}
       <div className="flex shrink-0 items-center justify-between border-b border-border/50 px-6 py-4">
         <div>
-          <h1
-            className="text-foreground"
-            style={{ fontSize: 18, fontWeight: 600 }}
-          >
+          <h1 className="text-lg text-foreground">
             Inbox
           </h1>
           <p className="mt-1 text-muted-foreground/60" style={{ fontSize: 11 }}>
@@ -400,8 +397,7 @@ function EntryDetail({ entry }: { entry: InboxEntry }) {
           <StatusPill status={entry.status} />
         </div>
         <h2
-          className="mt-2 text-foreground"
-          style={{ fontSize: 18, fontWeight: 600 }}
+          className="mt-2 text-lg text-foreground"
         >
           {entry.title}
         </h2>
@@ -586,7 +582,7 @@ function ProposalPreview({ proposal }: { proposal: WikiPageProposal }) {
           </div>
           <div
             className="mt-1.5 text-foreground"
-            style={{ fontSize: 16, fontWeight: 600 }}
+            style={{ fontSize: 16 }}
           >
             {proposal.title}
           </div>

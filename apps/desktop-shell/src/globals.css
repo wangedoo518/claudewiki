@@ -373,13 +373,14 @@
   font-weight: 600;
 }
 .markdown-content a {
-  color: var(--primary);
+  color: var(--coral, oklch(0.6724 0.1308 38.8));
   text-decoration: underline;
   text-decoration-thickness: 1px;
   text-underline-offset: 2px;
 }
 .markdown-content a:hover {
   text-decoration-thickness: 2px;
+  color: var(--primary);
 }
 /* Wikilink — dotted underline marker per design-tokens.md §3 link spec */
 .markdown-content a.wikilink {
@@ -407,6 +408,27 @@
   border-radius: var(--radius-md);
 }
 
+/* ── Prose surface link unification ─────────────────────────────
+   Tailwind's `prose` / `prose-sm` classes set a default link color
+   that doesn't match v3 warm palette. Instead of adding
+   .markdown-content to every ReactMarkdown wrapper, we catch ALL
+   prose-scoped anchors here and align them with the Coral link color.
+   Headings inside prose keep Tailwind's defaults (appropriate for
+   compact contexts like WikiQueryMessage or Ask chat). Full-read
+   surfaces (WikiArticle, RawLibrary reader, WikiExplorer detail)
+   should use .markdown-content which overrides everything.
+   ─────────────────────────────────────────────────────────────── */
+.prose a, .prose-sm a {
+  color: var(--coral, oklch(0.6724 0.1308 38.8));
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 2px;
+}
+.prose a:hover, .prose-sm a:hover {
+  color: var(--primary);
+  text-decoration-thickness: 2px;
+}
+
 /* ═══════════════════════════════════════════════════════════════
    Shadow utilities — expose warm-ring / whisper tokens as classes
    (Tailwind v4 doesn't auto-generate from --shadow-warm-ring)
@@ -415,13 +437,54 @@
   box-shadow: var(--shadow-warm-ring);
 }
 .shadow-warm-ring-hover {
-  transition: box-shadow 150ms ease;
+  transition: box-shadow 150ms ease, transform 150ms ease;
 }
 .shadow-warm-ring-hover:hover {
   box-shadow: var(--shadow-warm-ring-hover);
+  transform: translateY(-1px);
 }
 .shadow-whisper {
   box-shadow: var(--shadow-whisper);
+}
+
+/* ── v3 visual reinforcement — make warm palette unmissable ─────── */
+
+/* Sidebar active item — Terracotta left accent bar (brand visual anchor).
+   Targets the Rowboat data-[active=true] convention on SidebarMenuButton. */
+[data-slot="sidebar-menu-button"][data-active="true"] {
+  border-left: 3px solid oklch(0.6171 0.1375 39.0);
+  padding-left: calc(theme(spacing.2) - 3px);
+}
+
+/* Link color: Coral (#D97757) — one step warmer than Terracotta CTA,
+   provides visual separation between CTA buttons and inline text links.
+   Usage: `text-link` class on <a> elements, or inherit via --color-link. */
+.text-link, a.text-link {
+  color: oklch(0.6724 0.1308 38.8);
+}
+.text-link:hover, a.text-link:hover {
+  text-decoration-thickness: 2px;
+}
+
+/* Parchment → Near Black gradient divider bar (Claude chapter-section feel).
+   Drop into any section boundary: `<div className="section-divider-warm">`. */
+.section-divider-warm {
+  height: 3px;
+  background: linear-gradient(
+    to right,
+    oklch(0.9660 0.0093 100.0),
+    oklch(0.6171 0.1375 39.0),
+    oklch(0.1908 0.0020 106.6)
+  );
+  border-radius: 2px;
+}
+.dark .section-divider-warm {
+  background: linear-gradient(
+    to right,
+    oklch(0.1908 0.0020 106.6),
+    oklch(0.6171 0.1375 39.0),
+    oklch(0.9660 0.0093 100.0)
+  );
 }
 
 

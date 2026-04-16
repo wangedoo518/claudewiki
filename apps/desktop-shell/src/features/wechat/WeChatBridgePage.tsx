@@ -180,10 +180,7 @@ export function WeChatBridgePage() {
     <div className="flex h-full flex-col overflow-y-auto">
       {/* Hero */}
       <div className="shrink-0 border-b border-border/50 px-6 py-4">
-        <h1
-          className="text-foreground"
-          style={{ fontSize: 18, fontWeight: 600 }}
-        >
+        <h1 className="text-lg text-foreground">
           WeChat Bridge
         </h1>
         <p className="mt-1 text-muted-foreground/60" style={{ fontSize: 11 }}>

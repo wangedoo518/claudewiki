@@ -117,7 +117,7 @@ export function DashboardPage() {
   return (
     <div className="flex h-full flex-col overflow-y-auto">
       {/* Hero — 07-dashboard.md §6.1 */}
-      <section className="border-b border-border/50 px-8 py-6">
+      <section className="px-8 py-6">
         <h1 className="text-3xl font-medium text-foreground">
           你的外脑
         </h1>
@@ -126,6 +126,8 @@ export function DashboardPage() {
             ? `${statsQuery.data.wiki_count} 篇知识页面 · 知识速率 ${statsQuery.data.knowledge_velocity.toFixed(1)} 页/天`
             : "加载中..."}
         </p>
+        {/* v3 visual anchor — warm gradient divider (Claude chapter-section feel) */}
+        <div className="section-divider-warm mt-4" />
       </section>
 
       {/* Stat cards */}

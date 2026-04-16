@@ -16,6 +16,7 @@ import {
 } from "lucide-react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { cn } from "@/lib/utils";
 import { GeneralSettings } from "./sections/GeneralSettings";
 import { ProviderSettings } from "./sections/ProviderSettings";
@@ -147,40 +148,64 @@ export function SettingsPage() {
   );
 
   return (
-    <div className="flex h-full">
+    <Tabs
+      value={active}
+      onValueChange={(v) => setActive(v as SettingsSection)}
+      orientation="vertical"
+      className="flex h-full"
+    >
+      {/* Left rail — static title + Separator sit OUTSIDE TabsList
+          so the ARIA tablist contains only role="tab" elements.
+          TabsList gets keyboard arrow-key nav + focus-visible ring. */}
       <div className="flex w-[200px] shrink-0 flex-col border-r border-border/50">
         <div className="px-4 py-3">
           <h2 className="uppercase tracking-widest text-muted-foreground/60" style={{ fontSize: 11 }}>{t("settings.title")}</h2>
         </div>
         <Separator className="opacity-50" />
-        <nav className="flex-1 px-1.5 py-1.5">
+        <TabsList
+          className={cn(
+            "flex h-auto flex-1 flex-col items-stretch justify-start",
+            "rounded-none bg-transparent px-1.5 py-1.5",
+          )}
+        >
           {menuItems.map((item) => (
-            <button
+            <TabsTrigger
               key={item.id}
+              value={item.id}
+              id={`settings-tab-${item.id}`}
+              aria-controls={`settings-panel-${item.id}`}
               className={cn(
-                "flex w-full items-center gap-2 rounded-none px-3 py-1.5 transition-colors",
-                active === item.id
-                  ? "border-l-[3px] border-l-primary text-foreground"
-                  : "border-l-[3px] border-l-transparent text-muted-foreground hover:text-foreground"
+                "flex w-full items-center justify-start gap-2 rounded-none px-3 py-1.5",
+                "h-auto flex-none text-sm font-normal",
+                "border-l-[3px] border-l-transparent",
+                "data-[state=active]:border-l-primary data-[state=active]:bg-transparent",
+                "data-[state=active]:text-foreground data-[state=active]:font-medium",
+                "data-[state=active]:shadow-none",
+                "text-muted-foreground hover:text-foreground transition-colors",
               )}
-              style={{ fontSize: 13, fontWeight: active === item.id ? 500 : 400 }}
-              onClick={() => setActive(item.id)}
+              style={{ fontSize: 13 }}
             >
               <item.icon className="size-3.5" />
               {item.labelOverride ?? t(item.i18nKey)}
-            </button>
+            </TabsTrigger>
           ))}
-        </nav>
+        </TabsList>
       </div>
 
+      {/* Right content panel — manually driven by `active` so only the
+          visible section mounts (11 sections include heavy React Query
+          hooks; mounting all would be wasteful). */}
       <ScrollArea className="flex-1">
         <div
+          role="tabpanel"
+          id={`settings-panel-${active}`}
+          aria-labelledby={`settings-tab-${active}`}
           className={cn(
             "px-6 py-4",
             active === "provider" ? "max-w-none px-5" : "mx-auto max-w-3xl"
           )}
         >
-          <h2 className="mb-4 text-foreground" style={{ fontSize: 18, fontWeight: 600 }}>
+          <h2 className="mb-4 text-lg text-foreground">
             {(() => {
               const current =
                 menuItems.find((m) => m.id === active) ?? menuItems[0];
@@ -198,7 +223,7 @@ export function SettingsPage() {
           />
         </div>
       </ScrollArea>
-    </div>
+    </Tabs>
   );
 }
 

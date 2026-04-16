@@ -11,7 +11,7 @@ export interface WikiTabItem {
   /** Unique identifier. For articles: slug; for special: kind string. */
   id: string;
   /** Tab kind discriminator. */
-  kind: "index" | "article" | "graph" | "raw";
+  kind: "index" | "article" | "graph" | "raw" | "log";
   /** Wiki page slug (only for kind="article"). */
   slug?: string;
   /** Display title in the tab bar. */

@@ -44,6 +44,10 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import ReactMarkdown from "react-markdown";
 import { Link } from "react-router-dom";
 import {
+  preprocessWikilinks,
+  useWikiLinkRenderer,
+} from "./wiki-link-utils";
+import {
   BookOpen,
   Brain,
   ArrowRight,
@@ -106,15 +110,35 @@ function useDebouncedValue<T>(value: T, delay: number): T {
   return debounced;
 }
 
-// ── v2 Wiki Tab (Phase 1 Day 8-10) ─────────────────────────────
-// The new multi-tab Wiki Explorer replaces the legacy split-pane layout.
-// Once stable, the legacy code below will be removed.
+// ═══════════════════════════════════════════════════════════════════
+// ACTIVE PATH — WikiTab (v2 multi-tab browser)
+//
+//   /wiki/* → WikiExplorerPage → <WikiTab />
+//
+// WikiTab owns: WikiFileTree, WikiTabBar, WikiArticle, SpecialFilePage,
+// EmbeddedGraph, wiki-link-utils (shared link renderer).
+//
+// All new wiki-surface work (link semantics, markdown rendering,
+// tab management) MUST target WikiTab.tsx and its children.
+// ═══════════════════════════════════════════════════════════════════
 import { WikiTab } from "./WikiTab";
 
 export function WikiExplorerPage() {
   return <WikiTab />;
 }
 
+// ═══════════════════════════════════════════════════════════════════
+// LEGACY / ROLLBACK ONLY — v1 split-pane WikiExplorerPage
+//
+// Everything below this line is the original split-pane layout that
+// WikiTab replaced. It is NOT on any active route — the exported
+// WikiExplorerPage above returns <WikiTab />. Preserved solely so a
+// `git revert` of the v2 WikiTab commit can restore it.
+//
+// DO NOT add features, fix bugs, or upgrade styling here.
+// The code may contain stale imports, v2-era CSS token names, or
+// references to helpers that no longer exist after future cleanups.
+// ═══════════════════════════════════════════════════════════════════
 // @ts-expect-error Legacy v1 code preserved for rollback; will be removed after v2 stabilizes.
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
 function _WikiExplorerPageLegacy() {
@@ -594,6 +618,7 @@ function PinnedItem({
 /* ─── Right detail ───────────────────────────────────────────────── */
 
 function PageDetail({ slug }: { slug: string }) {
+  const Anchor = useWikiLinkRenderer();
   const detailQuery = useQuery({
     queryKey: wikiKeys.detail(slug),
     queryFn: () => getWikiPage(slug),
@@ -670,98 +695,20 @@ function PageDetail({ slug }: { slug: string }) {
       {/* Body: markdown-rendered */}
       <div className="flex-1 overflow-auto px-6 py-6">
         <article
-          className="prose prose-sm max-w-none text-foreground/90"
+          className="markdown-content max-w-none text-foreground/90"
           style={{
             fontSize: "14px",
             lineHeight: "1.6",
           }}
         >
-          <ReactMarkdown
-            components={{
-              h1: (props) => (
-                <h1
-                  className="mb-3 mt-0 text-foreground"
-                  style={{ fontSize: "18px", fontWeight: 600, letterSpacing: "-0.01em" }}
-                  {...props}
-                />
-              ),
-              h2: (props) => (
-                <h2
-                  className="mb-2 mt-6 uppercase tracking-wide text-foreground"
-                  style={{ fontSize: "13px", fontWeight: 600 }}
-                  {...props}
-                />
-              ),
-              h3: (props) => (
-                <h3
-                  className="mb-1.5 mt-5 text-foreground"
-                  style={{ fontSize: "13px", fontWeight: 600 }}
-                  {...props}
-                />
-              ),
-              p: (props) => (
-                <p
-                  className="my-2.5 text-foreground/90"
-                  style={{ fontSize: "14px", lineHeight: "1.6" }}
-                  {...props}
-                />
-              ),
-              ul: (props) => (
-                <ul
-                  className="my-2.5 list-disc pl-6 text-foreground/90"
-                  style={{ fontSize: "14px", lineHeight: "1.6" }}
-                  {...props}
-                />
-              ),
-              ol: (props) => (
-                <ol
-                  className="my-2.5 list-decimal pl-6 text-foreground/90"
-                  style={{ fontSize: "14px", lineHeight: "1.6" }}
-                  {...props}
-                />
-              ),
-              code: ({ className, children, ...props }) => {
-                // Inline code has no language tag.
-                const isBlock = /language-/.test(className ?? "");
-                if (isBlock) {
-                  return (
-                    <code
-                      className="block overflow-auto rounded-md bg-muted/40 p-3 font-mono text-caption"
-                      {...props}
-                    >
-                      {children}
-                    </code>
-                  );
-                }
-                return (
-                  <code
-                    className="rounded bg-muted/40 px-1 py-0.5 font-mono text-caption"
-                    {...props}
-                  >
-                    {children}
-                  </code>
-                );
-              },
-              blockquote: (props) => (
-                <blockquote
-                  className="my-3 border-l-4 border-border pl-4 text-body italic text-foreground/80"
-                  {...props}
-                />
-              ),
-              a: ({ href, children, ...props }) => (
-                <a
-                  href={href}
-                  className="text-primary underline hover:no-underline"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  {...props}
-                >
-                  {children}
-                </a>
-              ),
-            }}
-          >
-            {body}
+          {/* Typography (h/p/code/blockquote) by .markdown-content CSS.
+              Link semantics by shared wiki-link renderer: internal
+              wiki refs (wiki://slug, concepts/foo.md, [[slug]])
+              navigate via tab-store; external http/https open in
+              new tab with rel=noopener. preprocessWikilinks expands
+              [[slug|Label]] before ReactMarkdown sees the text. */}
+          <ReactMarkdown components={{ a: Anchor }}>
+            {preprocessWikilinks(body)}
           </ReactMarkdown>
         </article>
       </div>
@@ -794,6 +741,7 @@ function PagePlaceholder() {
  * (title/summary/source_raw_id), just a short hint + refresh button.
  */
 function SpecialFilePanel({ kind }: { kind: "index" | "log" }) {
+  const Anchor = useWikiLinkRenderer();
   const queryClient = useQueryClient();
   const query = useQuery({
     queryKey: kind === "index" ? wikiKeys.index() : wikiKeys.log(),
@@ -911,93 +859,14 @@ function SpecialFilePanel({ kind }: { kind: "index" | "log" }) {
           </div>
         ) : (
           <article
-            className="prose prose-sm max-w-none text-foreground/90"
+            className="markdown-content max-w-none text-foreground/90"
             style={{ fontSize: "14px", lineHeight: "1.6" }}
           >
-            <ReactMarkdown
-              components={{
-                h1: (props) => (
-                  <h1
-                    className="mb-3 mt-0 text-foreground"
-                    style={{
-                      fontSize: "18px",
-                      fontWeight: 600,
-                      letterSpacing: "-0.01em",
-                    }}
-                    {...props}
-                  />
-                ),
-                h2: (props) => (
-                  <h2
-                    className="mb-2 mt-6 uppercase tracking-wide text-foreground"
-                    style={{ fontSize: "13px", fontWeight: 600 }}
-                    {...props}
-                  />
-                ),
-                p: (props) => (
-                  <p
-                    className="my-2.5 text-foreground/90"
-                    style={{ fontSize: "14px", lineHeight: "1.6" }}
-                    {...props}
-                  />
-                ),
-                ul: (props) => (
-                  <ul
-                    className="my-2.5 list-disc pl-6 text-foreground/90"
-                    style={{ fontSize: "14px", lineHeight: "1.6" }}
-                    {...props}
-                  />
-                ),
-                li: (props) => (
-                  <li
-                    className="my-0.5 text-foreground/90"
-                    style={{ fontSize: "14px", lineHeight: "1.6" }}
-                    {...props}
-                  />
-                ),
-                code: ({ className, children, ...props }) => {
-                  const isBlock = /language-/.test(className ?? "");
-                  if (isBlock) {
-                    return (
-                      <code
-                        className="block overflow-auto rounded-md bg-muted/40 p-3 font-mono text-caption"
-                        style={{ wordBreak: "break-all" }}
-                        {...props}
-                      >
-                        {children}
-                      </code>
-                    );
-                  }
-                  return (
-                    <code
-                      className="rounded bg-muted/40 px-1 py-0.5 font-mono text-caption"
-                      style={{ wordBreak: "break-all" }}
-                      {...props}
-                    >
-                      {children}
-                    </code>
-                  );
-                },
-                a: ({ href, children, ...props }) => (
-                  <a
-                    href={href}
-                    className="text-primary underline hover:no-underline"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    {...props}
-                  >
-                    {children}
-                  </a>
-                ),
-                em: (props) => (
-                  <em
-                    className="italic text-muted-foreground"
-                    {...props}
-                  />
-                ),
-              }}
-            >
-              {data.content}
+            {/* Typography by .markdown-content CSS; link semantics
+                by shared wiki-link renderer. Index/log files may
+                reference wiki pages via [[slug]] wikilinks. */}
+            <ReactMarkdown components={{ a: Anchor }}>
+              {preprocessWikilinks(data.content)}
             </ReactMarkdown>
           </article>
         )}

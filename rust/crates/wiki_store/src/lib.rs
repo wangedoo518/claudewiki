@@ -733,14 +733,20 @@ pub fn next_raw_id(paths: &WikiPaths) -> Result<u32> {
 /// Sanitize a free-form string into a filesystem-safe kebab-case slug.
 ///
 /// * Lowercases ASCII letters
-/// * Replaces any run of non-alphanumeric chars with a single `-`
+/// * Replaces any run of non-ASCII-alphanumeric chars with a single `-`
+/// * Adds a stable Unicode hash suffix when meaningful non-ASCII text
+///   was present, so CJK titles do not all collapse to `"untitled"`
 /// * Trims leading/trailing `-`
 /// * Caps at 64 chars to keep filenames sane
-/// * Returns `"untitled"` if the result is empty
+/// * Returns `"untitled"` if the input has no ASCII or Unicode letters/digits
 #[must_use]
 pub fn slugify(input: &str) -> String {
     let mut out = String::new();
     let mut last_dash = true;
+    let has_unicode_alnum = input
+        .chars()
+        .any(|c| !c.is_ascii() && c.is_alphanumeric());
+
     for c in input.chars() {
         if c.is_ascii_alphanumeric() {
             out.push(c.to_ascii_lowercase());
@@ -755,10 +761,42 @@ pub fn slugify(input: &str) -> String {
     }
     let trimmed = out.trim_matches('-');
     if trimmed.is_empty() {
-        "untitled".to_string()
+        if has_unicode_alnum {
+            format!("u-{}", stable_slug_hash(input))
+        } else {
+            "untitled".to_string()
+        }
+    } else if has_unicode_alnum {
+        append_unicode_hash_suffix(trimmed, input)
     } else {
         trimmed.to_string()
     }
+}
+
+fn append_unicode_hash_suffix(ascii_base: &str, original: &str) -> String {
+    let suffix = format!("-u{}", &stable_slug_hash(original)[..8]);
+    if ascii_base.len() + suffix.len() <= 64 {
+        return format!("{ascii_base}{suffix}");
+    }
+
+    let max_base_len = 64 - suffix.len();
+    let shortened = ascii_base[..max_base_len].trim_matches('-');
+    if shortened.is_empty() {
+        format!("u-{}", stable_slug_hash(original))
+    } else {
+        format!("{shortened}{suffix}")
+    }
+}
+
+fn stable_slug_hash(input: &str) -> String {
+    // 64-bit FNV-1a: deterministic across platforms and avoids adding a
+    // hashing dependency just for filesystem-safe Unicode fallback slugs.
+    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
+    for byte in input.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    format!("{hash:016x}")
 }
 
 /// Sources whose `body` we trust enough to skip anti-bot / low-quality
@@ -3864,10 +3902,27 @@ mod tests {
         assert_eq!(slugify("Hello World"), "hello-world");
         // Symbols collapse to single dash
         assert_eq!(slugify("foo_bar.baz!!qux"), "foo-bar-baz-qux");
-        // Pure non-ascii falls back to "untitled"
-        assert_eq!(slugify("中文标题"), "untitled");
+        // Pure non-ascii gets a stable ASCII fallback instead of every
+        // CJK title collapsing to "untitled".
+        let chinese_slug = slugify("中文标题");
+        assert!(chinese_slug.starts_with("u-"));
+        assert_ne!(chinese_slug, "untitled");
+        assert_eq!(chinese_slug, slugify("中文标题"));
+        assert_ne!(chinese_slug, slugify("另一个标题"));
+        assert!(
+            chinese_slug
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-')
+        );
+        // Mixed ASCII + CJK keeps the readable prefix but adds a hash
+        // suffix so different Chinese tails do not collide.
+        let mixed_slug = slugify("Hello 中文");
+        assert!(mixed_slug.starts_with("hello-u"));
+        assert!(mixed_slug.len() <= 64);
         // Empty
         assert_eq!(slugify(""), "untitled");
+        // Pure symbols still have no meaningful title.
+        assert_eq!(slugify("!!!"), "untitled");
         // Leading / trailing junk trimmed
         assert_eq!(slugify("  ---hello---  "), "hello");
     }

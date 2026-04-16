@@ -5,7 +5,7 @@
 //!   Text → ingest + absorb + reply confirmation
 //!   ?Q   → wiki query → reply answer
 //!   /cmd → /recent, /stats
-//!   else → fallback to Claude session turn
+//!   other message types → unsupported reply
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -14,6 +14,7 @@ use tokio::sync::Mutex;
 
 use super::client::KefuClient;
 use super::monitor::KefuMessageHandler;
+use super::{KEFU_COMMAND_RECENT, KEFU_COMMAND_STATS, KEFU_TEXT_MIN_CHARS};
 // v1 session-turn imports — kept for fallback path, currently unused.
 #[allow(unused_imports)]
 use crate::wechat_ilink::markdown_split::split_markdown_for_wechat;
@@ -220,7 +221,7 @@ impl KefuMessageHandler for KefuDesktopHandler {
                     .send_text(
                         &external_userid,
                         open_kfid,
-                        &format!("（暂不支持{other}类型消息，请发送文字或链接）"),
+                        &unsupported_msgtype_reply(other),
                     )
                     .await;
                 return;
@@ -306,6 +307,14 @@ fn extract_first_url(text: &str) -> Option<String> {
         }
     }
     None
+}
+
+fn should_ingest_text(text: &str) -> bool {
+    text.chars().count() >= KEFU_TEXT_MIN_CHARS
+}
+
+fn unsupported_msgtype_reply(msgtype: &str) -> String {
+    format!("（暂不支持{msgtype}类型消息，请发送文字或链接）")
 }
 
 impl KefuDesktopHandler {
@@ -408,7 +417,7 @@ impl KefuDesktopHandler {
         };
 
         let reply = match cmd.trim() {
-            "/recent" => {
+            KEFU_COMMAND_RECENT => {
                 let entries = wiki_store::list_raw_entries(&paths).unwrap_or_default();
                 let recent: Vec<_> = entries.iter().rev().take(10).collect();
                 if recent.is_empty() {
@@ -432,7 +441,7 @@ impl KefuDesktopHandler {
                     lines.join("\n")
                 }
             }
-            "/stats" => match wiki_store::wiki_stats(&paths) {
+            KEFU_COMMAND_STATS => match wiki_store::wiki_stats(&paths) {
                 Ok(s) => format!(
                     "📊 ClawWiki 知识库统计\n\n\
                      📄 素材: {} 条\n\
@@ -455,7 +464,7 @@ impl KefuDesktopHandler {
                 ),
                 Err(e) => format!("❌ 统计失败: {e}"),
             },
-            _ => format!("未知命令: {cmd}\n可用: /recent /stats"),
+            _ => format!("未知命令: {cmd}\n可用: {KEFU_COMMAND_RECENT} {KEFU_COMMAND_STATS}"),
         };
 
         let _ = client.send_text(userid, open_kfid, &reply).await;
@@ -571,12 +580,14 @@ impl KefuDesktopHandler {
         };
 
         let char_count = text.chars().count();
-        if char_count < 20 {
+        if !should_ingest_text(text) {
             let _ = client
                 .send_text(
                     userid,
                     open_kfid,
-                    "消息太短（< 20 字），未入库。请发送更多内容或链接。",
+                    &format!(
+                        "消息太短（< {KEFU_TEXT_MIN_CHARS} 字），未入库。请发送更多内容或链接。"
+                    ),
                 )
                 .await;
             return;
@@ -799,15 +810,38 @@ mod tests {
     }
 
     #[test]
+    fn classify_empty_query_ascii_mark() {
+        let kind = classify_message("?");
+        assert!(matches!(kind, MessageKind::Query(ref q) if q.is_empty()));
+    }
+
+    #[test]
+    fn classify_empty_query_chinese_mark() {
+        let kind = classify_message("\u{FF1F}");
+        assert!(matches!(kind, MessageKind::Query(ref q) if q.is_empty()));
+    }
+
+    #[test]
     fn classify_command_recent() {
-        let kind = classify_message("/recent");
-        assert!(matches!(kind, MessageKind::Command(ref c) if c == "/recent"));
+        let kind = classify_message(KEFU_COMMAND_RECENT);
+        assert!(matches!(kind, MessageKind::Command(ref c) if c == KEFU_COMMAND_RECENT));
     }
 
     #[test]
     fn classify_command_stats() {
-        let kind = classify_message("/stats");
-        assert!(matches!(kind, MessageKind::Command(ref c) if c == "/stats"));
+        let kind = classify_message(KEFU_COMMAND_STATS);
+        assert!(matches!(kind, MessageKind::Command(ref c) if c == KEFU_COMMAND_STATS));
+    }
+
+    #[test]
+    fn current_capability_commands_are_classified_as_commands() {
+        let caps = crate::wechat_kefu::KefuCapabilities::current();
+        assert!(caps.commands.iter().any(|cmd| cmd == KEFU_COMMAND_RECENT));
+        assert!(caps.commands.iter().any(|cmd| cmd == KEFU_COMMAND_STATS));
+        for cmd in caps.commands {
+            let kind = classify_message(&cmd);
+            assert!(matches!(kind, MessageKind::Command(ref c) if c == &cmd));
+        }
     }
 
     #[test]
@@ -834,6 +868,14 @@ mod tests {
     }
 
     #[test]
+    fn extract_url_prefers_first_url() {
+        assert_eq!(
+            extract_first_url("先看 https://first.example 再看 https://second.example"),
+            Some("https://first.example".to_string()),
+        );
+    }
+
+    #[test]
     fn extract_url_http() {
         assert_eq!(
             extract_first_url("http://example.com"),
@@ -850,6 +892,21 @@ mod tests {
     fn extract_url_ftp_ignored() {
         // FTP is not http/https, should not match.
         assert_eq!(extract_first_url("ftp://files.example.com"), None);
+    }
+
+    // ── pure boundary helpers ─────────────────────────────────────
+
+    #[test]
+    fn should_ingest_text_respects_minimum_character_count() {
+        assert!(!should_ingest_text(&"好".repeat(KEFU_TEXT_MIN_CHARS - 1)));
+        assert!(should_ingest_text(&"好".repeat(KEFU_TEXT_MIN_CHARS)));
+    }
+
+    #[test]
+    fn unsupported_msgtype_reply_is_explicit() {
+        let reply = unsupported_msgtype_reply("image");
+        assert!(reply.contains("暂不支持image类型消息"));
+        assert!(reply.contains("文字或链接"));
     }
 
     // ── source_emoji ─────────────────────────────────────────────

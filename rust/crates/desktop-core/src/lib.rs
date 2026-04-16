@@ -4464,6 +4464,7 @@ impl DesktopState {
             last_error: monitor_status
                 .as_ref()
                 .and_then(|s| s.last_error.clone()),
+            capabilities: wechat_kefu::KefuCapabilities::current(),
         }
     }
 

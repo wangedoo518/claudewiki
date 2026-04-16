@@ -1,23 +1,17 @@
 /**
- * WeChat Bridge · 个微 iLink 漏斗
+ * WeChat Bridge - dual WeChat ingress dashboard.
  *
- * S5 real implementation. This page does NOT configure an
- * enterprise-WeChat outbound bot + cloud ingest microservice.
- * Instead it surfaces the existing personal-WeChat iLink pipeline
- * that earlier implementation phases already wired:
+ * Channel A is the personal-WeChat iLink funnel:
+ *   phone WeChat -> ClawBot plugin -> ilinkai.weixin.qq.com
+ *     -> desktop-core::wechat_ilink::monitor -> DesktopAgentHandler
  *
- *   WeChat user (phone)
- *     → ClawBot plugin → ilinkai.weixin.qq.com
- *     → desktop-core::wechat_ilink::monitor (long-poll)
- *     → DesktopAgentHandler::on_message
- *       ├── wiki_store::write_raw_entry  (S5.1 — NEW)
- *       ├── append_inbox_pending          (S5.1 — NEW)
- *       └── DesktopState::append_user_message (Phase 2b, reply)
+ * Channel B is the official Kefu funnel:
+ *   WeChat customer-service callback/contact link
+ *     -> /api/desktop/wechat-kefu/* -> desktop-core::wechat_kefu
  *
- * This page manages the **left edge** of that pipeline: QR login,
- * account list, and per-account delete. The heavy lifting lives in
- * Rust; the page is a thin React Query dashboard over the 5 existing
- * wechat HTTP routes preserved in S0.4.
+ * This top-level #/wechat page is currently the operational surface for
+ * both channels. The Settings Modal WeChat section still manages only the
+ * iLink account binding flow.
  */
 
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -54,6 +48,7 @@ import {
   startKefuPipeline,
   getKefuPipelineStatus,
   cancelKefuPipeline,
+  type KefuCapabilities,
   type WeChatAccountSummary,
   type WeChatAccountStatus,
   type WeChatLoginStartResponse,
@@ -598,6 +593,17 @@ const kefuKeys = {
   status: () => ["kefu", "status"] as const,
 };
 
+const DEFAULT_KEFU_CAPABILITIES: KefuCapabilities = {
+  text: true,
+  url: true,
+  query: true,
+  commands: ["/recent", "/stats"],
+  file: false,
+  image: false,
+  card: false,
+  share: false,
+};
+
 function KefuSection() {
   const queryClient = useQueryClient();
   const [showConfig, setShowConfig] = useState(false);
@@ -641,6 +647,7 @@ function KefuSection() {
   const status = statusQuery.data;
   const configured = config?.corpid && config.corpid.length > 0 && config.configured !== false;
   const accountCreated = !!config?.open_kfid;
+  const capabilities = status?.capabilities ?? DEFAULT_KEFU_CAPABILITIES;
 
   return (
     <section className="border-b border-border/50 px-6 py-5">
@@ -667,6 +674,8 @@ function KefuSection() {
         void queryClient.invalidateQueries({ queryKey: kefuKeys.config() });
         setShowConfig(false);
       }} />}
+
+      <KefuCapabilitiesPanel capabilities={capabilities} />
 
       {/* Status cards */}
       {configured ? (
@@ -787,6 +796,68 @@ function KefuSection() {
         </div>
       )}
     </section>
+  );
+}
+
+function KefuCapabilitiesPanel({
+  capabilities,
+}: {
+  capabilities: KefuCapabilities;
+}) {
+  const commandLabel =
+    capabilities.commands.length > 0
+      ? `命令 ${capabilities.commands.join(" ")}`
+      : "命令";
+  const capabilityItems = [
+    { label: "文本", enabled: capabilities.text },
+    { label: "链接", enabled: capabilities.url },
+    { label: "? 查询", enabled: capabilities.query },
+    { label: commandLabel, enabled: capabilities.commands.length > 0 },
+    { label: "文件", enabled: capabilities.file },
+    { label: "图片", enabled: capabilities.image },
+    { label: "卡片", enabled: capabilities.card },
+    { label: "分享", enabled: capabilities.share },
+  ];
+  const supported = capabilityItems
+    .filter((item) => item.enabled)
+    .map((item) => item.label);
+  const unsupported = capabilityItems
+    .filter((item) => !item.enabled)
+    .map((item) => item.label);
+
+  return (
+    <div className="mb-3 rounded-md border border-border bg-muted/5 p-4">
+      <div className="mb-2 flex items-center justify-between gap-3">
+        <div className="text-body-sm font-medium text-foreground">
+          当前消息能力
+        </div>
+        <span className="rounded-full bg-muted px-2 py-0.5 text-caption text-muted-foreground">
+          状态同步
+        </span>
+      </div>
+      <p className="text-caption text-muted-foreground">
+        当前支持 {supported.join("、")}；{unsupported.join("、")} 暂不支持。
+      </p>
+      <div className="mt-3 flex flex-wrap gap-2">
+        {capabilityItems.map((item) => (
+          <span
+            key={item.label}
+            className={`inline-flex items-center gap-1 rounded-full border px-2 py-1 text-caption ${
+              item.enabled
+                ? "border-primary/30 bg-primary/10 text-primary"
+                : "border-border bg-background text-muted-foreground"
+            }`}
+          >
+            {item.enabled ? (
+              <CheckCircle2 className="size-3" />
+            ) : (
+              <XCircle className="size-3" />
+            )}
+            {item.label}
+          </span>
+        ))}
+      </div>
+    </div>
   );
 }
 
@@ -1060,7 +1131,7 @@ function KefuPipelineSection() {
       {!isActive && !pipeline?.contact_url && (
         <div className="space-y-3">
           <p className="text-caption text-muted-foreground">
-            自动注册 Cloudflare 中继 → 企业微信扫码授权 → 配置回调 → 创建客服账号。全程仅需扫码一次。
+            自动注册 Cloudflare 中继 → 企业微信扫码授权 → 配置回调 → 创建客服账号。接入后当前支持文本、链接与 ? 查询，文件/图片仍按能力面板显示为暂不支持。
           </p>
           <div className="flex items-center gap-3">
             <label className="flex items-center gap-1.5 text-caption text-muted-foreground">

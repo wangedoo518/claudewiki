@@ -286,6 +286,17 @@ export interface KefuConfigSummary {
   configured?: boolean;
 }
 
+export interface KefuCapabilities {
+  text: boolean;
+  url: boolean;
+  query: boolean;
+  commands: string[];
+  file: boolean;
+  image: boolean;
+  card: boolean;
+  share: boolean;
+}
+
 export interface KefuStatus {
   configured: boolean;
   account_created: boolean;
@@ -294,6 +305,7 @@ export interface KefuStatus {
   last_inbound_unix_ms: number | null;
   consecutive_failures: number;
   last_error: string | null;
+  capabilities?: KefuCapabilities;
 }
 
 export async function saveKefuConfig(

@@ -267,6 +267,8 @@ export const useSettingsStore = create<SettingsState>()(
       name: "state",
       storage: namespacedStorage("settings"),
       partialize: (state) => ({
+        appMode: state.appMode,
+        chatPanelCollapsed: state.chatPanelCollapsed,
         theme: state.theme,
         warwolfTheme: state.warwolfTheme,
         language: state.language,

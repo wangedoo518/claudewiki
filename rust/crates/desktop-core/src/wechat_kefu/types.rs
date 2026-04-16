@@ -95,4 +95,71 @@ pub struct KefuStatus {
     pub last_inbound_unix_ms: Option<i64>,
     pub consecutive_failures: u32,
     pub last_error: Option<String>,
+    pub capabilities: KefuCapabilities,
+}
+
+pub const KEFU_COMMAND_RECENT: &str = "/recent";
+pub const KEFU_COMMAND_STATS: &str = "/stats";
+pub const KEFU_TEXT_MIN_CHARS: usize = 20;
+
+/// Explicit capability surface for the currently implemented Kefu handler.
+#[derive(Debug, Clone, Serialize)]
+pub struct KefuCapabilities {
+    pub text: bool,
+    pub url: bool,
+    pub query: bool,
+    pub commands: Vec<String>,
+    pub file: bool,
+    pub image: bool,
+    pub card: bool,
+    pub share: bool,
+}
+
+impl KefuCapabilities {
+    /// Current Kefu handler capabilities. Keep this in lockstep with
+    /// `desktop_handler::classify_message` and `handle_command`.
+    pub fn current() -> Self {
+        Self {
+            text: true,
+            url: true,
+            query: true,
+            commands: vec![
+                KEFU_COMMAND_RECENT.to_string(),
+                KEFU_COMMAND_STATS.to_string(),
+            ],
+            file: false,
+            image: false,
+            card: false,
+            share: false,
+        }
+    }
+}
+
+impl Default for KefuCapabilities {
+    fn default() -> Self {
+        Self::current()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{KefuCapabilities, KEFU_COMMAND_RECENT, KEFU_COMMAND_STATS, KEFU_TEXT_MIN_CHARS};
+
+    #[test]
+    fn current_capabilities_match_kefu_handler_surface() {
+        let caps = KefuCapabilities::current();
+        assert!(caps.text);
+        assert!(caps.url);
+        assert!(caps.query);
+        assert_eq!(caps.commands, vec![KEFU_COMMAND_RECENT, KEFU_COMMAND_STATS]);
+        assert!(!caps.file);
+        assert!(!caps.image);
+        assert!(!caps.card);
+        assert!(!caps.share);
+    }
+
+    #[test]
+    fn text_min_chars_matches_short_text_reply() {
+        assert_eq!(KEFU_TEXT_MIN_CHARS, 20);
+    }
 }

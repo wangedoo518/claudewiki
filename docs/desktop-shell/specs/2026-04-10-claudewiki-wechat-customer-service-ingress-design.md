@@ -3,7 +3,7 @@ title: ClaudeWiki WeChat Customer-Service Ingress Design
 doc_type: spec
 status: active
 owner: desktop-shell
-last_verified: 2026-04-10
+last_verified: 2026-04-15
 related:
   - docs/desktop-shell/README.md
   - docs/desktop-shell/specs/README.md
@@ -20,7 +20,9 @@ Give ClaudeWiki a WeChat entry that behaves like QClaw's `QClaw客服` in WeChat
 - users can enter ClaudeWiki from the customer-service surface, not only from the personal WeChat ClawBot plugin
 - inbound messages still flow into the existing ClaudeWiki desktop session and wiki-ingest pipeline
 
-This document is for architecture review. It does not implement the feature.
+This document is for architecture review. As of 2026-04-15, the codebase has a partial Kefu implementation: configuration, account/contact-url/status/monitor/callback/pipeline routes, a Kefu desktop handler for text/link/query/command messages, and the existing personal iLink path. The shared `wechat_ingress` abstraction, file/image/card handling, production tenant decision, and Settings Modal migration remain future work.
+
+See `docs/design/modules/04-wechat-kefu.md` for the current implementation snapshot.
 
 ## Executive Conclusion
 

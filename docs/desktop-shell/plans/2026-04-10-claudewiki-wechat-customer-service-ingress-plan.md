@@ -3,7 +3,7 @@ title: ClaudeWiki WeChat Customer-Service Ingress Plan
 doc_type: plan
 status: active
 owner: desktop-shell
-last_verified: 2026-04-10
+last_verified: 2026-04-15
 related:
   - docs/desktop-shell/README.md
   - docs/desktop-shell/specs/2026-04-10-claudewiki-wechat-customer-service-ingress-design.md
@@ -17,6 +17,19 @@ related:
 **Architecture:** Introduce a dual-channel model. `wechat_ilink` remains for personal WeChat DM via WeChat ClawBot. A new `wechat_kefu` channel handles customer-service ingress. Both channels normalize into one shared ClaudeWiki turn pipeline.
 
 **Tech Stack:** Rust, desktop-server HTTP routes, existing ClaudeWiki session runtime, existing desktop-shell WeChat Bridge UI
+
+---
+
+## P1-3 Implementation Checkpoint (2026-04-15)
+
+This checkpoint reconciles the plan with the code currently on disk. The plan remains active, but several tasks are no longer purely future work.
+
+- **Task 1 is still open.** The official Kefu code path exists, but production tenant ownership, credential operations, callback hosting, and end-user exposure still need a real deployment decision.
+- **Task 2 is not implemented as written.** There is no shared `rust/crates/desktop-core/src/wechat_ingress/*` abstraction yet. Personal iLink and official Kefu still use separate handlers.
+- **Task 3 is partially implemented.** `rust/crates/desktop-core/src/wechat_kefu/*` and `/api/desktop/wechat-kefu/*` routes exist. The current Kefu handler supports text, URL, `?` query, `/recent`, and `/stats`; file/image/card handling is still unsupported.
+- **Task 4 is partially implemented, but not in Settings Modal.** `apps/desktop-shell/src/features/wechat/WeChatBridgePage.tsx` is the current operational surface for both iLink and Kefu. `apps/desktop-shell/src/features/settings/sections/WeChatSettings.tsx` still manages only personal iLink accounts.
+- **Task 5 is partially represented by status capabilities.** `/api/desktop/wechat-kefu/status` now exposes supported text/link/query/command capabilities and explicitly marks file/image/card/share unsupported. The handler behavior is unchanged; there is still no shared capability gate abstraction.
+- **Task 6 remains open.** Browser smoke covered Ask URL ingest and `/api/wiki/query` sources. Real WeChat device E2E for iLink and Kefu was not performed.
 
 ---
 

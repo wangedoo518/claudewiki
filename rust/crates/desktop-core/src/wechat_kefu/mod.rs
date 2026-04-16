@@ -19,4 +19,7 @@ pub use account::{load_config, save_config};
 pub use callback::{CallbackEvent, KefuCallback};
 pub use client::KefuClient;
 pub use pipeline_types::{PipelineError, PipelinePhase, PipelineResult, PipelineState};
-pub use types::{KefuConfig, KefuConfigSummary, KefuStatus};
+pub use types::{
+    KefuCapabilities, KefuConfig, KefuConfigSummary, KefuStatus, KEFU_COMMAND_RECENT,
+    KEFU_COMMAND_STATS, KEFU_TEXT_MIN_CHARS,
+};

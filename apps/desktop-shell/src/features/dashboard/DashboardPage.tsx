@@ -115,7 +115,7 @@ export function DashboardPage() {
       : null;
 
   return (
-    <div className="flex h-full flex-col overflow-y-auto">
+    <div className="flex h-full flex-col overflow-hidden">
       {/* Hero — 07-dashboard.md §6.1 */}
       <section className="px-8 py-6">
         <h1 className="text-3xl font-medium text-foreground">

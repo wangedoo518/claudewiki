@@ -15,6 +15,7 @@ import { SchemaEditorPage } from "@/features/schema/SchemaEditorPage";
 import { WeChatBridgePage } from "@/features/wechat/WeChatBridgePage";
 import { SettingsPage } from "@/features/settings/SettingsPage";
 import { SettingsModal } from "@/features/settings/SettingsModal";
+import { CommandPalette } from "@/features/palette/CommandPalette";
 import { useSettingsStore } from "@/state/settings-store";
 import {
   SidebarInset,
@@ -180,6 +181,7 @@ export function ClawWikiShell() {
       </AskSessionProvider>
       {/* Global Settings Modal — 08-settings-modal.md */}
       <SettingsModal />
+      <CommandPalette />
     </ErrorBoundary>
   );
 }

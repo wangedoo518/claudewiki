@@ -1,0 +1,241 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Connect 微信客服 — Wireframe v1.0</title>
+<style>
+:root{--bg:#faf9f6;--panel:#fff;--input:#f4f4f5;--hover:#f4f4f5;--text:#18181b;--text2:#52525b;--text3:#a1a1aa;--accent:#4f46e5;--accent-bg:#eef2ff;--green:#22c55e;--green-bg:#dcfce7;--orange:#f59e0b;--orange-bg:#fef3c7;--red:#ef4444;--border:#e4e4e7;--r:12px;--rs:8px;--font:-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif}
+*{margin:0;padding:0;box-sizing:border-box}body{font-family:var(--font);background:#52525b;color:var(--text);font-size:14px;display:flex;align-items:center;justify-content:center;min-height:100vh;gap:24px;flex-wrap:wrap;padding:24px}
+.modal-frame{background:var(--panel);border-radius:var(--r);width:520px;box-shadow:0 20px 60px rgba(0,0,0,.2);overflow:hidden}
+.modal-header{display:flex;align-items:center;justify-content:space-between;padding:20px 24px 0;font-size:18px;font-weight:600}
+.modal-close{background:none;border:none;font-size:18px;color:var(--text3);cursor:pointer}
+.modal-body{padding:20px 24px 24px}
+.modal-desc{font-size:13px;color:var(--text2);margin-bottom:20px;line-height:1.6}
+
+/* Cards */
+.option-card{border:1px solid var(--border);border-radius:var(--rs);padding:16px 20px;margin-bottom:12px;cursor:pointer;transition:all .15s}
+.option-card:hover{border-color:var(--accent);background:var(--accent-bg)}
+.option-card h3{font-size:15px;font-weight:600;margin-bottom:4px;display:flex;align-items:center;gap:8px}
+.option-card p{font-size:12px;color:var(--text2);margin-bottom:12px}
+.option-card .badge{font-size:10px;padding:2px 8px;border-radius:10px;font-weight:600}
+.option-card .badge.rec{background:var(--accent-bg);color:var(--accent)}
+.option-card .btn{float:right;padding:6px 16px;border:1px solid var(--accent);color:var(--accent);border-radius:var(--rs);font-size:13px;cursor:pointer;background:none}
+.option-card .btn:hover{background:var(--accent);color:white}
+
+/* Pipeline steps */
+.steps{margin-bottom:20px}
+.step{display:flex;align-items:center;gap:10px;padding:8px 0;font-size:13px;color:var(--text2)}
+.step .icon{width:22px;height:22px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:12px;flex-shrink:0}
+.step .icon.done{background:var(--green-bg);color:var(--green)}
+.step .icon.active{background:var(--accent-bg);color:var(--accent);animation:pulse 1.5s infinite}
+.step .icon.pending{background:var(--input);color:var(--text3)}
+.step .status{margin-left:auto;font-size:11px;color:var(--text3)}
+.step .status.done{color:var(--green)}
+.step .status.active{color:var(--accent)}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.5}}
+
+/* QR */
+.qr-area{display:flex;gap:20px;align-items:center;padding:20px;background:var(--input);border-radius:var(--rs);margin-bottom:16px}
+.qr-box{width:120px;height:120px;background:white;border:1px solid var(--border);border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:11px;color:var(--text3);flex-shrink:0}
+.qr-info{font-size:13px;color:var(--text2);line-height:1.6}
+.qr-info strong{color:var(--text)}
+
+/* Logs */
+.logs{background:#1e1e2e;color:#a6adc8;border-radius:var(--rs);padding:12px;font-family:'SF Mono',monospace;font-size:11px;max-height:100px;overflow-y:auto;margin-bottom:16px}
+.logs .time{color:#585b70}.logs .ok{color:var(--green)}.logs .warn{color:var(--orange)}
+
+/* Success */
+.success-icon{text-align:center;padding:20px 0 8px;font-size:48px}
+.success-title{text-align:center;font-size:18px;font-weight:600;margin-bottom:16px}
+
+/* Tips */
+.tips{background:var(--input);border-radius:var(--rs);padding:12px 16px;font-size:12px;color:var(--text2);line-height:1.8}
+.tips strong{color:var(--text)}
+
+/* Form */
+.form-group{margin-bottom:14px}
+.form-group label{display:block;font-size:12px;font-weight:500;color:var(--text2);margin-bottom:4px}
+.form-group input{width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:var(--rs);font-size:13px;outline:none}
+.form-group input:focus{border-color:var(--accent)}
+
+/* Buttons */
+.btn-row{display:flex;gap:8px;justify-content:flex-end;margin-top:16px}
+.btn-primary{padding:8px 20px;background:var(--accent);color:white;border:none;border-radius:var(--rs);font-size:13px;cursor:pointer}
+.btn-secondary{padding:8px 20px;background:none;color:var(--text2);border:1px solid var(--border);border-radius:var(--rs);font-size:13px;cursor:pointer}
+
+/* Status panel */
+.status-grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-bottom:16px}
+.status-card{background:var(--input);border-radius:var(--rs);padding:12px;text-align:center}
+.status-card .val{font-size:20px;font-weight:600;color:var(--text)}
+.status-card .lbl{font-size:11px;color:var(--text3)}
+.status-header{display:flex;align-items:center;gap:10px;padding:12px 0;margin-bottom:12px}
+.status-dot{width:10px;height:10px;border-radius:50%;background:var(--green)}
+.status-name{font-size:16px;font-weight:600}
+.status-label{font-size:12px;color:var(--green);font-weight:500}
+
+/* Capabilities */
+.caps{display:flex;flex-wrap:wrap;gap:6px;margin:12px 0 16px}
+.cap{font-size:11px;padding:3px 10px;border-radius:12px}
+.cap.on{background:var(--green-bg);color:#166534}
+.cap.off{background:var(--input);color:var(--text3)}
+
+/* Sidebar preview */
+.sidebar-preview{background:var(--bg);border-radius:var(--r);padding:12px;width:260px;border:1px solid var(--border)}
+.sidebar-preview h4{font-size:11px;font-weight:600;color:var(--text3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:12px}
+.sb-item{display:flex;align-items:center;gap:8px;padding:8px 10px;border-radius:var(--rs);cursor:pointer;font-size:13px;color:var(--text2);margin-bottom:2px}
+.sb-item:hover{background:var(--hover)}
+.sb-item .dot{width:8px;height:8px;border-radius:50%;flex-shrink:0}
+.sb-item .dot.green{background:var(--green)}
+.sb-item .dot.gray{background:var(--text3)}
+.sb-item .dot.orange{background:var(--orange)}
+.sb-item .dot.red{background:var(--red)}
+.sb-item .dot.pulse{animation:pulse 1.5s infinite}
+.sb-item .meta{margin-left:auto;font-size:10px;color:var(--text3)}
+.sb-divider{height:1px;background:var(--border);margin:8px 0}
+
+/* Section label */
+.section-label{display:block;text-align:center;font-size:12px;color:rgba(255,255,255,.6);margin-bottom:8px;font-weight:500}
+</style>
+</head>
+<body>
+
+<!-- ===== SIDEBAR STATUS VARIANTS ===== -->
+<div>
+<span class="section-label">侧边栏底部状态变体</span>
+<div class="sidebar-preview">
+<h4>状态变体</h4>
+<div class="sb-item"><span class="dot gray"></span>微信助手 · 未连接<span class="meta">点击连接</span></div>
+<div class="sb-item" style="background:var(--orange-bg)"><span class="dot orange pulse"></span>微信助手 · 连接中...<span class="meta">Pipeline</span></div>
+<div class="sb-item" style="background:var(--green-bg)"><span class="dot green"></span>微信助手 · 在线<span class="meta">收47条</span></div>
+<div class="sb-item"><span class="dot orange"></span>微信助手 · 已停止<span class="meta">12h前</span></div>
+<div class="sb-item"><span class="dot red"></span>微信助手 · 异常<span class="meta">查看</span></div>
+<div class="sb-divider"></div>
+<div class="sb-item"><span style="font-size:14px">⚙</span> Settings</div>
+</div>
+</div>
+
+<!-- ===== STEP 1: CHOOSE METHOD ===== -->
+<div class="modal-frame">
+<div class="modal-header">连接微信客服 <button class="modal-close">✕</button></div>
+<div class="modal-body">
+<div class="modal-desc">让用户在微信中直接投喂和查询你的知识库。<br>扫码即用，无需安装任何应用。</div>
+<div class="option-card">
+<h3>🚀 一键接入 <span class="badge rec">推荐</span></h3>
+<p>自动部署 Cloudflare 中继 + 配置微信客服<br>无需开发经验，3 分钟完成</p>
+<button class="btn">开始一键接入 →</button>
+<div style="clear:both"></div>
+</div>
+<div class="option-card">
+<h3>⚙ 手动配置</h3>
+<p>已有企业微信客服账号，手动填写 corpid、secret 等</p>
+<button class="btn">手动配置 →</button>
+<div style="clear:both"></div>
+</div>
+<div style="border-top:1px solid var(--border);padding-top:12px;margin-top:8px">
+<div style="font-size:12px;color:var(--text3)">📖 什么是微信客服？用户在微信扫码即可与 ClaudeWiki 助手对话，发送链接/文本投喂知识，用 ? 前缀提问查询。</div>
+</div>
+</div>
+</div>
+
+<!-- ===== STEP 2: PIPELINE PROGRESS ===== -->
+<div class="modal-frame">
+<div class="modal-header"><span style="cursor:pointer;color:var(--text3)">◀ 返回</span> <button class="modal-close">✕</button></div>
+<div class="modal-body">
+<h3 style="font-size:16px;margin-bottom:16px">一键接入微信客服</h3>
+<div class="steps">
+<div class="step"><span class="icon done">✓</span> ① Cloudflare 账号 <span class="status done">已跳过</span></div>
+<div class="step"><span class="icon done">✓</span> ② 部署中继服务器 <span class="status done">已完成</span></div>
+<div class="step"><span class="icon active">◎</span> <strong>③ 扫码授权企微</strong> <span class="status active">等待扫码</span></div>
+<div class="step"><span class="icon pending">○</span> ④ 回调 URL 配置 <span class="status">待执行</span></div>
+<div class="step"><span class="icon pending">○</span> ⑤ 创建客服账号 <span class="status">待执行</span></div>
+</div>
+<div class="qr-area">
+<div class="qr-box">QR Code<br><span style="font-size:9px;color:var(--text3)">扫码区域</span></div>
+<div class="qr-info"><strong>用手机微信扫描此二维码</strong><br>授权 ClaudeWiki 接入你的企业微信客服<br><br><span style="font-size:11px;color:var(--text3)">二维码有效期 5 分钟</span></div>
+</div>
+<div class="logs">
+<div><span class="time">[15:03:01]</span> Cloudflare: 已有 token，<span class="ok">跳过注册</span></div>
+<div><span class="time">[15:03:03]</span> 部署 Worker: <span class="ok">relay.cw-xxx.workers.dev</span></div>
+<div><span class="time">[15:03:05]</span> <span class="warn">等待扫码授权...</span></div>
+</div>
+<div class="btn-row"><button class="btn-secondary">取消</button></div>
+</div>
+</div>
+
+<!-- ===== STEP 2b: MANUAL CONFIG ===== -->
+<div class="modal-frame">
+<div class="modal-header"><span style="cursor:pointer;color:var(--text3)">◀ 返回</span> <button class="modal-close">✕</button></div>
+<div class="modal-body">
+<h3 style="font-size:16px;margin-bottom:16px">手动配置微信客服</h3>
+<div class="form-group"><label>企业 ID (corpid)</label><input placeholder="ww..." value="ww1234567890abcdef"></div>
+<div class="form-group"><label>应用 Secret</label><input type="password" value="●●●●●●●●●●●●●●●●●●●●"></div>
+<div class="form-group"><label>回调 Token</label><input placeholder="回调验证 Token"></div>
+<div class="form-group"><label>EncodingAESKey</label><input placeholder="43 位 AES 密钥"></div>
+<div class="form-group"><label>Cloudflare Relay URL（可选）</label><input placeholder="https://relay.xxx.workers.dev"></div>
+<div style="font-size:11px;color:var(--accent);cursor:pointer;margin-bottom:8px">📖 如何获取这些信息？→ 查看教程</div>
+<div class="btn-row"><button class="btn-secondary">取消</button><button class="btn-primary">保存并连接</button></div>
+</div>
+</div>
+
+<!-- ===== STEP 3: SUCCESS ===== -->
+<div class="modal-frame">
+<div class="modal-header"><span></span><button class="modal-close">✕</button></div>
+<div class="modal-body">
+<div class="success-icon">✅</div>
+<div class="success-title">微信客服已连接</div>
+<div class="qr-area">
+<div class="qr-box">QR Code<br><span style="font-size:9px">客服二维码</span></div>
+<div class="qr-info"><strong>扫码添加 ClaudeWiki 助手</strong><br>到你的微信<br><br>客服名称: ClaudeWiki 助手<br>中继服务器: relay.cw-xxx.workers.dev<br>监听状态: <span style="color:var(--green)">● 运行中</span></div>
+</div>
+<div class="tips">
+<strong>💡 使用方法:</strong><br>
+· 发送链接 → 自动入库<br>
+· 发送文本 → 记录笔记<br>
+· ?提问 → 查询知识库<br>
+· /recent → 最近摄入<br>
+· /stats → 知识统计
+</div>
+<div class="btn-row"><button class="btn-primary">完成</button></div>
+</div>
+</div>
+
+<!-- ===== STATUS MODAL ===== -->
+<div class="modal-frame">
+<div class="modal-header">微信客服 <button class="modal-close">✕</button></div>
+<div class="modal-body">
+<div class="status-header">
+<span class="status-dot"></span>
+<span class="status-name">ClaudeWiki 助手</span>
+<span class="status-label">在线</span>
+</div>
+<div class="status-grid">
+<div class="status-card"><div class="val">47</div><div class="lbl">今日收</div></div>
+<div class="status-card"><div class="val">42</div><div class="lbl">今日发</div></div>
+<div class="status-card"><div class="val">12h</div><div class="lbl">连续运行</div></div>
+</div>
+<div class="qr-area" style="padding:14px">
+<div class="qr-box" style="width:80px;height:80px;font-size:10px">QR</div>
+<div class="qr-info" style="font-size:12px">扫码添加 ClaudeWiki 助手<br><button class="btn-secondary" style="padding:4px 10px;font-size:11px;margin-top:6px">复制链接</button> <button class="btn-secondary" style="padding:4px 10px;font-size:11px">下载二维码</button></div>
+</div>
+<div style="font-size:12px;font-weight:500;color:var(--text2);margin-bottom:4px">支持的消息类型</div>
+<div class="caps">
+<span class="cap on">✅ 文本</span>
+<span class="cap on">✅ 链接</span>
+<span class="cap on">✅ 查询</span>
+<span class="cap on">✅ 命令</span>
+<span class="cap off">⬚ 文件</span>
+<span class="cap off">⬚ 图片</span>
+<span class="cap off">⬚ 卡片</span>
+<span class="cap off">⬚ 分享</span>
+</div>
+<div style="border-top:1px solid var(--border);padding-top:12px;display:flex;gap:8px">
+<button class="btn-secondary" style="flex:1">重新连接</button>
+<button class="btn-secondary" style="flex:1">查看设置</button>
+<button class="btn-secondary" style="flex:1;color:var(--red);border-color:var(--red)">断开连接</button>
+</div>
+</div>
+</div>
+
+</body>
+</html>

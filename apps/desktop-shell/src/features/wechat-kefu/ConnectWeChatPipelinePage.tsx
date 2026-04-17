@@ -30,6 +30,7 @@ import type {
   PipelinePhaseState,
 } from "@/features/settings/api/client";
 import { kefuQueryKeys } from "./kefu-query-keys";
+import { useSettingsStore } from "@/state/settings-store";
 
 // ── Phase metadata ──────────────────────────────────────────────────
 
@@ -134,9 +135,11 @@ export function ConnectWeChatPipelinePage() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
 
-  // Drawer state
-  const [drawerOpen, setDrawerOpen] = useState(false);
-  const [userToggledDrawer, setUserToggledDrawer] = useState(false);
+  // Browser drawer (zustand-based, Shell-level)
+  const openBrowser = useSettingsStore((s) => s.openBrowser);
+  const closeBrowser = useSettingsStore((s) => s.closeBrowser);
+  const browserDrawerOpen = useSettingsStore((s) => s.browserDrawerOpen);
+
   const [logsExpanded, setLogsExpanded] = useState(true);
   const logEndRef = useRef<HTMLDivElement>(null);
 
@@ -200,15 +203,18 @@ export function ConnectWeChatPipelinePage() {
   // ── Auto-open/close drawer based on phase type ───────────────────
   const currentPhaseMeta = currentPhaseIdx >= 0 ? PHASES[currentPhaseIdx] : null;
   useEffect(() => {
-    if (userToggledDrawer) return;
     if (isDone) {
-      setDrawerOpen(false);
+      closeBrowser();
       return;
     }
     if (currentPhaseMeta) {
-      setDrawerOpen(currentPhaseMeta.manual);
+      if (currentPhaseMeta.manual) {
+        openBrowser("", currentPhaseMeta.drawerTitle, currentPhaseMeta.icon);
+      } else {
+        closeBrowser();
+      }
     }
-  }, [currentPhaseMeta, isDone, userToggledDrawer]);
+  }, [currentPhaseMeta, isDone, openBrowser, closeBrowser]);
 
   // ── Auto-scroll logs ─────────────────────────────────────────────
   useEffect(() => {
@@ -224,32 +230,22 @@ export function ConnectWeChatPipelinePage() {
     if (pipeline?.active) {
       cancelMut.mutate();
     }
+    closeBrowser();
     navigate("/ask");
-  }, [navigate, pipeline, cancelMut]);
-
-  const handleToggleDrawer = useCallback(() => {
-    setUserToggledDrawer(true);
-    setDrawerOpen((prev) => !prev);
-  }, []);
+  }, [navigate, pipeline, cancelMut, closeBrowser]);
 
   const handleDone = useCallback(() => {
+    closeBrowser();
     void queryClient.invalidateQueries({ queryKey: kefuQueryKeys.status() });
     void queryClient.invalidateQueries({ queryKey: kefuQueryKeys.config() });
     navigate("/ask");
-  }, [navigate, queryClient]);
+  }, [navigate, queryClient, closeBrowser]);
 
   // Current phase state from pipeline data
   const currentPhaseState: PipelinePhaseState | null =
     currentPhaseIdx >= 0 && phases[currentPhaseIdx]
       ? phases[currentPhaseIdx]
       : null;
-
-  // ── QR data for manual phase 3 ───────────────────────────────────
-  const qrData = pipeline?.qr_data ?? null;
-  const showQrInDrawer =
-    currentPhaseState?.status === "waiting_scan" &&
-    currentPhaseMeta?.key === "wecom_auth" &&
-    qrData;
 
   // ── Render ───────────────────────────────────────────────────────
 
@@ -285,7 +281,7 @@ export function ConnectWeChatPipelinePage() {
         <div
           className="flex flex-col overflow-y-auto border-r border-[var(--color-border)]"
           style={{
-            flex: drawerOpen ? "0 0 320px" : "1 1 auto",
+            flex: browserDrawerOpen ? "0 0 320px" : "1 1 auto",
             transition: "flex 300ms ease",
           }}
         >
@@ -366,108 +362,7 @@ export function ConnectWeChatPipelinePage() {
           )}
         </div>
 
-        {/* ── Right drawer ──────────────────────────── */}
-        <div className="relative flex-shrink-0">
-          {/* Toggle button -- always visible at drawer edge */}
-          <button
-            type="button"
-            onClick={handleToggleDrawer}
-            className="absolute left-[-28px] top-1/2 z-10 flex h-12 w-7 -translate-y-1/2 items-center justify-center rounded-l-md border border-r-0 border-[var(--color-border)] bg-[var(--color-background)] text-xs text-[var(--color-muted-foreground)] hover:bg-[var(--color-accent)] hover:text-[var(--color-foreground)]"
-            title={drawerOpen ? "收起面板" : "展开面板"}
-          >
-            {drawerOpen ? "◀" : "▶"}
-          </button>
-
-          <div
-            className="flex h-full flex-col border-l border-[var(--color-border)] bg-[var(--color-background)] overflow-hidden"
-            style={{
-              width: drawerOpen ? "55vw" : 0,
-              minWidth: drawerOpen ? 400 : 0,
-              transition: "width 300ms ease, min-width 300ms ease",
-            }}
-          >
-            {/* Drawer toolbar */}
-            <div className="flex h-10 shrink-0 items-center gap-2 border-b border-[var(--color-border)] px-3">
-              <button
-                type="button"
-                onClick={handleToggleDrawer}
-                className="text-xs text-[var(--color-muted-foreground)] hover:text-[var(--color-foreground)]"
-              >
-                {drawerOpen ? "◀" : "▶"}
-              </button>
-              <button
-                type="button"
-                onClick={() => void pipelineQuery.refetch()}
-                className="text-xs text-[var(--color-muted-foreground)] hover:text-[var(--color-foreground)]"
-                title="刷新"
-              >
-                🔄
-              </button>
-              <div className="flex-1 truncate px-2 text-xs text-[var(--color-muted-foreground)]">
-                {currentPhaseMeta
-                  ? `${currentPhaseMeta.icon} ${currentPhaseMeta.drawerTitle}`
-                  : "等待中..."}
-              </div>
-              <a
-                href="#"
-                className="text-xs text-[var(--color-muted-foreground)] hover:text-[var(--color-foreground)]"
-                title="外部链接"
-              >
-                🔗
-              </a>
-            </div>
-
-            {/* Drawer content */}
-            <div className="flex flex-1 flex-col items-center justify-center p-8">
-              {showQrInDrawer && qrData ? (
-                /* QR code for WeChat scan */
-                <div className="flex flex-col items-center gap-4">
-                  <p className="text-sm font-medium text-amber-700">
-                    请使用微信扫描下方二维码
-                  </p>
-                  {qrData.startsWith("data:image/") ? (
-                    <img
-                      src={qrData}
-                      alt="扫码授权"
-                      className="size-56 rounded-lg border border-[var(--color-border)]"
-                    />
-                  ) : (
-                    <img
-                      src={`https://api.qrserver.com/v1/create-qr-code/?size=224x224&data=${encodeURIComponent(qrData)}`}
-                      alt="扫码授权"
-                      className="size-56 rounded-lg border border-[var(--color-border)]"
-                    />
-                  )}
-                  <p className="text-xs text-[var(--color-muted-foreground)]">
-                    扫码后在手机上确认授权
-                  </p>
-                </div>
-              ) : currentPhaseMeta ? (
-                /* Placeholder for current phase */
-                <div className="flex flex-col items-center gap-4 text-center">
-                  <span className="text-5xl">{currentPhaseMeta.icon}</span>
-                  <h3 className="text-base font-semibold text-[var(--color-foreground)]">
-                    {currentPhaseMeta.drawerTitle}
-                  </h3>
-                  <p className="max-w-xs text-sm text-[var(--color-muted-foreground)]">
-                    {currentPhaseMeta.manual
-                      ? currentPhaseMeta.key === "cf_register"
-                        ? "等待 Cloudflare 注册或人机验证完成..."
-                        : "等待微信扫码授权..."
-                      : "自动执行中，请稍候..."}
-                  </p>
-                  {currentPhaseState?.status === "running" && (
-                    <div className="h-8 w-8 animate-spin rounded-full border-2 border-gray-200 border-t-indigo-500" />
-                  )}
-                </div>
-              ) : (
-                <p className="text-sm text-[var(--color-muted-foreground)]">
-                  等待流程启动...
-                </p>
-              )}
-            </div>
-          </div>
-        </div>
+        {/* Right drawer is now handled by the Shell-level BrowserDrawer component */}
       </div>
     </div>
   );

@@ -49,6 +49,15 @@ export interface SettingsState {
   openChannelStatusModal: () => void;
   closeChannelStatusModal: () => void;
 
+  /** Browser drawer (right-side embedded browser panel). */
+  browserUrl: string | null;
+  browserTitle: string;
+  browserIcon: string;
+  browserDrawerOpen: boolean;
+  openBrowser: (url: string, title?: string, icon?: string) => void;
+  closeBrowser: () => void;
+  toggleBrowser: () => void;
+
   theme: ThemeMode;
   warwolfTheme: boolean;
   language: string;
@@ -179,6 +188,14 @@ export const useSettingsStore = create<SettingsState>()(
       channelStatusModalOpen: false,
       openChannelStatusModal: () => set({ channelStatusModalOpen: true }),
       closeChannelStatusModal: () => set({ channelStatusModalOpen: false }),
+      browserUrl: null,
+      browserTitle: "",
+      browserIcon: "\uD83C\uDF10",
+      browserDrawerOpen: false,
+      openBrowser: (url, title = "", icon = "\uD83C\uDF10") =>
+        set({ browserUrl: url, browserTitle: title, browserIcon: icon, browserDrawerOpen: true }),
+      closeBrowser: () => set({ browserDrawerOpen: false, browserUrl: null }),
+      toggleBrowser: () => set((s) => ({ browserDrawerOpen: !s.browserDrawerOpen })),
       setTheme: (theme) => set({ theme }),
       setWarwolfTheme: (warwolfTheme) => set({ warwolfTheme }),
       setLanguage: (language) => set({ language }),

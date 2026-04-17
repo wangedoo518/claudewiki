@@ -19,6 +19,7 @@ import { ConnectWeChatModal } from "@/features/wechat-kefu/ConnectWeChatModal";
 import { ConnectWeChatPipelinePage } from "@/features/wechat-kefu/ConnectWeChatPipelinePage";
 import { ChannelStatusModal } from "@/features/wechat-kefu/ChannelStatusModal";
 import { CommandPalette } from "@/features/palette/CommandPalette";
+import { BrowserDrawer } from "@/components/BrowserDrawer";
 import { useSettingsStore } from "@/state/settings-store";
 import {
   SidebarInset,
@@ -57,11 +58,13 @@ function PageTransition({ children }: { children: ReactNode }) {
 
 export function ClawWikiShell() {
   const appMode = useSettingsStore((s) => s.appMode);
+  const browserDrawerOpen = useSettingsStore((s) => s.browserDrawerOpen);
   const location = useLocation();
 
   // v2 bugfix: ChatSidePanel shows ONLY when
   //   (1) appMode is "wiki" (sidebar toggle chose Wiki), AND
-  //   (2) we're not currently on a Chat-dedicated route.
+  //   (2) we're not currently on a Chat-dedicated route, AND
+  //   (3) the BrowserDrawer is not open (mutual exclusion).
   // Per ia-layout.md §4: "Chat 模式下隐藏（避免重复）". Since appMode
   // is independent of the URL (persisted in localStorage), /ask can be
   // active even when appMode=="wiki" — so we gate on the route too to
@@ -69,7 +72,7 @@ export function ClawWikiShell() {
   const isChatRoute =
     location.pathname.startsWith("/ask") ||
     location.pathname.startsWith("/chat");
-  const showChatPanel = appMode === "wiki" && !isChatRoute;
+  const showChatPanel = appMode === "wiki" && !isChatRoute && !browserDrawerOpen;
 
   return (
     <ErrorBoundary>
@@ -187,6 +190,7 @@ export function ClawWikiShell() {
               mounting then immediately unmounting the heavy
               useAskSession hook. */}
           {showChatPanel && <ChatSidePanel />}
+          <BrowserDrawer />
         </SidebarInset>
       </SidebarProvider>
       </AskSessionProvider>

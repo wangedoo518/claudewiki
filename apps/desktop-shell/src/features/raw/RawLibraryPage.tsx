@@ -6,7 +6,6 @@
  */
 
 import { useState, useRef, useCallback, useMemo, useEffect } from "react";
-import { useSearchParams } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import ReactMarkdown from "react-markdown";
 import {
@@ -25,6 +24,7 @@ import {
   X,
   File,
   Maximize2,
+  Target,
 } from "lucide-react";
 import { listRawEntries, getRawEntry } from "@/features/ingest/persist";
 import { ingestText } from "@/features/ingest/adapters/text";
@@ -33,6 +33,12 @@ import { fetchJson } from "@/lib/desktop/transport";
 import type { RawEntry } from "@/features/ingest/types";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
+import { parsePositiveInt, useDeepLinkState } from "@/lib/deep-link";
+import {
+  CopyDeepLinkButton,
+  DeepLinkFocusChip,
+  DeepLinkNotFoundBanner,
+} from "@/components/deep-link";
 
 const rawKeys = {
   list: () => ["wiki", "raw", "list"] as const,
@@ -87,11 +93,14 @@ function formatSize(bytes: number): string {
 /* ─── Main page ──────────────────────────────────────────────────── */
 
 export function RawLibraryPage() {
-  const [searchParams, setSearchParams] = useSearchParams();
-  const [expandedId, setExpandedId] = useState<number | null>(() => {
-    const param = searchParams.get("entry");
-    return param ? Number(param) || null : null;
-  });
+  // URL is the source of truth for the focused entry. The hook handles
+  // lazy init from ?entry=N, reverse-sync on external URL changes
+  // (paste, link click, back button), and URL writes via replace. We
+  // only need to think in terms of state here; URL is automatic.
+  const [expandedId, setExpandedId] = useDeepLinkState(
+    "entry",
+    parsePositiveInt,
+  );
   const [showAddPanel, setShowAddPanel] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
@@ -111,7 +120,6 @@ export function RawLibraryPage() {
       void queryClient.invalidateQueries({ queryKey: rawKeys.list() });
       if (expandedId === deletedId) {
         setExpandedId(null);
-        setSearchParams({}, { replace: true });
       }
       setSelectedIds((prev) => {
         const next = new Set(prev);
@@ -132,7 +140,6 @@ export function RawLibraryPage() {
       void queryClient.invalidateQueries({ queryKey: rawKeys.list() });
       setSelectedIds(new Set());
       setExpandedId(null);
-      setSearchParams({}, { replace: true });
     },
   });
 
@@ -157,7 +164,6 @@ export function RawLibraryPage() {
         )
       ) {
         setExpandedId(null);
-        setSearchParams({}, { replace: true });
       }
       setSelectedIds(new Set());
       void count;
@@ -190,11 +196,15 @@ export function RawLibraryPage() {
 
   const handleIngested = (entry: RawEntry) => {
     setExpandedId(entry.id);
-    setSearchParams({ entry: String(entry.id) }, { replace: true });
     setShowAddPanel(false);
   };
 
-  // Scroll deep-linked entry into view on initial mount
+  // Scroll deep-linked entry into view on initial mount only.
+  // Intentionally not dependent on `expandedId`: same-page URL pastes
+  // (G1 path) update expandedId via the useDeepLinkState reverse-sync
+  // effect, and scrolling there would jitter whenever the user toggles
+  // an entry with a click. Mount-time behaviour covers the primary UX
+  // (external link → fresh mount → scroll to target).
   useEffect(() => {
     if (expandedId !== null) {
       requestAnimationFrame(() => {
@@ -204,6 +214,38 @@ export function RawLibraryPage() {
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []); // Only on mount — not on every selection change
+
+  // Focus state: drives the chip/banner mutual exclusion.
+  //   none     → no chip, no banner (baseline list view)
+  //   loading  → don't show anything (avoid a one-frame "missing"
+  //              flash while listQuery is still resolving)
+  //   focused  → target exists in the full list (may be filtered out
+  //              of `filteredEntries` by searchQuery — that's still
+  //              "focused", not "missing"; searching just hides it
+  //              from the current view)
+  //   missing  → list finished loading, target id not in allEntries
+  //              (deleted, invalid typed id, stale deep link)
+  let focusState: "none" | "loading" | "focused" | "missing";
+  let focusedEntry: RawEntry | null = null;
+  if (expandedId === null) {
+    focusState = "none";
+  } else if (listQuery.isLoading) {
+    focusState = "loading";
+  } else if (listQuery.isError) {
+    // An outright error is handled inside CardList; don't double-render
+    // a missing banner on top of it.
+    focusState = "none";
+  } else {
+    const target = allEntries.find((e) => e.id === expandedId) ?? null;
+    if (target) {
+      focusState = "focused";
+      focusedEntry = target;
+    } else {
+      focusState = "missing";
+    }
+  }
+  const expandedIdLabel =
+    expandedId !== null ? `#${String(expandedId).padStart(5, "0")}` : "";
 
   return (
     <div className="flex h-full flex-col overflow-hidden">
@@ -301,6 +343,44 @@ export function RawLibraryPage() {
         </div>
       )}
 
+      {/* ── Deep-link focus chip (above list, below header) ──────── */}
+      {focusState === "focused" && focusedEntry !== null && (
+        <div className="shrink-0 px-6 pt-3">
+          <DeepLinkFocusChip
+            onClear={() => setExpandedId(null)}
+            action={<CopyDeepLinkButton variant="compact" />}
+          >
+            <Target className="size-3" aria-hidden="true" />
+            <span>聚焦中 {expandedIdLabel}</span>
+            <span
+              className="ml-1 inline-flex items-center gap-1 rounded-full px-1.5 py-0.5"
+              style={{
+                backgroundColor: sourceBadgeStyle(focusedEntry.source).bg,
+                color: sourceBadgeStyle(focusedEntry.source).text,
+                fontSize: 10,
+              }}
+            >
+              <SourceIcon
+                source={focusedEntry.source}
+                className="size-3"
+              />
+              {translateSource(focusedEntry.source)}
+            </span>
+          </DeepLinkFocusChip>
+        </div>
+      )}
+
+      {/* ── Deep-link not-found banner (stale / invalid id) ──────── */}
+      {focusState === "missing" && (
+        <div className="shrink-0 px-6 pt-3">
+          <DeepLinkNotFoundBanner
+            message="该素材不存在或已被删除"
+            detail={<>raw {expandedIdLabel}</>}
+            onClear={() => setExpandedId(null)}
+          />
+        </div>
+      )}
+
       {/* ── Main card list ──────────────────────────────────────── */}
       <div className="flex-1 overflow-y-auto">
         <CardList
@@ -309,14 +389,9 @@ export function RawLibraryPage() {
           error={listQuery.error}
           expandedId={expandedId}
           onToggleExpand={(id) => {
-            const next = expandedId === id ? null : id;
-            setExpandedId(next);
-            if (next !== null) {
-              setSearchParams({ entry: String(next) }, { replace: true });
-            } else {
-              setSearchParams({}, { replace: true });
-            }
+            setExpandedId(expandedId === id ? null : id);
           }}
+          onClearExpand={() => setExpandedId(null)}
           onDelete={(id) => deleteMutation.mutate(id)}
           deletingId={deleteMutation.isPending ? (deleteMutation.variables ?? null) : null}
           selectedIds={selectedIds}
@@ -612,6 +687,13 @@ interface CardListProps {
   error: Error | null;
   expandedId: number | null;
   onToggleExpand: (id: number) => void;
+  /**
+   * Called when the user clicks the in-place "清除聚焦" affordance on
+   * an expanded card. Semantically equivalent to re-clicking the card
+   * header, but named explicitly so the UI can expose both paths —
+   * mirrors the chip's X button.
+   */
+  onClearExpand: () => void;
   onDelete: (id: number) => void;
   deletingId: number | null;
   selectedIds: Set<number>;
@@ -624,6 +706,7 @@ function CardList({
   error,
   expandedId,
   onToggleExpand,
+  onClearExpand,
   onDelete,
   deletingId,
   selectedIds,
@@ -671,6 +754,7 @@ function CardList({
           entry={entry}
           isExpanded={entry.id === expandedId}
           onToggleExpand={() => onToggleExpand(entry.id)}
+          onClearExpand={onClearExpand}
           onDelete={() => onDelete(entry.id)}
           isDeleting={deletingId === entry.id}
           isSelected={selectedIds.has(entry.id)}
@@ -687,6 +771,12 @@ interface EntryCardProps {
   entry: RawEntry;
   isExpanded: boolean;
   onToggleExpand: () => void;
+  /**
+   * Explicit "clear focus" handler (mirrors the chip's X). Distinct
+   * from onToggleExpand semantically, though both produce the same
+   * effect when the card is currently expanded.
+   */
+  onClearExpand: () => void;
   onDelete: () => void;
   isDeleting: boolean;
   isSelected: boolean;
@@ -697,6 +787,7 @@ function EntryCard({
   entry,
   isExpanded,
   onToggleExpand,
+  onClearExpand,
   onDelete,
   isDeleting,
   isSelected,
@@ -789,6 +880,23 @@ function EntryCard({
           )}
         </button>
 
+        {/* Clear-focus × (only while expanded) — mirrors the chip's ×
+            so the user has two consistent places to exit focus. */}
+        {isExpanded && (
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              onClearExpand();
+            }}
+            title="清除聚焦"
+            aria-label="清除聚焦"
+            className="shrink-0 rounded-md p-1.5 text-muted-foreground/50 transition-colors hover:bg-accent hover:text-foreground"
+          >
+            <X className="size-3.5" />
+          </button>
+        )}
+
         {/* Expand indicator */}
         <ChevronDown
           className={
@@ -866,10 +974,14 @@ function ExpandedDetail({ id, entry }: { id: number; entry: RawEntry }) {
               onClick={handleCopy}
               className="flex items-center gap-1 rounded px-1.5 py-0.5 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
               style={{ fontSize: 11 }}
+              title="复制正文内容"
             >
               {copied ? <Check className="size-3" /> : <Copy className="size-3" />}
               {copied ? "已复制" : "复制"}
             </button>
+            {/* Copy deep link (URL with ?entry=N) — distinct from
+                "复制" above which copies body text. */}
+            <CopyDeepLinkButton />
             <button
               type="button"
               onClick={() => setShowFullScreen(true)}

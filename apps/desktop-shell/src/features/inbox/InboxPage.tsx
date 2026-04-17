@@ -23,6 +23,20 @@
  * detail pane so that when the LLM run lands we can stuff a
  * `<MaintainerTaskTree entry={...} />` into the right pane without
  * touching the page container.
+ *
+ * ── F2 deep-link UX ──────────────────────────────────────────────
+ * The `?task=N` query param is the single source of truth for the
+ * focused entry. We drive selection through `useDeepLinkState`
+ * (see @/lib/deep-link) so that:
+ *   - G1 (same-page URL paste) updates the selection via reverse sync
+ *   - G3 / G6 (deleted / invalid target) is surfaced visibly via a
+ *     `DeepLinkNotFoundBanner` rather than silently wiping the URL
+ *   - A `DeepLinkFocusChip` gives a persistent visual cue that the
+ *     user is in a focused view, with both "copy link" and "clear"
+ *     affordances
+ * The old silent-clear useEffect is intentionally gone — users now
+ * explicitly dismiss a stale deep link, which matches Explorer A/B
+ * feedback that disappearing URLs were confusing.
  */
 
 import { useEffect, useMemo, useState } from "react";
@@ -38,8 +52,10 @@ import {
   ArrowRight,
   Sparkles,
   Save,
+  CheckSquare,
+  X,
 } from "lucide-react";
-import { Link, useSearchParams } from "react-router-dom";
+import { Link } from "react-router-dom";
 import {
   approveInboxWithWrite,
   listInboxEntries,
@@ -51,6 +67,12 @@ import type {
   InboxResolveAction,
   WikiPageProposal,
 } from "@/features/ingest/types";
+import { parsePositiveInt, useDeepLinkState } from "@/lib/deep-link";
+import {
+  CopyDeepLinkButton,
+  DeepLinkFocusChip,
+  DeepLinkNotFoundBanner,
+} from "@/components/deep-link";
 
 const inboxKeys = {
   list: () => ["wiki", "inbox", "list"] as const,
@@ -78,17 +100,14 @@ function translateStatus(status: string): string {
 
 export function InboxPage() {
   const queryClient = useQueryClient();
-  const [searchParams, setSearchParams] = useSearchParams();
-  const [selectedId, setSelectedId] = useState<number | null>(() => {
-    const param = searchParams.get("task");
-    return param ? Number(param) || null : null;
-  });
 
-  /** Select an inbox entry and sync URL query param. */
-  const handleSelect = (id: number) => {
-    setSelectedId(id);
-    setSearchParams({ task: String(id) }, { replace: true });
-  };
+  // URL is the source of truth for the focused task. The hook handles
+  // lazy init from ?task=N, reverse-sync on external URL changes
+  // (paste, link click, back button), and URL writes via replace.
+  const [selectedId, setSelectedId] = useDeepLinkState(
+    "task",
+    parsePositiveInt,
+  );
 
   const listQuery = useQuery({
     queryKey: inboxKeys.list(),
@@ -106,22 +125,37 @@ export function InboxPage() {
     [entries, selectedId],
   );
 
-  // Review nit #5: clear the selection when a previously-selected
-  // entry drops off the list (e.g. after a reject-then-archive flow,
-  // or if the backing file got pruned out from under us). Without
-  // this effect the right pane would get stuck on a stale id and the
-  // EntryPlaceholder wouldn't re-appear.
-  useEffect(() => {
-    if (selectedId === null) return;
-    if (listQuery.isLoading) return;
-    const stillExists = entries.some((e) => e.id === selectedId);
-    if (!stillExists) {
-      setSelectedId(null);
-      setSearchParams({}, { replace: true });
-    }
-  }, [entries, selectedId, listQuery.isLoading, setSearchParams]);
+  // Focus state: renders to chip/banner/placeholder in a mutually
+  // exclusive way. Unlike the pre-F2 silent-clear useEffect, we never
+  // mutate URL/state behind the user's back — the "missing" branch is
+  // a visible banner with an explicit dismiss button.
+  //   none     → ?task absent → baseline placeholder
+  //   loading  → ?task present but list still resolving (don't flash)
+  //   focused  → target exists → show EntryDetail + focus chip
+  //   missing  → list finished, target id not in entries → banner
+  let focusState: "none" | "loading" | "focused" | "missing";
+  if (selectedId === null) {
+    focusState = "none";
+  } else if (listQuery.isLoading) {
+    focusState = "loading";
+  } else if (listQuery.isError) {
+    // Errors are already surfaced inside EntryList; don't double-render
+    // a missing banner on top of a list-level error strip.
+    focusState = "none";
+  } else if (selectedEntry) {
+    focusState = "focused";
+  } else {
+    focusState = "missing";
+  }
 
-  // Scroll deep-linked task into view on initial mount.
+  const selectedIdLabel =
+    selectedId !== null ? `#${String(selectedId).padStart(5, "0")}` : "";
+
+  // Scroll deep-linked task into view on initial mount only. NOT
+  // dependent on selectedId — the hook's reverse-sync updates selection
+  // on same-page URL pastes, and scrolling there would jitter every
+  // click-to-select. Mount-time covers the primary deep-link UX
+  // (external link → fresh mount → scroll to target).
   useEffect(() => {
     if (selectedId !== null) {
       requestAnimationFrame(() => {
@@ -181,12 +215,32 @@ export function InboxPage() {
             isLoading={listQuery.isLoading}
             error={listQuery.error}
             selectedId={selectedId}
-            onSelect={handleSelect}
+            onSelect={(id) => setSelectedId(id)}
           />
         </aside>
         <main className="flex min-w-0 flex-1 flex-col overflow-hidden rounded-xl">
-          {selectedEntry ? (
-            <EntryDetail key={selectedEntry.id} entry={selectedEntry} />
+          {focusState === "focused" && selectedEntry ? (
+            <EntryDetail
+              key={selectedEntry.id}
+              entry={selectedEntry}
+              selectedIdLabel={selectedIdLabel}
+              onClearFocus={() => setSelectedId(null)}
+            />
+          ) : focusState === "missing" ? (
+            <div className="flex flex-1 flex-col overflow-hidden">
+              <div className="shrink-0 px-6 py-4">
+                <DeepLinkNotFoundBanner
+                  message="该任务不存在或已被删除"
+                  detail={<>task {selectedIdLabel}</>}
+                  onClear={() => setSelectedId(null)}
+                />
+              </div>
+              <EntryPlaceholder />
+            </div>
+          ) : focusState === "loading" ? (
+            <div className="flex flex-1 items-center justify-center p-6 text-center">
+              <Loader2 className="size-5 animate-spin text-muted-foreground/60" />
+            </div>
           ) : (
             <EntryPlaceholder />
           )}
@@ -356,7 +410,15 @@ function StatusIcon({ status }: { status: InboxEntry["status"] }) {
 
 /* ─── Detail pane ──────────────────────────────────────────────── */
 
-function EntryDetail({ entry }: { entry: InboxEntry }) {
+function EntryDetail({
+  entry,
+  selectedIdLabel,
+  onClearFocus,
+}: {
+  entry: InboxEntry;
+  selectedIdLabel: string;
+  onClearFocus: () => void;
+}) {
   const queryClient = useQueryClient();
 
   // Proposal state is scoped to the currently-selected entry so that
@@ -408,35 +470,61 @@ function EntryDetail({ entry }: { entry: InboxEntry }) {
   return (
     <div className="flex flex-1 flex-col overflow-hidden">
       <div className="shrink-0 border-b border-border/50 px-6 py-4">
-        <div className="flex items-center gap-2">
-          <StatusIcon status={entry.status} />
-          <span className="font-mono text-muted-foreground/40" style={{ fontSize: 11 }}>
-            #{String(entry.id).padStart(5, "0")}
-          </span>
-          <span className="text-muted-foreground/50" style={{ fontSize: 11 }}>
-            {entry.kind}
-          </span>
-          <StatusPill status={entry.status} />
-        </div>
-        <h2
-          className="mt-2 text-lg text-foreground"
-        >
-          {entry.title}
-        </h2>
-        <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-muted-foreground/40" style={{ fontSize: 11 }}>
-          <span>创建于: {entry.created_at}</span>
-          {entry.resolved_at && <span>处理于: {entry.resolved_at}</span>}
-          {entry.source_raw_id != null && (
-            <Link
-              to={`/raw?entry=${entry.source_raw_id}`}
-              className="inline-flex items-center gap-1 text-primary hover:underline"
-              style={{ fontSize: 11 }}
-            >
-              <FileText className="size-3" />
-              raw #{String(entry.source_raw_id).padStart(5, "0")}
-              <ArrowRight className="size-3" />
-            </Link>
-          )}
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-2">
+              <StatusIcon status={entry.status} />
+              <span className="font-mono text-muted-foreground/40" style={{ fontSize: 11 }}>
+                #{String(entry.id).padStart(5, "0")}
+              </span>
+              <span className="text-muted-foreground/50" style={{ fontSize: 11 }}>
+                {entry.kind}
+              </span>
+              <StatusPill status={entry.status} />
+            </div>
+            <h2 className="mt-2 text-lg text-foreground">
+              {entry.title}
+            </h2>
+            {/* F2: persistent focus chip with copy-link action + clear */}
+            <div className="mt-2">
+              <DeepLinkFocusChip
+                onClear={onClearFocus}
+                action={<CopyDeepLinkButton variant="compact" />}
+              >
+                <CheckSquare className="size-3" />
+                聚焦中 {selectedIdLabel}
+              </DeepLinkFocusChip>
+            </div>
+            <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-muted-foreground/40" style={{ fontSize: 11 }}>
+              <span>创建于: {entry.created_at}</span>
+              {entry.resolved_at && <span>处理于: {entry.resolved_at}</span>}
+              {entry.source_raw_id != null && (
+                <Link
+                  to={`/raw?entry=${entry.source_raw_id}`}
+                  className="inline-flex items-center gap-1 text-primary hover:underline"
+                  style={{ fontSize: 11 }}
+                >
+                  <FileText className="size-3" />
+                  raw #{String(entry.source_raw_id).padStart(5, "0")}
+                  <ArrowRight className="size-3" />
+                </Link>
+              )}
+            </div>
+          </div>
+          {/* F2 contract 4.6: explicit close button returns to the
+              default list view. The FocusChip × duplicates this action,
+              but a standalone affordance in the header corner matches
+              the wider close-pattern vocabulary users expect on detail
+              panes. */}
+          <button
+            type="button"
+            onClick={onClearFocus}
+            title="清除聚焦"
+            aria-label="清除聚焦"
+            className="shrink-0 rounded-md border border-border/40 p-1 text-muted-foreground transition-colors hover:border-border hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+          >
+            <X className="size-4" />
+          </button>
         </div>
       </div>
 

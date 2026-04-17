@@ -209,3 +209,42 @@ caused by v3 OkLCH migration replacing v2 definitions but missing semantic alias
 | `memory/learned-rules.md` | Added LR-4 (S2.1); polished prevention command to pure-Node cross-platform (S2.1a) |
 | `memory/observations.jsonl` | Appended "theme token alias drift" observation (S2.1) |
 | `memory/evolution-log.md` | This entry |
+
+---
+
+## 2026-04-17 — LR-5 promotion: URL-driven selection must wire all three (F2 closure)
+
+**What happened**: Promoted a new learned rule (LR-5) covering the
+URL↔state contract for selection state. F1 landed the `?entry=N` /
+`?task=N` deep links on Raw + Inbox using only a lazy `useState` init
+from `searchParams.get()`. That passed the "click a link from the
+Wiki tree" happy path (which is a cold mount) but failed on
+same-page paths: address-bar paste, programmatic
+`navigate({ replace })` inside the same route, browser back/forward
+that only changes the query. Explorer A's F2 Discovery Playwright
+baseline reproduced both failures; F2 fixed them by centralising the
+pattern into `useDeepLinkState` (three invariants: lazy init + reverse
+sync effect + setter double-write). Playwright verifier confirmed
+9/9 scenarios post-fix.
+
+**Why promote now**: 2 product files, 2 rounds (F1 caused → F2 fixed),
+real P0 symptom (user-visible same-page paste did nothing), stable
+prevention (shared hook + pure-Node sweep). Matches the LR-4
+promotion bar — systemic pattern with reproducible prevention.
+
+**Changes**:
+
+| File | Change |
+|------|--------|
+| `memory/learned-rules.md` | Added LR-5 "URL-driven selection must wire all three: init + reverse sync + setter"; bumped Last updated to 2026-04-17 |
+| `memory/observations.jsonl` | Appended the F2 observation (pre-LR-5 evidence row) |
+| `memory/evolution-log.md` | This entry |
+
+**What was NOT changed this round**:
+- No product code (F2 product commit `bf190b9` is the feature drop;
+  this closure is memory-only)
+- No `rules/*` edits (no new triggers or risk reclassifications —
+  LR-5 prevention is a manual sweep, not a new mandatory trigger)
+- No `corrections.jsonl` append (F1 was not a factual error; it was a
+  half-built feature finished in F2)
+- No `CLAW.md` / `AGENTS.md` / `CLAUDE.md` touches

@@ -3,7 +3,7 @@
 Stable rules extracted from repeated execution experience.
 Only promote here when evidence is strong (systemic pattern + successful fix).
 
-> Last updated: 2026-04-16
+> Last updated: 2026-04-17
 
 ## LR-1: Heading typography — class over inline
 
@@ -86,3 +86,64 @@ process.exit(ok?0:1);
 Expect `All N color tokens defined.` and exit 0. Any `UNDEFINED:` line means a
 token is used in code but missing from the theme — add it to `globals.css` in
 both `@theme` (light) and `.dark` blocks before committing.
+
+## LR-5: URL-driven selection must wire all three: init + reverse sync + setter
+
+**Rule**: A React component that reads its selection from a URL query
+param MUST implement all three sides of the URL↔state contract:
+
+1. **Lazy `useState` init** from `searchParams.get(paramKey)` — covers
+   fresh mount (external link, page reload, first navigation in).
+2. **`useEffect([searchParams])` reverse sync** — covers same-page URL
+   changes that do NOT unmount the component: address-bar paste,
+   programmatic `navigate(..., { replace: true })` within the same
+   route, browser back/forward that only changes the query, link
+   clicks within the current page.
+3. **Setter writes BOTH** `setState(next)` AND `setSearchParams(..., { replace: true })`
+   in a single handler — covers user-initiated selection.
+
+Any one or two of these alone will appear to work on the "cold link"
+happy path and still ship a P0 same-page-paste bug. This is exactly
+how F1's one-way init pattern made it through smoke tests.
+
+Prefer using `@/lib/deep-link`'s `useDeepLinkState<T>(paramKey, parse)`
+which packages all three. Hand-rolling `useSearchParams + useState` is
+allowed only if all three invariants are explicitly wired and
+commented.
+
+**Evidence**: F1 landed lazy init only on both `RawLibraryPage.tsx`
+(`?entry=N`) and `InboxPage.tsx` (`?task=N`) — two files, same pattern.
+Explorer A's Playwright baseline (F2 Discovery) reproduced the failure
+by calling `page.goto('/#/raw?entry=7')` on an already-mounted `/raw`
+page: expandedId did not update, no entry was highlighted, URL had the
+param but UI was default. Same symptom on Inbox. F2 centralised the
+pattern in `apps/desktop-shell/src/lib/deep-link.ts` and proved the
+fix with Playwright S3/S4 post-fix (inline `borderLeft` flips to
+primary; `border-l-[3px] border-primary` appears — 9/9 scenarios pass
+in total).
+
+**Prevention**: Before merging a feature that uses URL query params
+for selection, list all direct `useSearchParams` consumers outside the
+shared helper and verify each one goes through `useDeepLinkState` (or
+explicitly wires all three invariants). Cross-platform Node sweep:
+
+```sh
+node -e "
+const fs=require('fs'),path=require('path');
+function walk(d,out=[]){try{for(const e of fs.readdirSync(d,{withFileTypes:true})){const p=path.join(d,e.name);if(e.isDirectory()&&!e.name.includes('node_modules'))walk(p,out);else if(/\.(tsx?|jsx?)$/.test(e.name))out.push(p);}}catch{}return out;}
+const HELPER=path.join('apps','desktop-shell','src','lib','deep-link.ts');
+const hits=[];
+for(const f of walk('apps/desktop-shell/src')){
+  if(f.endsWith(HELPER)) continue;
+  const s=fs.readFileSync(f,'utf-8');
+  if(!/useSearchParams/.test(s)) continue;
+  if(/useDeepLinkState/.test(s)) continue;
+  hits.push(f);
+}
+if(hits.length){console.log('Direct useSearchParams users — must use useDeepLinkState or explicitly wire all three invariants:');for(const h of hits)console.log(' ',h);process.exit(1);}else console.log('All URL-driven surfaces go through useDeepLinkState.');
+"
+```
+
+Expect `All URL-driven surfaces go through useDeepLinkState.` and
+exit 0. Any listed path is a surface that must be audited for the
+three-invariant contract (or migrated to the hook).

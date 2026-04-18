@@ -98,9 +98,11 @@ pub fn ts_file(types: &[(&str, Value)]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ask_context::binding::{SessionSourceBinding, SourceRef};
     use crate::{
-        DesktopLifecycleStatus, DesktopSessionBucket, DesktopSessionData,
-        DesktopSessionDetail, DesktopSessionSummary, DesktopTurnState, EnrichStatus,
+        ContextBasis, ContextMode, DesktopLifecycleStatus, DesktopSessionBucket,
+        DesktopSessionData, DesktopSessionDetail, DesktopSessionSummary, DesktopTurnState,
+        EnrichStatus,
     };
 
     fn sample_summary() -> DesktopSessionSummary {
@@ -153,6 +155,45 @@ mod tests {
             enrich_status: Some(EnrichStatus::Success {
                 title: "Example Article".to_string(),
                 raw_id: 42,
+            }),
+            // A1: fixture carries a `context_basis` object so the
+            // generated TS shape covers the new side-channel. Shape
+            // matches what `append_user_message` actually populates
+            // when a SourceFirst turn with enrichment runs.
+            //
+            // A2: also populate `bound_source` inside the basis so
+            // the generated TS covers the binding echo shape.
+            //
+            // A3: flip `auto_bound = true` so the generated TS sees
+            // the new optional boolean. Because the field skips when
+            // false, we have to set it true in the fixture for the
+            // codegen walker to pick it up.
+            //
+            // A4: flip `grounding_applied = true` for the same reason
+            // — the field is `skip_serializing_if "Not::not"`, so only
+            // a `true` fixture surfaces the property in the generated
+            // TS. Worker B needs `ContextBasis.grounding_applied?: boolean`
+            // in the TS mirror to render the "✓ Grounded" badge.
+            context_basis: Some(
+                ContextBasis::new(ContextMode::SourceFirst, 1, Some(1200))
+                    .with_bound_source(Some(SourceRef::Raw {
+                        id: 42,
+                        title: "Example Raw".into(),
+                    }))
+                    .with_auto_bound(true)
+                    .with_grounding_applied(true),
+            ),
+            // A2: fixture carries a `source_binding` so the
+            // generated TS covers the session-level binding field.
+            // Shape matches what `DesktopState::bind_source` populates
+            // on the returned detail.
+            source_binding: Some(SessionSourceBinding {
+                source: SourceRef::Raw {
+                    id: 42,
+                    title: "Example Raw".into(),
+                },
+                bound_at: 1_700_000_000_000,
+                binding_reason: Some("URL handoff".into()),
             }),
         }
     }
@@ -239,6 +280,120 @@ mod tests {
                     hint: "Install Playwright".to_string(),
                 })
                 .unwrap(),
+            ),
+            // A1: emit a named TS type for the ContextBasis shape so
+            // the frontend ContextBasisLabel can import a single
+            // source of truth instead of redeclaring the object shape.
+            //
+            // A3: the shape now includes the optional `auto_bound`
+            // boolean (omitted-when-false). Fixture flips it on so
+            // the generated TS surfaces the property — Worker B needs
+            // `ContextBasis.auto_bound?: boolean` in the TS mirror.
+            //
+            // A4: same treatment for `grounding_applied` — the field
+            // skips when false, so we flip it on in the fixture to
+            // surface `ContextBasis.grounding_applied?: boolean`.
+            (
+                "GeneratedContextBasis",
+                serde_json::to_value(
+                    ContextBasis::new(ContextMode::SourceFirst, 1, Some(1200))
+                        .with_bound_source(Some(SourceRef::Raw {
+                            id: 42,
+                            title: "Example Raw".into(),
+                        }))
+                        .with_auto_bound(true)
+                        .with_grounding_applied(true),
+                )
+                .unwrap(),
+            ),
+            // A1: each ContextMode string tag, so the frontend can
+            // import `GeneratedContextMode = "follow_up" | ...` and
+            // avoid drift between the Rust enum and the TS literal.
+            (
+                "GeneratedContextModeFollowUp",
+                serde_json::to_value(ContextMode::FollowUp).unwrap(),
+            ),
+            (
+                "GeneratedContextModeSourceFirst",
+                serde_json::to_value(ContextMode::SourceFirst).unwrap(),
+            ),
+            (
+                "GeneratedContextModeCombine",
+                serde_json::to_value(ContextMode::Combine).unwrap(),
+            ),
+            // A2: enumerate each SourceRef variant so the frontend
+            // gets a discriminated-union cover. Each variant is its
+            // own `export type` to let hand-built narrower guards
+            // work alongside `GeneratedSourceRef`.
+            (
+                "GeneratedSourceRefRaw",
+                serde_json::to_value(SourceRef::Raw {
+                    id: 42,
+                    title: "Example Raw".into(),
+                })
+                .unwrap(),
+            ),
+            (
+                "GeneratedSourceRefWiki",
+                serde_json::to_value(SourceRef::Wiki {
+                    slug: "example-slug".into(),
+                    title: "Example Wiki".into(),
+                })
+                .unwrap(),
+            ),
+            (
+                "GeneratedSourceRefInbox",
+                serde_json::to_value(SourceRef::Inbox {
+                    id: 7,
+                    title: "Inbox Item".into(),
+                })
+                .unwrap(),
+            ),
+            (
+                "GeneratedSessionSourceBinding",
+                serde_json::to_value(SessionSourceBinding {
+                    source: SourceRef::Raw {
+                        id: 42,
+                        title: "Example Raw".into(),
+                    },
+                    bound_at: 1_700_000_000_000,
+                    binding_reason: Some("URL handoff".into()),
+                })
+                .unwrap(),
+            ),
+            // Q1 Inbox Queue Intelligence: batch resolve contract.
+            // The Rust types live in `desktop-server::lib` (they're
+            // crate-private request/response structs) so we mirror
+            // them here as hand-built sample JSON values rather than
+            // round-tripping through serde. Keep these shapes in sync
+            // with `BatchResolveInboxRequest` / `BatchResolveInboxResponse`
+            // / `BatchFailedItem` in `rust/crates/desktop-server/src/lib.rs`.
+            (
+                "GeneratedBatchResolveInboxRequest",
+                serde_json::json!({
+                    "ids": [1, 2, 3],
+                    "action": "reject",
+                    "reason": "stale content"
+                }),
+            ),
+            (
+                "GeneratedBatchFailedItem",
+                serde_json::json!({
+                    "id": 3,
+                    "error": "inbox entry not found: 3"
+                }),
+            ),
+            (
+                "GeneratedBatchResolveInboxResponse",
+                serde_json::json!({
+                    "success": [1, 2],
+                    "failed": [{
+                        "id": 3,
+                        "error": "inbox entry not found: 3"
+                    }],
+                    "total": 3,
+                    "processed": 2
+                }),
             ),
         ];
 
@@ -331,5 +486,171 @@ mod tests {
             .expect("enrich_status field present");
         assert!(status.is_object(), "enrich_status should be an object");
         assert_eq!(status["kind"], "success");
+    }
+
+    /// A1 cross-Worker guard: `ContextMode` must encode as snake_case
+    /// strings (`"follow_up" | "source_first" | "combine"`). If anyone
+    /// accidentally flips the enum to PascalCase or adds a tag, the
+    /// frontend `useAskMode` union + HTTP body field will silently
+    /// reject every payload. Pin the encoding here.
+    #[test]
+    fn context_mode_encodes_as_snake_case_strings() {
+        assert_eq!(
+            serde_json::to_value(ContextMode::FollowUp).unwrap(),
+            serde_json::json!("follow_up")
+        );
+        assert_eq!(
+            serde_json::to_value(ContextMode::SourceFirst).unwrap(),
+            serde_json::json!("source_first")
+        );
+        assert_eq!(
+            serde_json::to_value(ContextMode::Combine).unwrap(),
+            serde_json::json!("combine")
+        );
+    }
+
+    /// A1 cross-Worker guard: `ContextBasis` serialises with the
+    /// exact snake_case field names the frontend binds to. Pin them
+    /// down so a rename in Rust can't silently break the UI chip.
+    #[test]
+    fn context_basis_serialises_with_expected_fields() {
+        let basis = ContextBasis::new(ContextMode::SourceFirst, 1, Some(1200));
+        let json = serde_json::to_value(basis).unwrap();
+        assert_eq!(json["mode"], "source_first");
+        assert_eq!(json["history_turns_included"], 1);
+        assert_eq!(json["source_included"], true);
+        assert_eq!(json["source_token_hint"], 300); // 1200 / 4
+        assert_eq!(json["boundary_marker"], true);
+        // A3: default `auto_bound = false` is omitted from the JSON
+        // via `skip_serializing_if`. Worker B treats the field as
+        // `auto_bound?: boolean` in TS — absent ≡ false.
+        assert!(
+            json.get("auto_bound").is_none(),
+            "default auto_bound=false must be skipped: {json}"
+        );
+        // A4: default `grounding_applied = false` is also omitted
+        // via `skip_serializing_if`. Worker B treats the field as
+        // `grounding_applied?: boolean` in TS — absent ≡ false.
+        assert!(
+            json.get("grounding_applied").is_none(),
+            "default grounding_applied=false must be skipped: {json}"
+        );
+    }
+
+    /// A4 cross-Worker guard: when a bound-source turn runs,
+    /// `ContextBasis.grounding_applied` must serialise as the
+    /// literal boolean `true` under the snake_case key. Pin the
+    /// shape so the TS mirror in `apps/desktop-shell` stays in sync
+    /// for the "✓ Grounded" badge.
+    #[test]
+    fn context_basis_serialises_grounding_applied_when_true() {
+        let basis = ContextBasis::new(ContextMode::SourceFirst, 1, Some(1200))
+            .with_bound_source(Some(SourceRef::Raw {
+                id: 42,
+                title: "Example Raw".into(),
+            }))
+            .with_grounding_applied(true);
+        let json = serde_json::to_value(basis).unwrap();
+        assert_eq!(json["grounding_applied"], true);
+        // bound_source must ride alongside it with kind=raw.
+        assert_eq!(json["bound_source"]["kind"], "raw");
+    }
+
+    /// A3 cross-Worker guard: when Fresh-Link auto-binding fires,
+    /// `ContextBasis.auto_bound` must serialise as the literal
+    /// boolean `true` under the snake_case key. Pin the shape so the
+    /// TS mirror in `apps/desktop-shell` stays in sync.
+    #[test]
+    fn context_basis_serialises_auto_bound_when_true() {
+        let basis = ContextBasis::new(ContextMode::SourceFirst, 1, Some(1200))
+            .with_bound_source(Some(SourceRef::Raw {
+                id: 42,
+                title: "Example Raw".into(),
+            }))
+            .with_auto_bound(true);
+        let json = serde_json::to_value(basis).unwrap();
+        assert_eq!(json["auto_bound"], true);
+        // bound_source must ride alongside it with kind=raw.
+        assert_eq!(json["bound_source"]["kind"], "raw");
+        assert_eq!(json["bound_source"]["id"], 42);
+    }
+
+    /// A1 fixture sanity: `sample_detail()` now carries a populated
+    /// `context_basis` so the regenerated TS covers the shape.
+    ///
+    /// A3: fixture also flips `auto_bound = true` so the generated
+    /// TS surfaces the Fresh-Link flag. Guards against a future edit
+    /// that accidentally resets it to default false (which would
+    /// then hide the field from the generated TS).
+    #[test]
+    fn sample_detail_emits_context_basis_object() {
+        let json = serde_json::to_value(sample_detail()).unwrap();
+        let basis = json
+            .get("context_basis")
+            .expect("context_basis field present");
+        assert!(basis.is_object(), "context_basis should be an object");
+        assert_eq!(basis["mode"], "source_first");
+        assert_eq!(basis["boundary_marker"], true);
+        // A3: fixture sets auto_bound=true so the generated TS shape
+        // includes the key. If this breaks, the fixture lost the
+        // A3 flag and Worker B will miss the property.
+        assert_eq!(
+            basis["auto_bound"], true,
+            "sample_detail must emit auto_bound=true for codegen: {basis}"
+        );
+        // A4: fixture also sets grounding_applied=true so the
+        // generated TS shape includes the A4 flag. If this breaks
+        // Worker B loses visibility into Grounded Mode framing.
+        assert_eq!(
+            basis["grounding_applied"], true,
+            "sample_detail must emit grounding_applied=true for codegen: {basis}"
+        );
+    }
+
+    /// A2 cross-Worker guard: `SourceRef` encodes with
+    /// `#[serde(tag = "kind", rename_all = "snake_case")]`. A silent
+    /// flip to PascalCase, externally-tagged, or untagged would break
+    /// the URL handoff + HTTP body contract with Worker B (TS) and
+    /// Worker C (URL handoff). Pin the shape here.
+    #[test]
+    fn source_ref_serialises_as_snake_case_with_kind_tag() {
+        let raw = serde_json::to_value(SourceRef::Raw {
+            id: 42,
+            title: "T".into(),
+        })
+        .unwrap();
+        assert_eq!(raw["kind"], "raw");
+        assert_eq!(raw["id"], 42);
+        assert_eq!(raw["title"], "T");
+
+        let wiki = serde_json::to_value(SourceRef::Wiki {
+            slug: "s".into(),
+            title: "T".into(),
+        })
+        .unwrap();
+        assert_eq!(wiki["kind"], "wiki");
+        assert_eq!(wiki["slug"], "s");
+
+        let inbox = serde_json::to_value(SourceRef::Inbox {
+            id: 7,
+            title: "T".into(),
+        })
+        .unwrap();
+        assert_eq!(inbox["kind"], "inbox");
+    }
+
+    /// A2 fixture sanity: `sample_detail()` populates `source_binding`
+    /// so the generated TS shape covers it. Guards against future
+    /// code that drops the fixture back to `None` and silently cuts
+    /// the session-binding field from the contract.
+    #[test]
+    fn sample_detail_emits_source_binding_object() {
+        let json = serde_json::to_value(sample_detail()).unwrap();
+        let binding = json
+            .get("source_binding")
+            .expect("source_binding field present");
+        assert!(binding.is_object());
+        assert_eq!(binding["source"]["kind"], "raw");
+        assert_eq!(binding["bound_at"], 1_700_000_000_000i64);
     }
 }

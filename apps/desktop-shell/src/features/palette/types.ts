@@ -8,6 +8,20 @@
  * `value` is the cmdk item identity — format is `"kind:id"` so the
  * UI dispatcher can look up the action regardless of shape. Parsing
  * is done via `paletteValueFor(...)` which both sides MUST use.
+ *
+ * Palette item schema.
+ *
+ * S1 sprint extension — adds:
+ *   kind              typed source (route | wiki | raw | inbox)
+ *   score             sort score assigned by usePaletteItems
+ *   why               short human-readable "reason this appeared"
+ *   secondaryActions  per-item action chips (ask_with / focus_graph / ...)
+ *
+ * Consumed by:
+ *   - usePaletteItems.ts     assigns kind/score/why/secondaryActions
+ *   - CommandPalette.tsx     renders kind badge + why + chips
+ *   - actions.ts             dispatches secondary actions via buildAskBindUrl /
+ *                            buildGraphFocusUrl (see navigate-helpers.ts)
  */
 
 import type { ComponentType } from "react";
@@ -18,6 +32,27 @@ export type PaletteIcon = ComponentType<LucideProps>;
 
 export type PaletteItemKind = "route" | "wiki" | "raw" | "inbox";
 
+/**
+ * S1 sprint — secondary action chips rendered on a palette row.
+ *
+ * Each action is dispatched by the palette's action layer; the `id`
+ * is the discriminator the dispatcher switches on, and `label` is the
+ * Chinese user-facing chip text.
+ *
+ *   - `ask_with`    — open a fresh Ask session bound to this source.
+ *                      Uses `buildAskBindUrl(...)` from
+ *                      `features/wiki/navigate-helpers.ts`.
+ *   - `focus_graph` — open the Graph page focused on a wiki slug.
+ *                      Uses `buildGraphFocusUrl(...)`.
+ *   - `open_raw`    — jump to the Raw detail view for this entry.
+ *   - `open_wiki`   — jump to the Wiki article tab for this slug.
+ */
+export interface PaletteItemSecondaryAction {
+  id: "ask_with" | "focus_graph" | "open_raw" | "open_wiki";
+  /** Chinese user-facing chip label. */
+  label: string;
+}
+
 interface PaletteItemBase {
   /** Unique value for cmdk; format `${kind}:${id}`. */
   value: string;
@@ -27,6 +62,24 @@ interface PaletteItemBase {
   hint?: string;
   /** Optional leading icon. */
   icon?: PaletteIcon;
+  /**
+   * S1 sprint — sort score assigned by `usePaletteItems`.
+   * Higher is better. Absent when the item was produced by a
+   * pre-S1 path that doesn't compute scores.
+   */
+  score?: number;
+  /**
+   * S1 sprint — short Chinese-language "why this appeared" explanation
+   * (e.g. "最近打开过", "匹配当前 slug", "最高相关度"). Rendered as a
+   * muted caption on the row when present.
+   */
+  why?: string;
+  /**
+   * S1 sprint — per-row action chips (ask_with / focus_graph / ...).
+   * The palette shell renders these as keyboard-reachable chips and
+   * dispatches to the corresponding handler in `actions.ts`.
+   */
+  secondaryActions?: PaletteItemSecondaryAction[];
 }
 
 export interface RoutePaletteItem extends PaletteItemBase {

@@ -6,6 +6,7 @@
  */
 
 import { useState, useRef, useCallback, useMemo, useEffect } from "react";
+import { useNavigate } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import ReactMarkdown from "react-markdown";
 import {
@@ -20,6 +21,7 @@ import {
   Search,
   ChevronDown,
   MessageSquare,
+  MessageCircleQuestion,
   Globe,
   X,
   File,
@@ -33,6 +35,7 @@ import { fetchJson } from "@/lib/desktop/transport";
 import type { RawEntry } from "@/features/ingest/types";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
+import { EmptyState } from "@/components/ui/empty-state";
 import { parsePositiveInt, useDeepLinkState } from "@/lib/deep-link";
 import {
   CopyDeepLinkButton,
@@ -778,13 +781,23 @@ function CardList({
     );
   }
   if (entries.length === 0) {
+    // R1 sprint — lift the empty state into the shared `EmptyState`
+    // primitive so it matches Graph / Inbox / Wiki. Keeps the
+    // existing "通过微信 / Ask / 添加" copy intact but places it
+    // inside a proper titled card with an icon.
     return (
-      <div className="flex flex-col items-center justify-center py-16 text-center">
-        <div className="mb-3 text-3xl opacity-15">📦</div>
-        <p className="text-muted-foreground/60" style={{ fontSize: 13 }}>
-          暂无素材。通过微信转发、Ask 对话发链接、或点击「添加」手动入库。
-        </p>
-      </div>
+      <EmptyState
+        size="full"
+        icon={FileText}
+        title="暂无素材"
+        description={
+          <>
+            素材库是所有入库内容的主列表。
+            <br />
+            你可以通过微信转发、Ask 对话发链接、或点击「添加」手动入库。
+          </>
+        }
+      />
     );
   }
 
@@ -836,6 +849,14 @@ function EntryCard({
   onToggleSelect,
 }: EntryCardProps) {
   const badge = sourceBadgeStyle(entry.source);
+  const navigate = useNavigate();
+
+  const handleAsk = () => {
+    const params = new URLSearchParams();
+    params.set("bind", `raw:${entry.id}`);
+    params.set("title", entry.slug || `raw #${entry.id}`);
+    navigate(`/ask?${params.toString()}`);
+  };
 
   return (
     <div
@@ -902,6 +923,20 @@ function EntryCard({
               {entry.slug}
             </div>
           </div>
+        </button>
+
+        {/* Ask with this -- visible on hover */}
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            handleAsk();
+          }}
+          className="shrink-0 rounded-md p-1.5 text-muted-foreground/30 opacity-0 transition-all hover:bg-primary/10 hover:text-primary group-hover:opacity-100"
+          title="用这条素材提问"
+          aria-label="Ask with this"
+        >
+          <MessageCircleQuestion className="size-3.5" />
         </button>
 
         {/* Delete button -- visible on hover */}

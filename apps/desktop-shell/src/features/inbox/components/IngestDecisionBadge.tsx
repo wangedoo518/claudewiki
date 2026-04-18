@@ -86,6 +86,11 @@ export function IngestDecisionBadge({
   compact = false,
 }: IngestDecisionBadgeProps) {
   if (!decision || typeof decision !== "object" || !("kind" in decision)) {
+    // R1 sprint — white-box the title copy. The previous wording
+    // ("此 raw 尚未记录 IngestDecision…") dropped a Rust-side type
+    // name into the tooltip, which reads as a scary internal error
+    // to non-developer users. The replacement keeps the technical
+    // detail but leads with reassurance and plain Chinese.
     return (
       <span
         className="inline-flex items-center rounded-full border px-2 py-0.5"
@@ -95,9 +100,9 @@ export function IngestDecisionBadge({
           color: "var(--muted-foreground)",
           backgroundColor: "var(--muted)",
         }}
-        title="此 raw 尚未记录 IngestDecision（可能是 M3 之前创建，或尚未回填）"
+        title="此链接的处理决策尚未记录 · 通常无碍 · 可正常使用（未记录可能因为链接在 M3 之前入库，或后台未完成回填）"
       >
-        decision 未记录
+        未记录
       </span>
     );
   }

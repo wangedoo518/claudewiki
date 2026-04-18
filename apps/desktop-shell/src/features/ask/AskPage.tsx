@@ -23,6 +23,7 @@ export function AskPage() {
     errorMessage,
     onSend,
     onResetSession,
+    onEnsureAndBind,
   } = useAskSessionContext();
 
   // Wire SSE subscription for real-time streaming + permission requests
@@ -113,6 +114,7 @@ export function AskPage() {
         environmentLabel={session?.environment_label}
         providers={providerOptions}
         onSwitchProvider={handleSwitchProvider}
+        onEnsureAndBind={onEnsureAndBind}
       />
     );
   }

@@ -391,6 +391,14 @@ pub fn app(state: AppState) -> Router {
         .route("/api/desktop/sessions/{id}/fork", post(fork_session))
         .route("/api/desktop/sessions/{id}/lifecycle", post(set_session_lifecycle_handler))
         .route("/api/desktop/sessions/{id}/flag", post(set_session_flag_handler))
+        // A2 — session source binding. POST body = `BindSourceBody`
+        // (tagged SourceRef + optional reason); DELETE clears. Both
+        // return the updated DesktopSessionDetail so the UI can stamp
+        // its state optimistically.
+        .route(
+            "/api/desktop/sessions/{id}/bind",
+            post(bind_source_handler).delete(clear_source_binding_handler),
+        )
         .route("/api/desktop/attachments/process", post(process_attachment_handler))
         .route("/api/desktop/skills", get(list_workspace_skills_handler))
         .route("/api/desktop/settings/permission-mode", post(set_permission_mode_handler).get(get_permission_mode_handler))
@@ -431,6 +439,11 @@ pub fn app(state: AppState) -> Router {
         .route("/api/ask/sessions/{id}/fork", post(fork_session))
         .route("/api/ask/sessions/{id}/lifecycle", post(set_session_lifecycle_handler))
         .route("/api/ask/sessions/{id}/flag", post(set_session_flag_handler))
+        // A2 — canonical Ask alias for the bind endpoint.
+        .route(
+            "/api/ask/sessions/{id}/bind",
+            post(bind_source_handler).delete(clear_source_binding_handler),
+        )
         // ── end feat(U) aliases ─────────────────────────────────────
         // ── feat(O): WebSocket inbox change stream (canonical §9.3) ─
         // WS /ws/wechat-inbox — clients subscribe to get instant
@@ -524,6 +537,14 @@ pub fn app(state: AppState) -> Router {
             "/api/wiki/inbox/{id}/resolve",
             post(resolve_wiki_inbox_handler),
         )
+        // Q1 Inbox Queue Intelligence: batch resolve many ids in
+        // one HTTP call. Avoids the Batch Triage UI issuing N
+        // round-trips when a user sweeps a group of related
+        // pending tasks. Q1 MVP accepts only `action=reject`.
+        .route(
+            "/api/wiki/inbox/batch/resolve",
+            post(batch_resolve_wiki_inbox_handler),
+        )
         // ── ClawWiki S4 maintainer MVP (engram-style) ──────────────
         // `propose` fires one chat_completion against the Codex pool
         // via the wiki_maintainer crate and returns a JSON proposal
@@ -547,6 +568,26 @@ pub fn app(state: AppState) -> Router {
         .route(
             "/api/wiki/inbox/{id}/maintain",
             post(inbox_maintain_handler),
+        )
+        // ── W2 Proposal/Apply: two-phase update_existing ───────────
+        // `proposal` (POST body `{target_slug}`) → runs the LLM
+        // merge, persists the staged markdown on the inbox entry,
+        // returns the UpdateProposal shape so the UI can render a
+        // diff. `proposal/apply` commits the staged markdown;
+        // `proposal/cancel` clears it. All three are aligned with
+        // the Worker B TS contract in
+        // `apps/desktop-shell/src/features/ingest/`.
+        .route(
+            "/api/wiki/inbox/{id}/proposal",
+            post(create_proposal_handler),
+        )
+        .route(
+            "/api/wiki/inbox/{id}/proposal/apply",
+            post(apply_proposal_handler),
+        )
+        .route(
+            "/api/wiki/inbox/{id}/proposal/cancel",
+            post(cancel_proposal_handler),
         )
         // ── ClawWiki S4 wiki concept pages (read) ──────────────────
         // Pure read routes for the Wiki tab and the InboxPage diff
@@ -587,6 +628,9 @@ pub fn app(state: AppState) -> Router {
         .route("/api/wiki/graph", get(get_wiki_graph_handler))
         // ── ClawWiki Q: backlinks endpoint ─────────────────────────
         .route("/api/wiki/pages/{slug}/backlinks", get(get_wiki_backlinks_handler))
+        // ── ClawWiki G1: page-level graph (outgoing + backlinks + related) ─
+        // One request per page-graph render; frontend avoids three round-trips.
+        .route("/api/wiki/pages/{slug}/graph", get(get_page_graph_handler))
         // ── v2 SKILL engine endpoints (technical-design.md §2.1-§2.9) ──
         .route("/api/wiki/absorb", post(absorb_handler))
         .route("/api/wiki/query", post(query_wiki_handler))
@@ -1060,12 +1104,73 @@ async fn append_message(
     Path(id): Path<String>,
     Json(payload): Json<AppendDesktopMessageRequest>,
 ) -> ApiResult<Json<AppendDesktopMessageResponse>> {
+    // A1: forward the opt-in `mode` field from the HTTP body to the
+    // state-layer entry point. `None` (missing field on the wire)
+    // maps to `ContextMode::FollowUp` inside `append_user_message`,
+    // so old clients keep their behaviour.
     let session = state
         .desktop()
-        .append_user_message(&id, payload.message)
+        .append_user_message(&id, payload.message, payload.mode)
         .await
         .map_err(into_api_error)?;
     Ok(Json(AppendDesktopMessageResponse { session }))
+}
+
+/// A2 — request body for `POST .../sessions/{id}/bind`.
+///
+/// Wraps the tagged `SourceRef` and optional free-form `reason`. Using
+/// a wrapper instead of a plain `SourceRef` keeps the JSON shape
+/// explicit and leaves room for future per-bind knobs (e.g.
+/// `force_mode: "combine"`, `ttl_minutes: 30`) without another
+/// breaking change.
+#[derive(Debug, Clone, Deserialize)]
+struct BindSourceBody {
+    source: desktop_core::SourceRef,
+    #[serde(default)]
+    reason: Option<String>,
+}
+
+/// POST /api/desktop/sessions/{id}/bind
+/// POST /api/ask/sessions/{id}/bind
+///
+/// Bind a session to an explicit internal source. Body shape:
+/// ```json
+/// {
+///   "source": { "kind": "raw", "id": 42, "title": "..." },
+///   "reason": "URL handoff"   // optional
+/// }
+/// ```
+/// Returns 200 + the updated `DesktopSessionDetail` JSON.
+async fn bind_source_handler(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(body): Json<BindSourceBody>,
+) -> ApiResult<Json<DesktopSessionDetail>> {
+    let session = state
+        .desktop()
+        .bind_source(&id, body.source, body.reason)
+        .await
+        .map_err(into_api_error)?;
+    Ok(Json(session))
+}
+
+/// DELETE /api/desktop/sessions/{id}/bind
+/// DELETE /api/ask/sessions/{id}/bind
+///
+/// Clear the session's source binding. Returns 200 + the updated
+/// detail (with `source_binding: None`). Idempotent — clearing an
+/// already-unbound session is a no-op write that still echoes the
+/// current state back for UI confirmation.
+async fn clear_source_binding_handler(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> ApiResult<Json<DesktopSessionDetail>> {
+    let session = state
+        .desktop()
+        .clear_source_binding(&id)
+        .await
+        .map_err(into_api_error)?;
+    Ok(Json(session))
 }
 
 async fn stream_session_events(
@@ -2630,6 +2735,76 @@ async fn get_wiki_graph_handler() -> Result<Json<serde_json::Value>, ApiError> {
     Ok(Json(serde_json::to_value(&graph).unwrap_or(serde_json::Value::Null)))
 }
 
+/// `GET /api/wiki/pages/{slug}/graph` (G1)
+///
+/// Return the page-level graph for `slug`: the target page's own
+/// header fields (slug/title/category/summary), its outgoing links,
+/// its backlinks, and algorithmically-related pages (via shared
+/// outgoing links + shared source_raw_id). All in one payload so
+/// the frontend's per-page "Connections" panel renders with a
+/// single request instead of three.
+///
+/// Response shape (serde-serialized [`wiki_store::PageGraph`]):
+///
+/// ```json
+/// {
+///   "slug": "hub",
+///   "title": "Hub",
+///   "category": "concept",
+///   "summary": "one-line summary or null",
+///   "outgoing": [{"slug": "...", "title": "...", "category": "..."}, ...],
+///   "backlinks": [{"slug": "...", "title": "...", "category": "..."}, ...],
+///   "related": [
+///     {
+///       "slug": "...",
+///       "title": "...",
+///       "category": "...",
+///       "summary": "... or null",
+///       "reasons": ["共享来源: raw #00042", "共同链接: spoke-a"],
+///       "score": 5
+///     },
+///     ...
+///   ]
+/// }
+/// ```
+///
+/// Errors:
+///   * `404 Not Found` — slug validates but no such wiki page.
+///   * `400 Bad Request` — slug fails validation (empty, too long,
+///                         invalid chars).
+///   * `500 Internal Server Error` — I/O failure mid-walk.
+async fn get_page_graph_handler(
+    Path(slug): Path<String>,
+) -> Result<Json<wiki_store::PageGraph>, ApiError> {
+    let paths = resolve_wiki_root_for_handler()?;
+    let graph = wiki_store::get_page_graph(&paths, &slug).map_err(|e| match e {
+        wiki_store::WikiStoreError::Invalid(msg) => {
+            // `get_page_graph` uses `Invalid` for both "slug failed
+            // validation" and "no such page". Surface as 404 when the
+            // message clearly points at a missing page; otherwise 400.
+            let is_missing = msg.starts_with("wiki page not found");
+            let status = if is_missing {
+                StatusCode::NOT_FOUND
+            } else {
+                StatusCode::BAD_REQUEST
+            };
+            (
+                status,
+                Json(ErrorResponse {
+                    error: format!("page graph: {msg}"),
+                }),
+            )
+        }
+        other => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("get_page_graph failed: {other}"),
+            }),
+        ),
+    })?;
+    Ok(Json(graph))
+}
+
 async fn resolve_wiki_inbox_handler(
     Path(id): Path<u32>,
     Json(body): Json<ResolveInboxRequest>,
@@ -2659,6 +2834,166 @@ async fn resolve_wiki_inbox_handler(
     )?;
     fire_inbox_notify(); // feat(O): instant WS push
     Ok(Json(serde_json::json!({ "entry": updated })))
+}
+
+// ── Q1: Batch resolve for Inbox Queue Intelligence ───────────────
+//
+// `POST /api/wiki/inbox/batch/resolve` — resolve many inbox entries
+// in one HTTP round trip. Motivation per Q1 contract: the frontend's
+// Batch Triage mode multi-selects pending tasks and applies the same
+// action (reject for MVP; approve reserved for a future sprint). A
+// naive per-id fan-out would issue N HTTP calls from the browser;
+// this endpoint collapses that into a single request that loops over
+// `wiki_store::resolve_inbox_entry` internally.
+//
+// Design notes:
+// * Partial success is allowed: each id is resolved independently,
+//   failures go to `failed[]`, successes to `success[]`. No
+//   transaction. This mirrors the UI expectation — if id #3 is a
+//   stale reference, ids #1/#2/#4 should still land.
+// * `action` is a string for forward compatibility. Q1 MVP only
+//   accepts `"reject"`; `"approve"` is reserved and returns 400
+//   "not supported in Q1" because the approve path has non-trivial
+//   write side effects (wiki page creation) that can't be pipelined
+//   safely in a batch loop. A later sprint can relax this.
+// * `reason` is required when `action == "reject"` and must be at
+//   least 4 chars — keeps the audit log useful. `approve` ignores
+//   the field.
+// * Locking: `wiki_store::resolve_inbox_entry` already serializes
+//   on `INBOX_WRITE_GUARD`, so we just call it in a loop. Each
+//   iteration acquires / releases the guard; we don't hold it across
+//   the whole batch to avoid starving single-id resolves that race
+//   against a long batch. The brief gap between iterations is fine
+//   because each id resolution is self-contained.
+
+#[derive(Debug, Deserialize)]
+struct BatchResolveInboxRequest {
+    /// Inbox entry ids to resolve. Empty list → 400.
+    ids: Vec<u32>,
+    /// `"reject"` (Q1 MVP) or `"approve"` (reserved, returns 400).
+    action: String,
+    /// Rejection reason, required for `action == "reject"` with
+    /// `len >= 4`. Ignored for `approve`.
+    #[serde(default)]
+    reason: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct BatchResolveInboxResponse {
+    /// Ids that resolved successfully.
+    success: Vec<u32>,
+    /// Ids that failed, with a per-id error message.
+    failed: Vec<BatchFailedItem>,
+    /// Total ids submitted (== `success.len() + failed.len()`).
+    total: u32,
+    /// Count of successes (mirrors `success.len()`) — convenience for
+    /// the Inbox toast "已处理 N/M" summary.
+    processed: u32,
+}
+
+#[derive(Debug, Serialize)]
+struct BatchFailedItem {
+    id: u32,
+    error: String,
+}
+
+async fn batch_resolve_wiki_inbox_handler(
+    Json(body): Json<BatchResolveInboxRequest>,
+) -> Result<Json<BatchResolveInboxResponse>, ApiError> {
+    // Step 1 — request validation. Empty ids would silently return
+    // `total=0` which is almost certainly a bug on the caller side;
+    // fail loudly instead.
+    if body.ids.is_empty() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "ids must not be empty".to_string(),
+            }),
+        ));
+    }
+
+    // Step 2 — action whitelist. Q1 MVP: only `reject` is pipelined.
+    match body.action.as_str() {
+        "reject" => {}
+        "approve" => {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: "batch approve is not supported in Q1".to_string(),
+                }),
+            ));
+        }
+        other => {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: format!("unknown inbox action: {other}"),
+                }),
+            ));
+        }
+    }
+
+    // Step 3 — reason sanity. Reject path demands a >=4 char reason
+    // so the audit log produced by `wiki_store::resolve_inbox_entry`
+    // has something human-meaningful behind each rejection.
+    if body.action == "reject" {
+        let reason_ok = body
+            .reason
+            .as_deref()
+            .map(|r| r.trim().chars().count() >= 4)
+            .unwrap_or(false);
+        if !reason_ok {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: "reason is required (>=4 chars) when action=reject".to_string(),
+                }),
+            ));
+        }
+    }
+
+    let paths = resolve_wiki_root_for_handler()?;
+    let total = body.ids.len() as u32;
+
+    // Step 4 — per-id loop. Each `resolve_inbox_entry` call takes
+    // the shared inbox write guard internally, so parallel spawns
+    // would just serialize on the lock without a throughput win;
+    // keep it sequential and capture per-id errors for the response.
+    let mut success: Vec<u32> = Vec::with_capacity(body.ids.len());
+    let mut failed: Vec<BatchFailedItem> = Vec::new();
+
+    for id in body.ids.iter().copied() {
+        match wiki_store::resolve_inbox_entry(&paths, id, &body.action) {
+            Ok(_entry) => success.push(id),
+            Err(e) => {
+                let msg = match &e {
+                    wiki_store::WikiStoreError::NotFound(_) => {
+                        format!("inbox entry not found: {id}")
+                    }
+                    wiki_store::WikiStoreError::Invalid(m) => {
+                        format!("invalid inbox action: {m}")
+                    }
+                    other => format!("resolve_inbox_entry failed: {other}"),
+                };
+                failed.push(BatchFailedItem { id, error: msg });
+            }
+        }
+    }
+
+    // Fire a single WS notify after the batch settles rather than
+    // once per id — clients only need one repaint to re-read the
+    // inbox after this call returns.
+    if !success.is_empty() {
+        fire_inbox_notify();
+    }
+
+    let processed = success.len() as u32;
+    Ok(Json(BatchResolveInboxResponse {
+        success,
+        failed,
+        total,
+        processed,
+    }))
 }
 
 fn raw_entry_to_json(entry: &wiki_store::RawEntry) -> serde_json::Value {
@@ -3129,6 +3464,201 @@ async fn inbox_maintain_handler(
     };
 
     Ok(Json(response))
+}
+
+// ── W2 Proposal/Apply: two-phase update_existing ─────────────────
+//
+// Three endpoints, one per phase of the proposal lifecycle:
+//
+//   POST /api/wiki/inbox/{id}/proposal         — create a proposal
+//   POST /api/wiki/inbox/{id}/proposal/apply   — commit to disk
+//   POST /api/wiki/inbox/{id}/proposal/cancel  — discard
+//
+// Request / response shapes are pinned here and mirrored in the TS
+// contract Worker B owns. Body validation stays minimal — the heavy
+// lifting happens in `wiki_maintainer::{propose_update,
+// apply_update_proposal, cancel_update_proposal}`.
+
+/// Request body for `POST /api/wiki/inbox/{id}/proposal`.
+#[derive(Debug, Deserialize)]
+struct CreateProposalRequest {
+    /// Slug of the target wiki page to merge the raw body into.
+    /// Required, must be non-empty after trim.
+    target_slug: String,
+}
+
+/// Response body for `POST /api/wiki/inbox/{id}/proposal`.
+///
+/// Mirrors `wiki_maintainer::UpdateProposal` field-for-field. We use
+/// a dedicated struct here (rather than forwarding the crate type)
+/// so future wire-shape evolutions (e.g. add `conflicts`, `warning`)
+/// can happen without coupling the domain type to HTTP.
+#[derive(Debug, Serialize)]
+struct ProposalResponse {
+    target_slug: String,
+    before_markdown: String,
+    after_markdown: String,
+    summary: String,
+    generated_at: u64,
+}
+
+impl From<wiki_maintainer::UpdateProposal> for ProposalResponse {
+    fn from(p: wiki_maintainer::UpdateProposal) -> Self {
+        Self {
+            target_slug: p.target_slug,
+            before_markdown: p.before_markdown,
+            after_markdown: p.after_markdown,
+            summary: p.summary,
+            generated_at: p.generated_at,
+        }
+    }
+}
+
+/// Response body for `POST /api/wiki/inbox/{id}/proposal/apply`.
+///
+/// Uses the same `outcome` flat shape as `InboxMaintainResponse` so
+/// the frontend can dispatch on a consistent `outcome` field across
+/// endpoints. `error` is populated on conflict / internal failure.
+#[derive(Debug, Serialize)]
+struct ApplyProposalResponse {
+    outcome: String, // "updated" | "failed"
+    #[serde(skip_serializing_if = "Option::is_none")]
+    target_page_slug: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
+}
+
+/// Response body for `POST /api/wiki/inbox/{id}/proposal/cancel`.
+/// Deliberately minimal — the UI just needs a "cancelled or error".
+#[derive(Debug, Serialize)]
+struct CancelProposalResponse {
+    outcome: String, // "cancelled" | "failed"
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
+}
+
+/// `POST /api/wiki/inbox/{id}/proposal`
+///
+/// Phase 1 of W2's two-phase update. Fires one LLM merge call, stages
+/// the result on the inbox entry, and returns the diff for review.
+///
+/// 400 if `target_slug` is missing / empty. 200 with a populated
+/// response on success. Internal failures (broker down, parse error)
+/// come back as 5xx because they're not user-recoverable — the UI
+/// retries rather than rendering a partial diff.
+async fn create_proposal_handler(
+    Path(id): Path<u32>,
+    Json(body): Json<CreateProposalRequest>,
+) -> Result<Json<ProposalResponse>, ApiError> {
+    let paths = resolve_wiki_root_for_handler()?;
+
+    let slug = body.target_slug.trim().to_string();
+    if slug.is_empty() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "target_slug is required and must be non-empty".to_string(),
+            }),
+        ));
+    }
+
+    let adapter = desktop_core::wiki_maintainer_adapter::BrokerAdapter::from_global();
+    let proposal = wiki_maintainer::propose_update(&paths, id, &slug, &adapter)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: format!("propose_update failed: {e}"),
+                }),
+            )
+        })?;
+
+    fire_inbox_notify();
+    Ok(Json(ProposalResponse::from(proposal)))
+}
+
+/// `POST /api/wiki/inbox/{id}/proposal/apply`
+///
+/// Phase 2 of W2. Commits the staged `proposed_after_markdown` to
+/// disk, flips the inbox entry to `approved`, clears the staging.
+/// Returns 200 with `outcome="failed"` on conflict (concurrent
+/// external edit) so the UI can show an inline warning and offer a
+/// "re-propose" button. A missing-proposal error becomes 400
+/// because that's a state precondition the caller should know about.
+async fn apply_proposal_handler(
+    Path(id): Path<u32>,
+) -> Result<Json<ApplyProposalResponse>, ApiError> {
+    let paths = resolve_wiki_root_for_handler()?;
+    match wiki_maintainer::apply_update_proposal(&paths, id) {
+        Ok(wiki_maintainer::MaintainOutcome::Updated { target_page_slug }) => {
+            fire_inbox_notify();
+            Ok(Json(ApplyProposalResponse {
+                outcome: "updated".to_string(),
+                target_page_slug: Some(target_page_slug),
+                error: None,
+            }))
+        }
+        // execute_maintain uses `Failed` variant; apply_update_proposal
+        // doesn't produce it today but we fold it in defensively.
+        Ok(other) => Ok(Json(ApplyProposalResponse {
+            outcome: "failed".to_string(),
+            target_page_slug: None,
+            error: Some(format!("unexpected outcome: {other:?}")),
+        })),
+        Err(wiki_maintainer::MaintainerError::InvalidProposal(msg)) => Err((
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: msg,
+            }),
+        )),
+        Err(e) => {
+            // Concurrent-edit conflicts surface as `Store` errors;
+            // fold them into a structured 200 response so the UI can
+            // render a warning card instead of a toast.
+            Ok(Json(ApplyProposalResponse {
+                outcome: "failed".to_string(),
+                target_page_slug: None,
+                error: Some(format!("{e}")),
+            }))
+        }
+    }
+}
+
+/// `POST /api/wiki/inbox/{id}/proposal/cancel`
+///
+/// Discards the staged proposal. Returns 200 on success (including
+/// the no-op case where there was nothing staged) and 4xx only if
+/// the inbox id is unknown.
+async fn cancel_proposal_handler(
+    Path(id): Path<u32>,
+) -> Result<Json<CancelProposalResponse>, ApiError> {
+    let paths = resolve_wiki_root_for_handler()?;
+    match wiki_maintainer::cancel_update_proposal(&paths, id) {
+        Ok(()) => {
+            fire_inbox_notify();
+            Ok(Json(CancelProposalResponse {
+                outcome: "cancelled".to_string(),
+                error: None,
+            }))
+        }
+        Err(wiki_maintainer::MaintainerError::RawNotAvailable(msg)) => Err((
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse { error: msg }),
+        )),
+        Err(wiki_maintainer::MaintainerError::Store(msg))
+            if msg.to_lowercase().contains("not found") =>
+        {
+            Err((
+                StatusCode::NOT_FOUND,
+                Json(ErrorResponse { error: msg }),
+            ))
+        }
+        Err(e) => Ok(Json(CancelProposalResponse {
+            outcome: "failed".to_string(),
+            error: Some(format!("{e}")),
+        })),
+    }
 }
 
 /// `GET /api/wiki/pages`

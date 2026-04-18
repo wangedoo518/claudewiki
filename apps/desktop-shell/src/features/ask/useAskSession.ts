@@ -36,10 +36,15 @@ import { useCallback, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   appendMessage,
+  bindSourceToSession,
   createSession,
   getSession,
 } from "./api/client";
-import type { DesktopSessionDetail } from "@/lib/tauri";
+import type {
+  ContextMode,
+  DesktopSessionDetail,
+  SourceRef,
+} from "@/lib/tauri";
 
 const ACTIVE_SESSION_STORAGE_KEY = "clawwiki:ask:activeSessionId";
 
@@ -86,8 +91,18 @@ export interface UseAskSessionResult {
   isTurnActive: boolean;
   /** Human-readable error from the most recent failed call, if any. */
   errorMessage?: string;
-  /** Send a message on the current session. */
-  onSend: (text: string) => Promise<void>;
+  /**
+   * Send a message on the current session. A1 sprint — optional
+   * `options.mode` carries the per-turn context mode (follow_up /
+   * source_first / combine) decided by the Composer's classifier
+   * (possibly overridden by the user). Legacy callers that omit the
+   * second arg keep working; the backend treats a missing `mode` as
+   * its default (typically `follow_up`).
+   */
+  onSend: (
+    text: string,
+    options?: { mode?: ContextMode },
+  ) => Promise<void>;
   /**
    * Forget the current session and start a new one on the next
    * render. Clears the persisted active id.
@@ -95,6 +110,15 @@ export interface UseAskSessionResult {
   onResetSession: () => void;
   /** Switch to an existing session by id. */
   onSwitchSession: (id: string) => void;
+  /**
+   * A2 sprint — ensure a session exists (lazy-create if needed), then
+   * POST `/api/desktop/sessions/{id}/bind` with the given `SourceRef`
+   * and return the resulting session detail. Reuses the same
+   * ensure-session ladder as `onSend` so the "no auto-create on mount"
+   * invariant is preserved — session creation still only happens on
+   * explicit user action (bind handoff counts as one).
+   */
+  onEnsureAndBind: (source: SourceRef) => Promise<DesktopSessionDetail>;
 }
 
 /**
@@ -209,8 +233,16 @@ export function useAskSession(): UseAskSessionResult {
   // can hand in a freshly-created id (from ensureMutation.mutateAsync)
   // in the same call without waiting for a React re-render.
   const sendMutation = useMutation({
-    mutationFn: async ({ sessionId, text }: { sessionId: string; text: string }) => {
-      return appendMessage(sessionId, text);
+    mutationFn: async ({
+      sessionId,
+      text,
+      mode,
+    }: {
+      sessionId: string;
+      text: string;
+      mode?: ContextMode;
+    }) => {
+      return appendMessage(sessionId, text, mode ? { mode } : undefined);
     },
     onSuccess: (response, variables) => {
       queryClient.setQueryData(
@@ -225,9 +257,15 @@ export function useAskSession(): UseAskSessionResult {
   });
 
   const onSend = useCallback(
-    async (text: string) => {
+    async (text: string, options?: { mode?: ContextMode }) => {
       // Lazy-create path: only reach createSession when the user
       // actually wants to send something and has no session yet.
+      //
+      // CRITICAL (regression guard from 2026-04): this branch owns the
+      // "5x route toggle creates 0 new session" invariant. Do NOT add
+      // early-exits that short-circuit createSession based on the new
+      // `options.mode` — the mode field is orthogonal to session
+      // creation and must never influence whether a session is made.
       let idToUse = activeId;
       if (!idToUse) {
         try {
@@ -240,9 +278,32 @@ export function useAskSession(): UseAskSessionResult {
           return;
         }
       }
-      await sendMutation.mutateAsync({ sessionId: idToUse, text });
+      await sendMutation.mutateAsync({
+        sessionId: idToUse,
+        text,
+        mode: options?.mode,
+      });
     },
     [activeId, sendMutation, ensureMutation]
+  );
+
+  const onEnsureAndBind = useCallback(
+    async (source: SourceRef): Promise<DesktopSessionDetail> => {
+      // Parallel to `onSend`'s lazy-create ladder — but intentionally
+      // separate so the bind path does not touch the message-send
+      // Critical invariant. Same rules apply: no auto-create except on
+      // an explicit user action (bind handoff is one).
+      let idToUse = activeId;
+      if (!idToUse) {
+        const created = await ensureMutation.mutateAsync();
+        idToUse = created.id;
+      }
+      const next = await bindSourceToSession(idToUse, source);
+      queryClient.setQueryData(askSessionKeys.detail(idToUse), next);
+      setErrorMessage(undefined);
+      return next;
+    },
+    [activeId, ensureMutation, queryClient],
   );
 
   const onResetSession = useCallback(() => {
@@ -278,6 +339,7 @@ export function useAskSession(): UseAskSessionResult {
       onSend,
       onResetSession,
       onSwitchSession,
+      onEnsureAndBind,
     }),
     [
       activeId,
@@ -289,6 +351,7 @@ export function useAskSession(): UseAskSessionResult {
       onSend,
       onResetSession,
       onSwitchSession,
+      onEnsureAndBind,
     ]
   );
 }

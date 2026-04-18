@@ -57,6 +57,7 @@ import {
 import { formatIngestError } from "@/lib/ingest/format-error";
 import { EnvironmentDoctor } from "@/components/EnvironmentDoctor";
 import { RecentIngestCard } from "@/components/RecentIngestCard";
+import { EmptyState } from "@/components/ui/empty-state";
 
 const wechatKeys = {
   accounts: () => ["wechat", "accounts"] as const,
@@ -397,10 +398,23 @@ function AccountList({
     );
   }
   if (accounts.length === 0) {
+    // R1 sprint — wrap in the shared `EmptyState` primitive for
+    // visual consistency with the other surfaces. The card is
+    // scoped to a single panel so we use the compact variant.
     return (
-      <div className="rounded-md border border-dashed border-border/40 px-4 py-6 text-center text-muted-foreground/60" style={{ fontSize: 12 }}>
-        <Link2 className="mx-auto mb-2 size-5 opacity-30" />
-        No WeChat accounts connected yet. Click <b>Add account</b> to begin.
+      <div className="rounded-md border border-dashed border-border/40">
+        <EmptyState
+          size="compact"
+          icon={Link2}
+          title="还没有微信账号"
+          description={
+            <>
+              暂未连接任何微信账号。
+              <br />
+              点击顶部的「Add account」可以开始绑定。
+            </>
+          }
+        />
       </div>
     );
   }

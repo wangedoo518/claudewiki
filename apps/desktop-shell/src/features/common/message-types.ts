@@ -43,4 +43,13 @@ export interface ConversationMessage {
   toolUse?: ToolUseData;
   toolResult?: ToolResultData;
   usage?: TokenUsage;
+  /**
+   * A1 sprint — per-turn context-basis (what the backend actually fed
+   * to the model). Attached to assistant text blocks by the flattener
+   * in `AskWorkbench`. Absent on legacy sessions / user / tool blocks.
+   * Canonical type lives in `@/lib/tauri` to avoid circular deps; we
+   * re-import it lazily via `import("...")` or the consumer imports
+   * directly from tauri.ts. See ContextBasis there.
+   */
+  contextBasis?: import("@/lib/tauri").ContextBasis | null;
 }

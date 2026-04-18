@@ -1882,6 +1882,372 @@ pub fn list_backlinks(paths: &WikiPaths, target_slug: &str) -> Result<Vec<WikiPa
     Ok(results)
 }
 
+/// One "related page" hit returned by [`compute_related_pages`].
+/// Mirrors [`WikiSearchHit`]'s shape but carries human-readable
+/// `reasons` strings (shown verbatim under the "Related" section of
+/// a wiki page) instead of a text snippet, plus a numeric `score`
+/// used only for sort order.
+///
+/// The `score` field is deliberately exposed — the frontend hides
+/// it from the user but may gate the display (e.g. "only show if
+/// score ≥ 2"). `reasons` is the canonical channel for surfacing
+/// *why* two pages are related to the reader.
+///
+/// Serialized as camel-case-free snake_case (same convention as
+/// `WikiPageSummary`) so the frontend TS type mirror is mechanical.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RelatedPageHit {
+    /// Slug of the related page.
+    pub slug: String,
+    /// Display title (from frontmatter).
+    pub title: String,
+    /// Wiki category: "concept", "people", "topic", or "compare".
+    pub category: String,
+    /// Short one-line summary from the frontmatter. `None` when the
+    /// frontmatter has no summary field (rare but tolerated).
+    pub summary: Option<String>,
+    /// Human-readable reasons for the match, in the order they were
+    /// discovered. Examples:
+    ///   * `"共享来源: raw #00042"` — both derived from raw entry 42
+    ///   * `"共同链接: llm-wiki"` — both pages link to `llm-wiki`
+    ///
+    /// Shown verbatim on the frontend (hence the deliberate Chinese
+    /// phrasing — matches ClawWiki's copy language).
+    pub reasons: Vec<String>,
+    /// Raw numeric score: higher = more related. Used for sorting.
+    /// Not typically rendered to the user.
+    pub score: u32,
+}
+
+/// One "neighbor" entry in a [`PageGraph`]. Used for both outgoing
+/// links and backlinks — a minimal slice of [`WikiPageSummary`] that
+/// the page-graph renderer needs to draw a card or a node label.
+///
+/// Kept deliberately smaller than `WikiPageSummary` because the
+/// page-graph endpoint returns O(N_neighbors) of these and we want
+/// JSON payloads to stay small.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PageGraphNeighbor {
+    /// Slug of the neighbor page.
+    pub slug: String,
+    /// Display title (from frontmatter).
+    pub title: String,
+    /// Wiki category: "concept", "people", "topic", or "compare".
+    pub category: String,
+}
+
+/// Page-level graph payload for `GET /api/wiki/pages/{slug}/graph`.
+/// Combines three neighborhood views of a single wiki page into one
+/// response so the frontend can render the complete "what is this
+/// page connected to" panel with a single request:
+///
+///   * `outgoing`  — pages this page explicitly links to (via the
+///                   markdown `](concepts/X.md)` body parser).
+///   * `backlinks` — pages that link INTO this page (reverse lookup).
+///   * `related`   — pages computed by [`compute_related_pages`]
+///                   using shared-outgoing-link + shared-source-raw
+///                   signals, ordered by score descending.
+///
+/// The top-level fields (`slug`/`title`/`category`/`summary`) carry
+/// the target page's own metadata so the frontend doesn't need a
+/// separate `GET /api/wiki/pages/{slug}` round-trip to render the
+/// header card.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PageGraph {
+    /// Target page's slug.
+    pub slug: String,
+    /// Target page's display title.
+    pub title: String,
+    /// Target page's category.
+    pub category: String,
+    /// Target page's short summary (`None` if frontmatter has no
+    /// summary, to keep the shape strict rather than conflating
+    /// empty-string with missing).
+    pub summary: Option<String>,
+    /// Pages the target explicitly links to via `](concepts/X.md)`.
+    /// Dangling links (pointing to non-existent slugs) are dropped.
+    pub outgoing: Vec<PageGraphNeighbor>,
+    /// Pages that link INTO the target page. Same shape as
+    /// `outgoing`. Self-references excluded.
+    pub backlinks: Vec<PageGraphNeighbor>,
+    /// Pages algorithmically related to the target via shared
+    /// signals. Ordered by score descending, capped at top 10.
+    pub related: Vec<RelatedPageHit>,
+}
+
+/// Locate the on-disk path for a wiki page by searching across all
+/// category subdirs. Returns `None` if the slug doesn't match any
+/// file. Pure-ish (touches `path.is_file`).
+///
+/// We search in `WIKI_CATEGORIES` order (concept → people → topic →
+/// compare), which matches the "concept pages are the common case"
+/// ordering of the rest of the crate. A slug exists in at most one
+/// category (enforced by the write path — `write_wiki_page_in_category`
+/// rejects duplicates via the filesystem), so order only matters for
+/// the "not found" early-exit cost.
+fn locate_wiki_page_file(
+    paths: &WikiPaths,
+    slug: &str,
+) -> Option<(PathBuf, &'static str)> {
+    for (cat_name, subdir) in WIKI_CATEGORIES {
+        let path = paths.wiki.join(subdir).join(format!("{slug}.md"));
+        if path.is_file() {
+            return Some((path, *cat_name));
+        }
+    }
+    None
+}
+
+/// Compute related wiki pages for `target_slug` using two
+/// deterministic signals:
+///
+///   1. **Shared outgoing link** — if both A and B link to the same
+///      slug C, that's a weak "same topic cluster" signal.
+///      Each match adds `+2` to score and appends a
+///      `"共同链接: {C}"` reason.
+///
+///   2. **Shared `source_raw_id`** — if both A and B were derived
+///      from the same raw entry, they're almost certainly covering
+///      the same underlying material. Adds `+3` (strictly stronger
+///      than a single shared link) and a
+///      `"共享来源: raw #{id:05}"` reason.
+///
+/// Pages with `score = 0` (no shared signals) are dropped. Results
+/// are sorted by score descending, then slug ascending for stable
+/// output, and capped at **10 entries** to keep the response bounded
+/// for large wikis.
+///
+/// The target slug itself is never included in the result. Dangling
+/// outgoing links (pointing to non-existent slugs) are tolerated
+/// silently — they just don't contribute any shared-link matches.
+///
+/// Errors:
+///   * [`WikiStoreError::Invalid`] when `target_slug` fails slug
+///     validation or no page with that slug exists in any category.
+///   * I/O errors (rare — the function reads multiple body files,
+///     so a mid-flight filesystem hiccup can surface as `Io`).
+///
+/// Cost is O(N × average_body_size) where N is the total concept
+/// page count. That's the same asymptotic cost as `list_backlinks`
+/// — see that function's rationale for why we haven't added a
+/// persistent index yet (the concept count stays in the hundreds
+/// for typical MVP users).
+pub fn compute_related_pages(
+    paths: &WikiPaths,
+    target_slug: &str,
+) -> Result<Vec<RelatedPageHit>> {
+    validate_wiki_slug(target_slug)?;
+
+    // Find the target page's own on-disk file so we can read its
+    // body (for outgoing links) and frontmatter (for source_raw_id).
+    // Searching across all categories mirrors how the page-graph UI
+    // treats people/topic/compare pages as first-class citizens too.
+    let (target_path, _target_category) = locate_wiki_page_file(paths, target_slug)
+        .ok_or_else(|| {
+            WikiStoreError::Invalid(format!("wiki page not found: {target_slug}"))
+        })?;
+
+    let target_content = fs::read_to_string(&target_path)
+        .map_err(|e| WikiStoreError::io(target_path.clone(), e))?;
+    let target_body = strip_frontmatter(&target_content);
+    let (_t_title, _t_summary, target_source_raw, _t_created) =
+        parse_wiki_frontmatter_fields(&target_content);
+
+    // Build the target's outgoing link set, lowercased (the parser
+    // already lowercases) and with self-references removed so we
+    // don't spuriously match pages that happen to also link back
+    // to the target.
+    let target_slug_lower = target_slug.to_lowercase();
+    let mut target_outgoing: Vec<String> = extract_internal_links(target_body);
+    target_outgoing.retain(|s| *s != target_slug_lower);
+
+    // Walk every wiki page (all four categories) and score each one
+    // against the target. Skip the target itself.
+    let all_pages = list_all_wiki_pages(paths)?;
+    // slug → (score, reasons)
+    let mut scored: HashMap<String, (u32, Vec<String>)> = HashMap::new();
+
+    for page in &all_pages {
+        if page.slug.to_lowercase() == target_slug_lower {
+            continue;
+        }
+
+        // Load this page's body to extract its outgoing links.
+        let (page_path, _) = match locate_wiki_page_file(paths, &page.slug) {
+            Some(v) => v,
+            None => continue, // disappeared between list and read — skip silently
+        };
+        let page_content = match fs::read_to_string(&page_path) {
+            Ok(c) => c,
+            Err(_) => continue, // permission / race — don't blow up
+        };
+        let page_body = strip_frontmatter(&page_content);
+        let page_outgoing: Vec<String> = extract_internal_links(page_body);
+
+        let mut score: u32 = 0;
+        let mut reasons: Vec<String> = Vec::new();
+
+        // Signal 1: shared outgoing links. `extract_internal_links`
+        // already dedups within one page, so a linear scan is fine.
+        for shared in &target_outgoing {
+            // A page's own slug must not count as a "shared link"
+            // even if the other page happens to link to it (that's
+            // covered by the backlinks surface, not related).
+            if *shared == page.slug.to_lowercase() {
+                continue;
+            }
+            if page_outgoing.contains(shared) {
+                score += 2;
+                reasons.push(format!("共同链接: {shared}"));
+            }
+        }
+
+        // Signal 2: shared source_raw_id. Strictly stronger than
+        // a single link overlap (one well-chosen raw seed often
+        // spawns a cluster of tightly-related concept pages).
+        if let (Some(my_id), Some(their_id)) = (target_source_raw, page.source_raw_id) {
+            if my_id == their_id {
+                score += 3;
+                reasons.push(format!("共享来源: raw #{my_id:05}"));
+            }
+        }
+
+        if score > 0 {
+            scored
+                .entry(page.slug.clone())
+                .and_modify(|(s, r)| {
+                    *s += score;
+                    r.extend(reasons.clone());
+                })
+                .or_insert((score, reasons));
+        }
+    }
+
+    // Assemble `RelatedPageHit` records. `list_all_wiki_pages` already
+    // gave us everything we need for the lookup; avoid re-reading each
+    // page by joining on slug.
+    let page_by_slug: HashMap<&str, &WikiPageSummary> =
+        all_pages.iter().map(|p| (p.slug.as_str(), p)).collect();
+
+    let mut hits: Vec<RelatedPageHit> = scored
+        .into_iter()
+        .filter_map(|(slug, (score, reasons))| {
+            let page = page_by_slug.get(slug.as_str())?;
+            let summary = if page.summary.is_empty() {
+                None
+            } else {
+                Some(page.summary.clone())
+            };
+            Some(RelatedPageHit {
+                slug: page.slug.clone(),
+                title: page.title.clone(),
+                category: page.category.clone(),
+                summary,
+                reasons,
+                score,
+            })
+        })
+        .collect();
+
+    // Sort: score desc (primary), slug asc (tiebreaker for stability).
+    hits.sort_by(|a, b| b.score.cmp(&a.score).then_with(|| a.slug.cmp(&b.slug)));
+    hits.truncate(10);
+    Ok(hits)
+}
+
+/// Assemble the page-level graph payload for `target_slug`. Combines
+/// the target page's metadata, outgoing links, backlinks, and
+/// algorithmically-related pages into one [`PageGraph`] struct.
+///
+/// This is the engine behind `GET /api/wiki/pages/{slug}/graph` —
+/// it's separated into a pure library function so the same data can
+/// be consumed by the desktop-cli and by future offline exporters
+/// without going through the HTTP layer.
+///
+/// Dangling outgoing links (pointing to non-existent slugs) are
+/// dropped from the result rather than surfaced as "unknown" cards,
+/// matching `list_backlinks`'s forgiving posture.
+///
+/// Errors:
+///   * [`WikiStoreError::Invalid`] when `target_slug` fails slug
+///     validation or no page with that slug exists.
+///   * I/O errors (rare — `compute_related_pages` and `list_backlinks`
+///     read many files, so a mid-flight filesystem hiccup is the
+///     most likely cause).
+pub fn get_page_graph(
+    paths: &WikiPaths,
+    target_slug: &str,
+) -> Result<PageGraph> {
+    validate_wiki_slug(target_slug)?;
+
+    // Resolve the target's on-disk path across all categories.
+    let (target_path, target_category) = locate_wiki_page_file(paths, target_slug)
+        .ok_or_else(|| {
+            WikiStoreError::Invalid(format!("wiki page not found: {target_slug}"))
+        })?;
+
+    let content = fs::read_to_string(&target_path)
+        .map_err(|e| WikiStoreError::io(target_path.clone(), e))?;
+    let body = strip_frontmatter(&content);
+    let (title, summary, _source_raw, _created_at) =
+        parse_wiki_frontmatter_fields(&content);
+    let summary_opt = if summary.is_empty() {
+        None
+    } else {
+        Some(summary)
+    };
+
+    // Precompute a slug → (title, category) map over ALL wiki pages
+    // so we can enrich both outgoing and related-neighbor payloads
+    // in a single pass without re-reading frontmatters.
+    let all_pages = list_all_wiki_pages(paths)?;
+    let page_meta: HashMap<String, (String, String)> = all_pages
+        .iter()
+        .map(|p| (p.slug.clone(), (p.title.clone(), p.category.clone())))
+        .collect();
+
+    // Outgoing: parse the markdown body for `](concepts/X.md)` links.
+    // Dangling targets are silently dropped.
+    let target_slug_lower = target_slug.to_lowercase();
+    let outgoing: Vec<PageGraphNeighbor> = extract_internal_links(body)
+        .into_iter()
+        .filter(|s| *s != target_slug_lower) // strip self-references
+        .filter_map(|s| {
+            page_meta.get(&s).map(|(title, category)| PageGraphNeighbor {
+                slug: s.clone(),
+                title: title.clone(),
+                category: category.clone(),
+            })
+        })
+        .collect();
+
+    // Backlinks: reuse the existing reverse-lookup (concept-only for
+    // now, matching `list_backlinks`'s scope). Map each summary to a
+    // lightweight neighbor record.
+    let backlink_summaries = list_backlinks(paths, target_slug)?;
+    let backlinks: Vec<PageGraphNeighbor> = backlink_summaries
+        .into_iter()
+        .map(|s| PageGraphNeighbor {
+            slug: s.slug,
+            title: s.title,
+            category: s.category,
+        })
+        .collect();
+
+    // Related: delegate to the scoring engine.
+    let related = compute_related_pages(paths, target_slug)?;
+
+    Ok(PageGraph {
+        slug: target_slug.to_string(),
+        title,
+        category: target_category.to_string(),
+        summary: summary_opt,
+        outgoing,
+        backlinks,
+        related,
+    })
+}
+
 /// One hit in a [`search_wiki_pages`] result. Carries the matching
 /// page's summary, the computed relevance score, and a short text
 /// snippet centered on the first body-level match (if any). The
@@ -2604,6 +2970,54 @@ pub struct InboxEntry {
     /// on the reject path so rejections are auditable.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rejection_reason: Option<String>,
+
+    // ── W2 Proposal / Apply two-phase additions ───────────────────
+    //
+    // W2 turns `update_existing` from a deterministic append into a
+    // proposal → review → apply workflow. The maintainer first asks
+    // the LLM to merge the raw body into the existing page (producing
+    // `proposed_after_markdown`), the user reviews the diff, and a
+    // separate `apply` call commits the merge to disk. The four
+    // fields below persist the proposal state between the two HTTP
+    // calls and give the UI enough context to render a diff preview.
+    //
+    // All four are `Option<...>` with `#[serde(default)]` so pre-W2
+    // inbox.json files deserialize cleanly with `None` everywhere,
+    // and `skip_serializing_if = "Option::is_none"` keeps the
+    // on-disk JSON byte-identical for untouched entries.
+
+    /// Proposal lifecycle marker:
+    ///   * `None` — no proposal has ever been generated for this entry.
+    ///   * `Some("pending")` — `propose_update` has run, user has not
+    ///     yet applied or cancelled.
+    ///   * `Some("applied")` — `apply_update_proposal` succeeded; the
+    ///     after-markdown has been written to disk.
+    ///   * `Some("cancelled")` — user backed out of the proposal.
+    ///     The entry returns to pending and can be re-proposed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proposal_status: Option<String>,
+
+    /// The merged markdown the LLM produced for the target page.
+    /// Populated by `propose_update`, consumed by `apply_update_proposal`,
+    /// cleared by `cancel_update_proposal` or after a successful apply
+    /// (we keep summary instead).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proposed_after_markdown: Option<String>,
+
+    /// Snapshot of the target page's markdown body at the moment
+    /// `propose_update` was called. Stored so `apply_update_proposal`
+    /// can detect concurrent edits: if the current page no longer
+    /// matches this snapshot, the apply fails with a conflict error
+    /// rather than silently overwriting another party's changes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub before_markdown_snapshot: Option<String>,
+
+    /// One-line human-readable description of what the LLM changed.
+    /// Surfaced in the Workbench and the audit log. Retained after
+    /// apply (unlike the full markdown) so history queries can show
+    /// what an applied proposal did without storing the whole page.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proposal_summary: Option<String>,
 }
 
 /// Filename for the inbox persistence file under `{meta}/`.
@@ -2686,6 +3100,13 @@ fn append_inbox_pending_locked(
         target_page_slug: None,
         maintain_action: None,
         rejection_reason: None,
+        // W2 proposal/apply additions — unset until `propose_update`
+        // fires. All four fields travel together through the two-phase
+        // lifecycle (pending → applied | cancelled).
+        proposal_status: None,
+        proposed_after_markdown: None,
+        before_markdown_snapshot: None,
+        proposal_summary: None,
     };
     entries.push(entry.clone());
     save_inbox_file(paths, &entries)?;
@@ -2787,6 +3208,105 @@ pub fn update_inbox_maintain(
     let updated = found.clone();
     save_inbox_file(paths, &entries)?;
     Ok(updated)
+}
+
+/// W2 Proposal/Apply: atomically patch the W2 proposal fields on an
+/// inbox entry. Exists because `update_inbox_maintain` is reserved
+/// for the "resolve" moment (stamps `resolved_at`, flips status) and
+/// the propose step happens BEFORE resolution — the entry is still
+/// pending. Separating the two helpers keeps each path auditable.
+///
+/// Semantics of each `Option`:
+///   * `status` — if `Some`, overwrite the current status. `None`
+///     leaves the status untouched (e.g. propose keeps it `Pending`).
+///     Pass `Some(Approved)` on apply.
+///   * `proposal_status` — overwrite / clear depending on
+///     `ClearableOption` below.
+///   * Every other field uses the same take-or-clear mechanism.
+///
+/// `resolved_at` is only stamped when `status == Some(Approved)`
+/// (the apply path) so propose/cancel don't mark the entry resolved.
+///
+/// Thread-safe via [`INBOX_WRITE_GUARD`]. Returns `NotFound` if `id`
+/// is stale.
+pub fn update_inbox_proposal(
+    paths: &WikiPaths,
+    id: u32,
+    patch: InboxProposalPatch,
+) -> Result<InboxEntry> {
+    let _guard = lock_inbox_writes();
+    let mut entries = load_inbox_file(paths)?;
+    let found = entries
+        .iter_mut()
+        .find(|e| e.id == id)
+        .ok_or(WikiStoreError::NotFound(id))?;
+
+    if let Some(status) = patch.status {
+        if matches!(status, InboxStatus::Approved | InboxStatus::Rejected) {
+            found.resolved_at = Some(now_iso8601());
+        }
+        found.status = status;
+    }
+    patch.proposal_status.apply(&mut found.proposal_status);
+    patch
+        .proposed_after_markdown
+        .apply(&mut found.proposed_after_markdown);
+    patch
+        .before_markdown_snapshot
+        .apply(&mut found.before_markdown_snapshot);
+    patch.proposal_summary.apply(&mut found.proposal_summary);
+    patch.maintain_action.apply(&mut found.maintain_action);
+    patch.target_page_slug.apply(&mut found.target_page_slug);
+
+    let updated = found.clone();
+    save_inbox_file(paths, &entries)?;
+    Ok(updated)
+}
+
+/// Patch payload for [`update_inbox_proposal`]. Each field models
+/// a "no-op / set-to-value / clear" choice via [`ClearableOption`],
+/// so callers can distinguish "don't touch" from "overwrite with
+/// None" — important because the proposal lifecycle has both.
+#[derive(Debug, Default, Clone)]
+pub struct InboxProposalPatch {
+    pub status: Option<InboxStatus>,
+    pub proposal_status: ClearableOption<String>,
+    pub proposed_after_markdown: ClearableOption<String>,
+    pub before_markdown_snapshot: ClearableOption<String>,
+    pub proposal_summary: ClearableOption<String>,
+    /// Optional W1 bookkeeping stamps. The propose step writes
+    /// `maintain_action="update_existing"` + `target_page_slug` so
+    /// a page refresh mid-proposal doesn't lose the user's choice.
+    /// `Keep` leaves them untouched (the apply path uses this).
+    pub maintain_action: ClearableOption<String>,
+    pub target_page_slug: ClearableOption<String>,
+}
+
+/// Three-valued patch primitive: leave the target unchanged, set it
+/// to a new value, or clear it back to `None`. Used in
+/// [`InboxProposalPatch`] so callers can e.g. clear the stored
+/// `proposed_after_markdown` on apply while leaving
+/// `proposal_summary` intact — a plain `Option` can't express that.
+#[derive(Debug, Default, Clone)]
+pub enum ClearableOption<T> {
+    /// Don't touch the field (default).
+    #[default]
+    Keep,
+    /// Overwrite the field with `Some(value)`.
+    Set(T),
+    /// Overwrite the field with `None`.
+    Clear,
+}
+
+impl<T: Clone> ClearableOption<T> {
+    /// Apply this patch primitive to the target `Option<T>`.
+    pub fn apply(&self, target: &mut Option<T>) {
+        match self {
+            Self::Keep => {}
+            Self::Set(v) => *target = Some(v.clone()),
+            Self::Clear => *target = None,
+        }
+    }
 }
 
 /// Strip markdown noise so the leftover text is human-readable for
@@ -5757,6 +6277,302 @@ mod tests {
         assert!(!g.edges.iter().any(|e| e.from == "wiki-orphan"));
     }
 
+    // ── G1 related-pages + page-graph tests ──────────────────────
+
+    /// Pages A and B both link to X (a third page). Page C links
+    /// to something else. `compute_related_pages(A)` should return
+    /// [B] with a "共同链接" reason, not C.
+    #[test]
+    fn compute_related_shared_outgoing_link() {
+        let tmp = tempdir().unwrap();
+        init_wiki(tmp.path()).unwrap();
+        let paths = WikiPaths::resolve(tmp.path());
+
+        // All four pages exist so `extract_internal_links` targets
+        // resolve and dangling-filter doesn't drop them.
+        write_wiki_page(
+            &paths,
+            "xray",
+            "X-Ray",
+            "A shared target.",
+            "Body.",
+            None,
+        )
+        .unwrap();
+        write_wiki_page(
+            &paths,
+            "yankee",
+            "Yankee",
+            "An unrelated target.",
+            "Body.",
+            None,
+        )
+        .unwrap();
+        write_wiki_page(
+            &paths,
+            "alpha",
+            "Alpha",
+            "Alpha summary.",
+            "Alpha refers to [X](concepts/xray.md).",
+            None,
+        )
+        .unwrap();
+        write_wiki_page(
+            &paths,
+            "bravo",
+            "Bravo",
+            "Bravo summary.",
+            "Bravo also sees [X](concepts/xray.md).",
+            None,
+        )
+        .unwrap();
+        write_wiki_page(
+            &paths,
+            "charlie",
+            "Charlie",
+            "Charlie summary.",
+            "Charlie cites [Y](concepts/yankee.md).",
+            None,
+        )
+        .unwrap();
+
+        let related = compute_related_pages(&paths, "alpha").unwrap();
+        assert_eq!(
+            related.len(),
+            1,
+            "expected only [bravo] as related, got {:?}",
+            related.iter().map(|r| &r.slug).collect::<Vec<_>>()
+        );
+        assert_eq!(related[0].slug, "bravo");
+        assert!(related[0].score >= 2, "score should include +2 for shared link");
+        assert!(
+            related[0]
+                .reasons
+                .iter()
+                .any(|r| r.contains("共同链接") && r.contains("xray")),
+            "expected a 共同链接: xray reason, got {:?}",
+            related[0].reasons
+        );
+        // Charlie must not appear (links to a different slug).
+        assert!(!related.iter().any(|r| r.slug == "charlie"));
+    }
+
+    /// Pages A and B both have `source_raw_id: 42` in their
+    /// frontmatter (no shared outgoing links). `compute_related_pages(A)`
+    /// should surface [B] with a "共享来源: raw #00042" reason.
+    #[test]
+    fn compute_related_shared_source_raw_id() {
+        let tmp = tempdir().unwrap();
+        init_wiki(tmp.path()).unwrap();
+        let paths = WikiPaths::resolve(tmp.path());
+
+        // Seed a raw so the ids we pick land in the typical range.
+        // (compute_related doesn't validate raw existence — it only
+        //  checks the slug frontmatter — but being realistic keeps
+        //  the test future-proof against stricter validation.)
+        write_raw_entry(
+            &paths,
+            "paste",
+            "source doc",
+            "body",
+            &RawFrontmatter::for_paste("paste", None),
+        )
+        .unwrap();
+
+        write_wiki_page(&paths, "delta", "Delta", "summary d", "Body d.", Some(42))
+            .unwrap();
+        write_wiki_page(&paths, "echo", "Echo", "summary e", "Body e.", Some(42))
+            .unwrap();
+        // Sanity: a third page with a different source should NOT show up.
+        write_wiki_page(&paths, "foxtrot", "Foxtrot", "summary f", "Body f.", Some(99))
+            .unwrap();
+
+        let related = compute_related_pages(&paths, "delta").unwrap();
+        assert!(
+            related.iter().any(|r| r.slug == "echo"),
+            "expected echo as related via shared source_raw_id"
+        );
+        let echo_hit = related.iter().find(|r| r.slug == "echo").unwrap();
+        assert!(echo_hit.score >= 3, "score should include +3 for shared raw");
+        assert!(
+            echo_hit
+                .reasons
+                .iter()
+                .any(|r| r.contains("共享来源") && r.contains("00042")),
+            "expected a 共享来源 raw #00042 reason, got {:?}",
+            echo_hit.reasons
+        );
+        assert!(!related.iter().any(|r| r.slug == "foxtrot"));
+    }
+
+    /// The target slug itself must never appear in its own related
+    /// list, even when the page self-references or when the scoring
+    /// would otherwise match.
+    #[test]
+    fn compute_related_excludes_self() {
+        let tmp = tempdir().unwrap();
+        init_wiki(tmp.path()).unwrap();
+        let paths = WikiPaths::resolve(tmp.path());
+
+        // A self-referencing page + one other page that also links to
+        // it. Any shared-link scoring that forgot to strip self-refs
+        // would falsely match this setup.
+        write_wiki_page(
+            &paths,
+            "selfie",
+            "Selfie",
+            "Self-reference summary.",
+            "See [me](concepts/selfie.md) and [peer](concepts/peer.md).",
+            Some(7),
+        )
+        .unwrap();
+        write_wiki_page(
+            &paths,
+            "peer",
+            "Peer",
+            "Peer summary.",
+            "Peer body.",
+            Some(7),
+        )
+        .unwrap();
+
+        let related = compute_related_pages(&paths, "selfie").unwrap();
+        assert!(
+            !related.iter().any(|r| r.slug == "selfie"),
+            "self must not appear in own related list"
+        );
+        // Peer still matches (shared source_raw_id = 7).
+        assert!(related.iter().any(|r| r.slug == "peer"));
+    }
+
+    /// A page that links to a non-existent slug must not crash, and
+    /// must still report correct related pages via other signals.
+    #[test]
+    fn compute_related_handles_dangling() {
+        let tmp = tempdir().unwrap();
+        init_wiki(tmp.path()).unwrap();
+        let paths = WikiPaths::resolve(tmp.path());
+
+        // Ghost target is never written. Real peer shares a source_raw_id.
+        write_wiki_page(
+            &paths,
+            "golf",
+            "Golf",
+            "Golf summary.",
+            "Refs [ghost](concepts/ghost.md) for context.",
+            Some(11),
+        )
+        .unwrap();
+        write_wiki_page(
+            &paths,
+            "hotel",
+            "Hotel",
+            "Hotel summary.",
+            "Hotel body.",
+            Some(11),
+        )
+        .unwrap();
+
+        let related = compute_related_pages(&paths, "golf").unwrap();
+        // Must not contain the dangling slug.
+        assert!(!related.iter().any(|r| r.slug == "ghost"));
+        // Must still surface hotel via source_raw_id overlap.
+        assert!(related.iter().any(|r| r.slug == "hotel"));
+    }
+
+    /// `get_page_graph` must return all four sections (header fields,
+    /// outgoing, backlinks, related) populated in one payload. This
+    /// is the integration-level guarantee the frontend relies on.
+    #[test]
+    fn get_page_graph_returns_all_sections() {
+        let tmp = tempdir().unwrap();
+        init_wiki(tmp.path()).unwrap();
+        let paths = WikiPaths::resolve(tmp.path());
+
+        // hub is the target: links out to spoke-a, spoke-b; linked into
+        // by back-ref; back-ref also links to spoke-a (shared outgoing
+        // → back-ref is related); side shares the same source_raw_id
+        // (related via raw signal).
+        write_wiki_page(
+            &paths,
+            "spoke-a",
+            "Spoke A",
+            "spoke-a summary",
+            "Spoke A body.",
+            None,
+        )
+        .unwrap();
+        write_wiki_page(
+            &paths,
+            "spoke-b",
+            "Spoke B",
+            "spoke-b summary",
+            "Spoke B body.",
+            None,
+        )
+        .unwrap();
+        write_wiki_page(
+            &paths,
+            "hub",
+            "Hub",
+            "hub summary",
+            "Hub links [A](concepts/spoke-a.md) and [B](concepts/spoke-b.md).",
+            Some(55),
+        )
+        .unwrap();
+        write_wiki_page(
+            &paths,
+            "back-ref",
+            "Back Ref",
+            "back-ref summary",
+            "Back ref points at [Hub](concepts/hub.md) and [A](concepts/spoke-a.md).",
+            None,
+        )
+        .unwrap();
+        write_wiki_page(
+            &paths,
+            "side",
+            "Side",
+            "side summary",
+            "Side body — no internal links.",
+            Some(55),
+        )
+        .unwrap();
+
+        let graph = get_page_graph(&paths, "hub").unwrap();
+
+        // Header fields.
+        assert_eq!(graph.slug, "hub");
+        assert_eq!(graph.title, "Hub");
+        assert_eq!(graph.category, "concept");
+        assert_eq!(graph.summary.as_deref(), Some("hub summary"));
+
+        // Outgoing — both existing spokes, no dangling.
+        let outgoing_slugs: Vec<&str> =
+            graph.outgoing.iter().map(|n| n.slug.as_str()).collect();
+        assert!(outgoing_slugs.contains(&"spoke-a"));
+        assert!(outgoing_slugs.contains(&"spoke-b"));
+        assert_eq!(graph.outgoing.len(), 2);
+
+        // Backlinks — only back-ref links into hub.
+        assert_eq!(graph.backlinks.len(), 1);
+        assert_eq!(graph.backlinks[0].slug, "back-ref");
+
+        // Related — should contain back-ref (shared outgoing spoke-a)
+        // and side (shared source_raw_id 55). Order: side has +3,
+        // back-ref has +2, so side comes first.
+        let related_slugs: Vec<&str> =
+            graph.related.iter().map(|r| r.slug.as_str()).collect();
+        assert!(related_slugs.contains(&"back-ref"));
+        assert!(related_slugs.contains(&"side"));
+        // Self never appears.
+        assert!(!related_slugs.contains(&"hub"));
+        // Each related hit has reasons.
+        for hit in &graph.related {
+            assert!(!hit.reasons.is_empty(), "hit {} has empty reasons", hit.slug);
+        }
+    }
+
     // ── M schema overwrite tests ─────────────────────────────────
 
     #[test]
@@ -6729,5 +7545,88 @@ mod tests {
         assert_eq!(stats.wiki_count, 1);
         assert_eq!(stats.concept_count, 1);
         assert!(stats.avg_page_words > 0);
+    }
+
+    // ── W2 Proposal/Apply backward-compatibility tests ───────────
+
+    /// Legacy inbox.json blobs (pre-W2) have neither the W1 maintain
+    /// fields nor the new W2 proposal fields. They must deserialize
+    /// cleanly with `None` for all eight optional slots — if this
+    /// ever breaks, every in-the-wild inbox file becomes unreadable
+    /// on upgrade. Hard guard.
+    #[test]
+    fn inbox_entry_legacy_json_without_proposal_fields_deserializes() {
+        let legacy = r#"[
+            {
+                "id": 42,
+                "kind": "new-raw",
+                "status": "pending",
+                "title": "legacy entry",
+                "description": "written before W2 shipped",
+                "created_at": "2026-04-15T12:00:00Z"
+            }
+        ]"#;
+        let parsed: Vec<InboxEntry> = serde_json::from_str(legacy).unwrap();
+        assert_eq!(parsed.len(), 1);
+        let entry = &parsed[0];
+        assert_eq!(entry.id, 42);
+        // W1 fields — None
+        assert!(entry.maintain_action.is_none());
+        assert!(entry.target_page_slug.is_none());
+        assert!(entry.proposed_wiki_slug.is_none());
+        assert!(entry.rejection_reason.is_none());
+        // W2 fields — None (the point of this test)
+        assert!(entry.proposal_status.is_none(),
+            "proposal_status must default to None for legacy JSON");
+        assert!(entry.proposed_after_markdown.is_none(),
+            "proposed_after_markdown must default to None for legacy JSON");
+        assert!(entry.before_markdown_snapshot.is_none(),
+            "before_markdown_snapshot must default to None for legacy JSON");
+        assert!(entry.proposal_summary.is_none(),
+            "proposal_summary must default to None for legacy JSON");
+    }
+
+    /// Round-trip of a W2 entry with all four proposal fields set
+    /// ensures the serde annotations preserve the values verbatim
+    /// (no rename/skip-when-present accidents).
+    #[test]
+    fn inbox_entry_with_proposal_fields_round_trips() {
+        // Build the JSON via serde_json::json! so the embedded `#`
+        // heading marker doesn't confuse Rust's raw-string parser.
+        let with_proposal = serde_json::json!([
+            {
+                "id": 7,
+                "kind": "new-raw",
+                "status": "pending",
+                "title": "W2 entry",
+                "description": "with proposal",
+                "created_at": "2026-04-18T00:00:00Z",
+                "proposal_status": "pending",
+                "proposed_after_markdown": "# Merged\n\nbody",
+                "before_markdown_snapshot": "# Old\n\nbody",
+                "proposal_summary": "Appended new section under attention"
+            }
+        ])
+        .to_string();
+        let parsed: Vec<InboxEntry> = serde_json::from_str(&with_proposal).unwrap();
+        let entry = &parsed[0];
+        assert_eq!(entry.proposal_status.as_deref(), Some("pending"));
+        assert_eq!(
+            entry.proposed_after_markdown.as_deref(),
+            Some("# Merged\n\nbody")
+        );
+        assert_eq!(
+            entry.before_markdown_snapshot.as_deref(),
+            Some("# Old\n\nbody")
+        );
+        assert_eq!(
+            entry.proposal_summary.as_deref(),
+            Some("Appended new section under attention")
+        );
+
+        // Round-trip: serialize → parse → equality.
+        let back = serde_json::to_string(&parsed).unwrap();
+        let reparse: Vec<InboxEntry> = serde_json::from_str(&back).unwrap();
+        assert_eq!(reparse, parsed);
     }
 }

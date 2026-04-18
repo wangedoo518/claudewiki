@@ -77,6 +77,7 @@ function ChatSidePanelBody() {
     errorMessage,
     onSend,
     onResetSession,
+    onEnsureAndBind,
   } = useAskSessionContext();
 
   useAskSSE(sessionId, isTurnActive);
@@ -171,6 +172,7 @@ function ChatSidePanelBody() {
           environmentLabel={session?.environment_label}
           providers={providerOptions}
           onSwitchProvider={handleSwitchProvider}
+          onEnsureAndBind={onEnsureAndBind}
           compact={true}
           hideHeader={true}
         />

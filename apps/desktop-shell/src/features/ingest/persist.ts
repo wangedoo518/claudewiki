@@ -7,6 +7,7 @@
 // place.
 
 import { fetchJson } from "@/lib/desktop/transport";
+import { getDesktopApiBase } from "@/lib/desktop/bootstrap";
 import type {
   AbsorbLogResponse,
   AbsorbTaskResponse,
@@ -21,6 +22,7 @@ import type {
   RawListResponse,
   SchemaResponse,
   SchemaTemplate,
+  UpdateProposal,
   WikiApproveWithWriteResponse,
   WikiGraphResponse,
   WikiPageDetailResponse,
@@ -89,6 +91,93 @@ export async function resolveInboxEntry(
     },
   );
   return response.entry;
+}
+
+// ── Q1 Inbox Queue Intelligence: batch resolve ───────────────────
+//
+// `POST /api/wiki/inbox/batch/resolve` — resolve many inbox entries
+// in one HTTP round trip. Consumed by the InboxPage Batch Triage
+// mode (Worker B) when a user multi-selects pending tasks and hits
+// "批量驳回". The backend (Worker A, `desktop-server::lib.rs`) loops
+// over `wiki_store::resolve_inbox_entry` with partial-success
+// semantics, so we surface `success[]` + `failed[]` verbatim.
+//
+// Q1 MVP only accepts `"reject"` (backend returns 400 for approve).
+// `"approve"` is included in the TS signature for forward
+// compatibility — a later sprint can relax the server guard without
+// a breaking frontend change.
+//
+// Fallback — if the endpoint 404s (older dev server running without
+// the Q1 handler), we degrade to N parallel single-id calls via
+// `resolveInboxEntry`, collecting the same `{success, failed}`
+// shape. This lets the UI keep working while the backend catches
+// up. Any other non-2xx from the batch endpoint propagates as an
+// `Error` (caller shows the toast).
+
+export interface BatchResolveInboxResult {
+  success: number[];
+  failed: Array<{ id: number; error: string }>;
+}
+
+export async function batchResolveInboxEntries(
+  ids: number[],
+  action: "reject" | "approve",
+  reason?: string,
+): Promise<BatchResolveInboxResult> {
+  // Direct fetch (not fetchJson) so we can catch a 404 and fall back
+  // to per-id single-resolve without the generic error-message path
+  // swallowing the status. Imports resolved lazily to match the
+  // pattern used by `queryWiki` / `cancelProposal`.
+  const base = await getDesktopApiBase();
+  const response = await fetch(`${base}/api/wiki/inbox/batch/resolve`, {
+    method: "POST",
+    headers: {
+      Accept: "application/json",
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ ids, action, reason }),
+  });
+
+  if (response.ok) {
+    const payload = (await response.json()) as {
+      success?: number[];
+      failed?: Array<{ id: number; error: string }>;
+    };
+    return {
+      success: payload.success ?? [],
+      failed: payload.failed ?? [],
+    };
+  }
+
+  // Backwards-compat fallback: old server → fan out to single resolve.
+  if (response.status === 404) {
+    const results = await Promise.allSettled(
+      ids.map((id) => resolveInboxEntry(id, action)),
+    );
+    const success: number[] = [];
+    const failed: Array<{ id: number; error: string }> = [];
+    results.forEach((r, i) => {
+      if (r.status === "fulfilled") {
+        success.push(ids[i]);
+      } else {
+        failed.push({
+          id: ids[i],
+          error: r.reason instanceof Error ? r.reason.message : String(r.reason),
+        });
+      }
+    });
+    return { success, failed };
+  }
+
+  // Other non-2xx — surface the server error message.
+  let message = `batchResolveInboxEntries failed with status ${response.status}`;
+  try {
+    const text = await response.text();
+    if (text) message = text;
+  } catch {
+    // fall through
+  }
+  throw new Error(message);
 }
 
 /** GET `/api/wiki/schema` — read `schema/CLAUDE.md` verbatim. */
@@ -276,4 +365,75 @@ export async function queryWiki(question: string, maxSources = 5): Promise<Respo
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ question, max_sources: maxSources }),
   });
+}
+
+// ── W2 update_existing preview/apply flow ────────────────────────
+//
+// Thin HTTP wrappers over Worker A's proposal endpoints. The flow:
+//   1. user selects update_existing + picks target slug
+//   2. `createProposal` → LLM generates merged markdown; returned as
+//      `UpdateProposal`; backend persists `proposal_status=pending` on
+//      the inbox entry so a reload restores the Phase-2 UI.
+//   3. user reviews the diff and either:
+//        - `applyProposal` → writes to disk, flips status to "applied"
+//          and resolves the inbox entry (returns `MaintainOutcome`-ish).
+//        - `cancelProposal` → drops proposal_*, returns status 200.
+
+/**
+ * POST `/api/wiki/inbox/{id}/proposal` — kick off an LLM merge for
+ * the inbox entry against the given target wiki page. Does NOT touch
+ * the page on disk; the user must explicitly `applyProposal`.
+ */
+export async function createProposal(
+  inboxId: number,
+  targetSlug: string,
+): Promise<UpdateProposal> {
+  return fetchJson<UpdateProposal>(
+    `/api/wiki/inbox/${inboxId}/proposal`,
+    {
+      method: "POST",
+      body: JSON.stringify({ target_slug: targetSlug }),
+    },
+  );
+}
+
+/**
+ * POST `/api/wiki/inbox/{id}/proposal/apply` — commit the pending
+ * proposal to the target wiki page, marking the inbox entry as
+ * `approved` with `maintain_outcome: "updated"`.
+ */
+export async function applyProposal(
+  inboxId: number,
+): Promise<{ outcome: string; target_page_slug: string }> {
+  return fetchJson<{ outcome: string; target_page_slug: string }>(
+    `/api/wiki/inbox/${inboxId}/proposal/apply`,
+    { method: "POST" },
+  );
+}
+
+/**
+ * POST `/api/wiki/inbox/{id}/proposal/cancel` — discard the pending
+ * proposal (server clears `proposal_*` fields). Returns 200 with no
+ * JSON body, so we use a direct `fetch` instead of `fetchJson` to
+ * avoid tripping its mandatory `.json()` parse.
+ */
+export async function cancelProposal(inboxId: number): Promise<void> {
+  const base = await getDesktopApiBase();
+  const response = await fetch(
+    `${base}/api/wiki/inbox/${inboxId}/proposal/cancel`,
+    {
+      method: "POST",
+      headers: { Accept: "application/json" },
+    },
+  );
+  if (!response.ok) {
+    let message = `Request failed with status ${response.status}`;
+    try {
+      const text = await response.text();
+      if (text) message = text;
+    } catch {
+      // fall through with default message
+    }
+    throw new Error(message);
+  }
 }

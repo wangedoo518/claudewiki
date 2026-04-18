@@ -63,9 +63,29 @@ export function useAskSSE(
             break;
 
           case "snapshot":
+            // A1 integration — `context_basis` (and `enrich_status`) are
+            // transient side-channels: the backend stamps them only on
+            // the snapshot fired right after `append_user_message`, and
+            // subsequent snapshots (running→idle transitions, late bg
+            // enrich, etc.) carry `None`. Plain setQueryData would let
+            // the idle snapshot overwrite the running one and the UI
+            // label would disappear as soon as the turn finishes.
+            //
+            // Sticky-preserve rule: when the incoming snapshot omits a
+            // side-channel field but the previous cache had it set,
+            // keep the previous value. This preserves the turn-local
+            // basis/enrich across the running→idle flip.
             queryClient.setQueryData(
               ["clawwiki", "ask", "session", sessionId],
-              event.session,
+              (prev: DesktopSessionDetail | undefined) => {
+                const next = event.session;
+                if (!prev) return next;
+                return {
+                  ...next,
+                  context_basis: next.context_basis ?? prev.context_basis ?? null,
+                  enrich_status: next.enrich_status ?? prev.enrich_status ?? null,
+                };
+              },
             );
             break;
 

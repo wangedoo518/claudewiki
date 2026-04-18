@@ -4,17 +4,19 @@
  */
 
 import { useMemo } from "react";
+import { useNavigate } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import ReactMarkdown from "react-markdown";
 import type { Components } from "react-markdown";
+import { MessageCircleQuestion } from "lucide-react";
 
 import { getWikiPage } from "@/features/ingest/persist";
-import { useWikiTabStore } from "@/state/wiki-tab-store";
 import type { WikiPageSummary } from "@/features/ingest/types";
 import {
   preprocessWikilinks,
   useWikiLinkRenderer,
 } from "./wiki-link-utils";
+import { WikiArticleRelationsPanel } from "./WikiArticleRelationsPanel";
 
 /* ── Reading time ──────────────────────────────────────────────── */
 function estimateReadingTime(body: string): string {
@@ -38,52 +40,6 @@ const CATEGORY_STYLES: Record<string, string> = {
   topic: "bg-purple-500/10 text-purple-600 dark:text-purple-400",
   compare: "bg-yellow-500/10 text-yellow-600 dark:text-yellow-400",
 };
-
-/* ── Backlinks section ─────────────────────────────────────────── */
-function BacklinksSection({ slug }: { slug: string }) {
-  const openTab = useWikiTabStore((s) => s.openTab);
-  const { data } = useQuery({
-    queryKey: ["wiki", "backlinks", slug],
-    queryFn: async () => {
-      const { fetchJson } = await import("@/lib/desktop/transport");
-      return fetchJson<{ backlinks: Array<{ slug: string; title: string; category: string }> }>(
-        `/api/wiki/pages/${encodeURIComponent(slug)}/backlinks`,
-      );
-    },
-    staleTime: 60_000,
-  });
-
-  const backlinks = data?.backlinks ?? [];
-  if (backlinks.length === 0) return null;
-
-  return (
-    <div className="mt-12 border-t border-[var(--color-border)] pt-4">
-      <h4 className="mb-2 text-[13px] font-semibold text-[var(--color-muted-foreground)]">
-        被引用
-      </h4>
-      <ul className="space-y-1">
-        {backlinks.map((bl) => (
-          <li key={bl.slug}>
-            <button
-              onClick={() =>
-                openTab({
-                  id: bl.slug,
-                  kind: "article",
-                  slug: bl.slug,
-                  title: bl.title,
-                  closable: true,
-                })
-              }
-              className="text-[13px] text-[var(--color-primary)] underline decoration-dotted underline-offset-2 hover:decoration-solid"
-            >
-              {bl.title}
-            </button>
-          </li>
-        ))}
-      </ul>
-    </div>
-  );
-}
 
 /* ── Markdown custom components ────────────────────────────────── */
 /**
@@ -110,6 +66,7 @@ interface WikiArticleProps {
 }
 
 export function WikiArticle({ slug }: WikiArticleProps) {
+  const navigate = useNavigate();
   const { data, isLoading, error } = useQuery({
     queryKey: ["wiki", "pages", "detail", slug],
     queryFn: () => getWikiPage(slug),
@@ -117,6 +74,13 @@ export function WikiArticle({ slug }: WikiArticleProps) {
   });
 
   const components = useMarkdownComponents();
+
+  const handleAsk = () => {
+    const params = new URLSearchParams();
+    params.set("bind", `wiki:${slug}`);
+    params.set("title", data?.summary.title ?? slug);
+    navigate(`/ask?${params.toString()}`);
+  };
 
   if (isLoading) {
     return (
@@ -156,6 +120,16 @@ export function WikiArticle({ slug }: WikiArticleProps) {
         <span>{summary.created_at?.slice(0, 10) ?? "—"}</span>
         <span>&middot;</span>
         <span>{readingTime} read</span>
+        <button
+          type="button"
+          onClick={handleAsk}
+          className="ml-auto flex items-center gap-1 rounded-md border border-border px-2 py-0.5 text-[11px] text-muted-foreground transition-colors hover:bg-primary/10 hover:text-primary"
+          title="用此页提问"
+          aria-label="Ask with this page"
+        >
+          <MessageCircleQuestion className="size-3" />
+          用此页提问
+        </button>
       </div>
 
       {/* Summary */}
@@ -170,8 +144,9 @@ export function WikiArticle({ slug }: WikiArticleProps) {
         <ReactMarkdown components={components}>{expandedBody}</ReactMarkdown>
       </div>
 
-      {/* Backlinks — component-spec.md §3.7 */}
-      <BacklinksSection slug={slug} />
+      {/* Relations (outgoing / backlinks / related) — G1 sprint.
+          Replaces the legacy single-list BacklinksSection. */}
+      <WikiArticleRelationsPanel slug={slug} />
     </div>
   );
 }

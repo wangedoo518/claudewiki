@@ -9,12 +9,19 @@
  * The "打开 Wiki 页" CTA defers to Worker C's `navigateToWikiPage`
  * when provided; otherwise falls back to a react-router
  * `/wiki/:slug` link so the card stays functional pre-integration.
+ *
+ * R1 trust layer: the `failed` branch now passes its error string
+ * through `classifyMaintainerError` → `FailureBanner` so high-frequency
+ * backend errors (invalid JSON from the LLM, concurrent edit conflict)
+ * surface as user-readable sentences instead of raw server strings.
+ * The original overflow box is preserved for unknown errors.
  */
 
 import { Link } from "react-router-dom";
 import type { LucideIcon } from "lucide-react";
-import { CheckCircle2, XCircle, AlertTriangle, ExternalLink, RefreshCcw } from "lucide-react";
+import { CheckCircle2, XCircle, AlertTriangle, ExternalLink } from "lucide-react";
 import type { MaintainOutcome } from "@/features/ingest/types";
+import { FailureBanner } from "@/components/ui/failure-banner";
 
 export interface MaintainerResultCardProps {
   outcome: MaintainOutcome;
@@ -76,25 +83,95 @@ export function MaintainerResultCard({
     );
   }
   if (outcome === "failed") {
+    const raw = errorMessage ?? "";
+    const classified = classifyMaintainerError(raw);
     return (
       <OutcomeShell tone="warning" label="操作失败" english="Failed">
-        <div className="flex items-start gap-2">
-          <div
-            className="min-w-0 flex-1 max-h-32 overflow-auto break-words whitespace-pre-wrap text-foreground/80"
-            style={{ fontSize: 12, lineHeight: 1.5, overflowWrap: "anywhere" }}
-          >
-            {errorMessage && errorMessage.trim().length > 0 ? errorMessage : "后端未返回错误详情，请稍后重试。"}
-          </div>
-          {onRetry && (
-            <button type="button" onClick={onRetry} className="flex shrink-0 items-center gap-1 rounded-md border border-border/50 bg-background px-2.5 py-1 text-foreground transition-colors hover:border-primary hover:text-primary" style={{ fontSize: 11 }}>
-              <RefreshCcw className="size-3" />重试
-            </button>
-          )}
-        </div>
+        {classified.kind === "unknown" ? (
+          // Unknown — keep the legacy overflow box so nothing is
+          // silently hidden, but wrap it in the same layout as the
+          // classified branches for visual consistency.
+          <FailureBanner
+            severity="warning"
+            title={raw.trim().length > 0 ? "维护失败" : "后端未返回错误详情"}
+            description={
+              raw.trim().length > 0
+                ? "后端在处理这一步时失败了。查看下方技术细节，或直接重试。"
+                : "没有拿到具体错误信息。请稍后重试，若问题持续出现请保留这条任务以便排查。"
+            }
+            technicalDetail={raw.trim().length > 0 ? raw : undefined}
+            actions={
+              onRetry
+                ? [{ label: "重试", onClick: onRetry, variant: "primary" }]
+                : undefined
+            }
+          />
+        ) : (
+          <FailureBanner
+            severity="warning"
+            title={classified.title}
+            description={classified.description}
+            technicalDetail={raw}
+            actions={
+              onRetry
+                ? [
+                    {
+                      label: classified.retryLabel,
+                      onClick: onRetry,
+                      variant: "primary",
+                    },
+                  ]
+                : undefined
+            }
+          />
+        )}
       </OutcomeShell>
     );
   }
   return null;
+}
+
+/* ── Error classifier (Maintainer) ─────────────────────────────── */
+
+type MaintainerErrorKind = "bad_json" | "concurrent_edit" | "unknown";
+
+interface MaintainerErrorCopy {
+  kind: MaintainerErrorKind;
+  title: string;
+  description: string;
+  retryLabel: string;
+}
+
+function classifyMaintainerError(raw: string): MaintainerErrorCopy {
+  const text = raw ?? "";
+  if (/invalid\s+json|BadJson|failed\s+to\s+parse\s+json/i.test(text)) {
+    return {
+      kind: "bad_json",
+      title: "⚠️ 无法生成知识页面提案",
+      description:
+        "大模型返回的内容格式异常，可能是网络中断或 API 超时。重试通常能解决。",
+      retryLabel: "重试",
+    };
+  }
+  if (
+    /changed\s+since\s+proposal|page\s+changed|stale\s+snapshot|concurrent\s+edit/i.test(
+      text,
+    )
+  ) {
+    return {
+      kind: "concurrent_edit",
+      title: "🔄 内容已更新",
+      description:
+        "这个 Wiki 页面在你生成提案后已被修改。请重新生成提案以合并最新内容。",
+      retryLabel: "重新生成提案",
+    };
+  }
+  return {
+    kind: "unknown",
+    title: "维护失败",
+    description: "后端在处理这一步时失败了。",
+    retryLabel: "重试",
+  };
 }
 
 /* ── Shared shell ──────────────────────────────────────────────── */

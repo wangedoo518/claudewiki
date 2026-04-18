@@ -653,6 +653,329 @@ fn patch_inbox_after_maintain(
 }
 
 // ─────────────────────────────────────────────────────────────────────
+// W2: two-phase update_existing (propose → review → apply)
+// ─────────────────────────────────────────────────────────────────────
+//
+// W1 shipped `update_existing` as a deterministic "append under a
+// dated heading" step. W2 splits that into two HTTP hops so the
+// human can preview the LLM's merge before it lands on disk:
+//
+//   1. `propose_update`   — read existing page + raw body, call the
+//                           LLM for a merge, persist the proposal
+//                           on the InboxEntry, return to the UI.
+//   2. `apply_update_proposal` — user clicked Apply; write the
+//                           `proposed_after_markdown` to disk, flip
+//                           the inbox to `Approved`, clear the
+//                           staged markdown but keep the summary.
+//   3. `cancel_update_proposal` — user backed out; clear the
+//                           staged proposal so they can pick a
+//                           different action.
+//
+// The legacy deterministic append (`update_existing` function above)
+// is kept in place for backward compat with any caller that still
+// dispatches through `execute_maintain`; the new HTTP endpoints in
+// `desktop-server` (`/api/wiki/inbox/{id}/proposal{,/apply,/cancel}`)
+// are the W2-native path.
+
+/// A staged merge from `propose_update`. Carries everything the
+/// frontend needs to render a diff preview plus the data
+/// `apply_update_proposal` needs to commit — no further LLM call
+/// is necessary at apply time (that would be nondeterministic).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct UpdateProposal {
+    /// Slug of the wiki page the proposal targets.
+    pub target_slug: String,
+    /// Existing page body at the moment the proposal was generated.
+    /// Used by the frontend for the "before" pane of the diff and
+    /// by `apply_update_proposal` to detect concurrent edits.
+    pub before_markdown: String,
+    /// LLM-produced merged page body. Does not contain YAML
+    /// frontmatter — the apply step reuses the existing summary.
+    pub after_markdown: String,
+    /// One-line human-readable description of what changed.
+    pub summary: String,
+    /// Unix milliseconds timestamp of when the proposal was
+    /// generated. Surfaced in the UI so the user can see whether
+    /// a stale proposal needs regenerating.
+    pub generated_at: u64,
+}
+
+/// Phase 1 of the two-phase update: call the LLM for a merge and
+/// persist the proposal on the inbox entry.
+///
+/// Flow:
+///   1. Resolve the inbox entry and its `source_raw_id`.
+///   2. Read the existing wiki page (snapshotted as `before`).
+///   3. Read the raw entry body.
+///   4. Build the merge prompt, fire one `chat_completion`.
+///   5. Parse `{after_markdown, summary}` out of the response.
+///   6. Persist the proposal on the inbox entry (fields
+///      `proposal_status=pending`, `proposed_after_markdown=after`,
+///      `before_markdown_snapshot=before`, `proposal_summary=summary`).
+///   7. Also stamp `maintain_action="update_existing"` +
+///      `target_page_slug=target_slug` so the UI can rediscover
+///      which page the proposal targets after a refresh.
+///   8. Return `UpdateProposal` for the immediate HTTP response.
+pub async fn propose_update(
+    paths: &wiki_store::WikiPaths,
+    inbox_id: u32,
+    target_slug: &str,
+    broker: &(impl BrokerSender + ?Sized),
+) -> Result<UpdateProposal> {
+    // Step 1 — resolve inbox entry.
+    let entries = wiki_store::list_inbox_entries(paths)
+        .map_err(|e| MaintainerError::Store(e.to_string()))?;
+    let entry = entries.iter().find(|e| e.id == inbox_id).ok_or_else(|| {
+        MaintainerError::RawNotAvailable(format!("inbox entry not found: {inbox_id}"))
+    })?;
+    let raw_id = entry.source_raw_id.ok_or_else(|| {
+        MaintainerError::InvalidProposal(format!(
+            "inbox entry {inbox_id} has no source_raw_id"
+        ))
+    })?;
+
+    // Step 2 — read existing page (snapshot for concurrent-edit detection).
+    let (target_summary, before_markdown) = wiki_store::read_wiki_page(paths, target_slug)
+        .map_err(|e| {
+            MaintainerError::Store(format!(
+                "target page `{target_slug}` not found: {e}"
+            ))
+        })?;
+
+    // Step 3 — read raw body.
+    let (_raw_entry, raw_body) = wiki_store::read_raw_entry(paths, raw_id)
+        .map_err(|e| MaintainerError::RawNotAvailable(e.to_string()))?;
+
+    // Step 4 — build merge prompt, call broker.
+    let request = prompt::build_merge_request(
+        target_slug,
+        &target_summary.title,
+        &before_markdown,
+        &raw_body,
+    );
+    let response = broker.chat_completion(request).await?;
+    let raw_text = extract_first_text(&response).ok_or_else(|| {
+        MaintainerError::InvalidProposal(
+            "LLM merge response contained no text block".to_string(),
+        )
+    })?;
+
+    // Step 5 — parse `{after_markdown, summary}` JSON.
+    let (after_markdown, summary) = parse_merge_response(&raw_text)?;
+
+    // Step 6+7 — persist proposal on inbox entry.
+    //   propose keeps status as Pending; only apply marks it Approved.
+    //   We also stamp maintain_action + target_page_slug so an
+    //   intervening page refresh doesn't lose the user's choice.
+    wiki_store::update_inbox_proposal(
+        paths,
+        inbox_id,
+        wiki_store::InboxProposalPatch {
+            status: None, // stays Pending
+            proposal_status: wiki_store::ClearableOption::Set("pending".to_string()),
+            proposed_after_markdown: wiki_store::ClearableOption::Set(after_markdown.clone()),
+            before_markdown_snapshot: wiki_store::ClearableOption::Set(before_markdown.clone()),
+            proposal_summary: wiki_store::ClearableOption::Set(summary.clone()),
+            maintain_action: wiki_store::ClearableOption::Set("update_existing".to_string()),
+            target_page_slug: wiki_store::ClearableOption::Set(target_slug.to_string()),
+        },
+    )
+    .map_err(|e| MaintainerError::Store(e.to_string()))?;
+
+    let generated_at = unix_ms_now();
+    Ok(UpdateProposal {
+        target_slug: target_slug.to_string(),
+        before_markdown,
+        after_markdown,
+        summary,
+        generated_at,
+    })
+}
+
+/// Phase 2 of the two-phase update: commit a previously-proposed
+/// merge to disk. Idempotent for the "already applied" case — if
+/// the proposal was already committed on a previous call we still
+/// return `Updated` so the UI can stay simple.
+///
+/// Error cases:
+///   * `InvalidProposal` — no pending proposal exists on this entry.
+///   * `Store` — concurrent-edit detection: the page on disk no
+///     longer matches `before_markdown_snapshot`. The user must
+///     re-propose against the new content.
+pub fn apply_update_proposal(
+    paths: &wiki_store::WikiPaths,
+    inbox_id: u32,
+) -> Result<MaintainOutcome> {
+    // Step 1 — locate entry, validate that a pending proposal exists.
+    let entries = wiki_store::list_inbox_entries(paths)
+        .map_err(|e| MaintainerError::Store(e.to_string()))?;
+    let entry = entries
+        .iter()
+        .find(|e| e.id == inbox_id)
+        .ok_or_else(|| {
+            MaintainerError::RawNotAvailable(format!("inbox entry not found: {inbox_id}"))
+        })?
+        .clone();
+
+    if entry.proposal_status.as_deref() != Some("pending") {
+        return Err(MaintainerError::InvalidProposal(format!(
+            "inbox entry {inbox_id} has no pending proposal (status={:?})",
+            entry.proposal_status
+        )));
+    }
+    let target_slug = entry.target_page_slug.as_deref().ok_or_else(|| {
+        MaintainerError::InvalidProposal(format!(
+            "inbox entry {inbox_id} proposal is missing target_page_slug"
+        ))
+    })?;
+    let after_markdown = entry.proposed_after_markdown.clone().ok_or_else(|| {
+        MaintainerError::InvalidProposal(format!(
+            "inbox entry {inbox_id} proposal is missing proposed_after_markdown"
+        ))
+    })?;
+
+    // Step 2 — concurrent-edit detection. If the page has changed
+    // since we snapshotted it, refuse to apply: the user must
+    // re-propose against the new content or resolve the conflict
+    // manually. Wrapped in `Store` because it's effectively a
+    // filesystem-state precondition failure.
+    let (existing_summary, existing_body) = wiki_store::read_wiki_page(paths, target_slug)
+        .map_err(|e| MaintainerError::Store(e.to_string()))?;
+    if let Some(snapshot) = entry.before_markdown_snapshot.as_deref() {
+        if snapshot != existing_body {
+            return Err(MaintainerError::Store(format!(
+                "page `{target_slug}` changed since proposal was generated; \
+                 please regenerate the proposal (conflict)"
+            )));
+        }
+    }
+
+    // Step 3 — write the merged body back, preserving category + title + summary.
+    wiki_store::write_wiki_page_in_category(
+        paths,
+        &existing_summary.category,
+        &existing_summary.slug,
+        &existing_summary.title,
+        &existing_summary.summary,
+        &after_markdown,
+        existing_summary.source_raw_id,
+    )
+    .map_err(|e| MaintainerError::Store(e.to_string()))?;
+
+    // Step 4 — audit log + index rebuild (best-effort).
+    let log_title = if existing_summary.title.is_empty() {
+        existing_summary.slug.clone()
+    } else {
+        existing_summary.title.clone()
+    };
+    let _ = wiki_store::append_wiki_log(paths, "update-concept", &log_title);
+    let _ = wiki_store::append_changelog_entry(paths, "update-concept", &log_title);
+    let _ = wiki_store::rebuild_wiki_index(paths);
+
+    // Step 5 — flip proposal_status to applied, inbox status to
+    // Approved, clear the (bulky) staged markdown but keep the
+    // summary for audit trail. Also stamp maintain_action /
+    // target_page_slug so the W1 bookkeeping stays consistent with
+    // create_new / reject (propose already stamped these, but we
+    // overwrite defensively for the case where propose was missed).
+    wiki_store::update_inbox_proposal(
+        paths,
+        inbox_id,
+        wiki_store::InboxProposalPatch {
+            status: Some(wiki_store::InboxStatus::Approved),
+            proposal_status: wiki_store::ClearableOption::Set("applied".to_string()),
+            proposed_after_markdown: wiki_store::ClearableOption::Clear,
+            before_markdown_snapshot: wiki_store::ClearableOption::Clear,
+            proposal_summary: wiki_store::ClearableOption::Keep, // retain for audit
+            maintain_action: wiki_store::ClearableOption::Set("update_existing".to_string()),
+            target_page_slug: wiki_store::ClearableOption::Set(target_slug.to_string()),
+        },
+    )
+    .map_err(|e| MaintainerError::Store(e.to_string()))?;
+
+    Ok(MaintainOutcome::Updated {
+        target_page_slug: target_slug.to_string(),
+    })
+}
+
+/// Phase 2-alt: user bailed out of a proposal. Clears the staged
+/// fields; leaves `maintain_action` / `target_page_slug` untouched
+/// so the user can pick a different action without re-navigating.
+///
+/// Idempotent: calling cancel on an entry that has no pending
+/// proposal is a no-op (returns `Ok(())`).
+pub fn cancel_update_proposal(
+    paths: &wiki_store::WikiPaths,
+    inbox_id: u32,
+) -> Result<()> {
+    wiki_store::update_inbox_proposal(
+        paths,
+        inbox_id,
+        wiki_store::InboxProposalPatch {
+            status: None, // stays Pending
+            proposal_status: wiki_store::ClearableOption::Set("cancelled".to_string()),
+            proposed_after_markdown: wiki_store::ClearableOption::Clear,
+            before_markdown_snapshot: wiki_store::ClearableOption::Clear,
+            // Keep proposal_summary so the UI can still show "what the
+            // last proposal did" even after cancel — helps the user
+            // decide whether to re-propose.
+            proposal_summary: wiki_store::ClearableOption::Keep,
+            // Keep maintain_action / target_page_slug so the user's
+            // choice of which page to update survives the cancel —
+            // they can re-propose without re-navigating.
+            maintain_action: wiki_store::ClearableOption::Keep,
+            target_page_slug: wiki_store::ClearableOption::Keep,
+        },
+    )
+    .map_err(|e| MaintainerError::Store(e.to_string()))?;
+    Ok(())
+}
+
+/// Unix milliseconds wall-clock timestamp. Separate helper because
+/// `SystemTime::now()` returns a `SystemTime` and coercing it into
+/// a `u64` is noisy at call sites. Truncation on the `u128 → u64`
+/// step is fine here: `u64` overflow on millisecond-since-epoch
+/// doesn't happen until year 2554.
+#[allow(clippy::cast_possible_truncation)]
+fn unix_ms_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis() as u64)
+}
+
+/// Parse a merge-step LLM response into `(after_markdown, summary)`.
+/// Tolerates code fences the same way `parse_proposal` does.
+fn parse_merge_response(raw: &str) -> Result<(String, String)> {
+    let payload = strip_code_fences(raw);
+
+    #[derive(Debug, Deserialize)]
+    struct MergeResp {
+        after_markdown: String,
+        summary: String,
+    }
+
+    let parsed: MergeResp = serde_json::from_str(payload).map_err(|e| {
+        MaintainerError::BadJson {
+            reason: e.to_string(),
+            preview: payload.chars().take(512).collect(),
+        }
+    })?;
+
+    if parsed.after_markdown.trim().is_empty() {
+        return Err(MaintainerError::InvalidProposal(
+            "merge response after_markdown is empty".to_string(),
+        ));
+    }
+    if parsed.summary.trim().is_empty() {
+        return Err(MaintainerError::InvalidProposal(
+            "merge response summary is empty".to_string(),
+        ));
+    }
+
+    Ok((parsed.after_markdown, parsed.summary))
+}
+
+// ─────────────────────────────────────────────────────────────────────
 // v2: absorb_batch types + function  (technical-design.md §4.2.2–4.2.3)
 // ─────────────────────────────────────────────────────────────────────
 
@@ -1965,5 +2288,283 @@ mod tests {
         assert!(entry.target_page_slug.is_none());
         assert!(entry.proposed_wiki_slug.is_none());
         assert!(entry.rejection_reason.is_none());
+    }
+
+    // ── W2 Proposal / Apply two-phase update tests ────────────────
+
+    /// Canned broker that returns a hand-crafted merge response. We
+    /// reuse `MockBrokerSender` instead of rolling a new mock because
+    /// the propose_update path has exactly one broker call — the
+    /// same "single canned response" shape as create_new.
+    fn canned_merge_response(after: &str, summary: &str) -> String {
+        serde_json::json!({
+            "after_markdown": after,
+            "summary": summary,
+        })
+        .to_string()
+    }
+
+    #[tokio::test]
+    async fn propose_update_generates_before_after() {
+        let tmp = tempdir().unwrap();
+        wiki_store::init_wiki(tmp.path()).unwrap();
+        let paths = wiki_store::WikiPaths::resolve(tmp.path());
+
+        // Seed a target page and a raw entry pointing to an inbox task.
+        wiki_store::write_wiki_page(
+            &paths,
+            "attention",
+            "Attention",
+            "Summary.",
+            "# Attention\n\nOriginal body.",
+            None,
+        )
+        .unwrap();
+        let (inbox_id, _raw_id) =
+            seed_raw_with_inbox(&paths, "New insight: attention can be multi-head.");
+
+        let broker = MockBrokerSender {
+            canned: canned_merge_response(
+                "# Attention\n\nOriginal body.\n\n## 多头注意力\n\n新素材：可以并行处理。",
+                "在原文后追加多头注意力小节",
+            ),
+        };
+
+        let proposal = propose_update(&paths, inbox_id, "attention", &broker)
+            .await
+            .unwrap();
+
+        assert_eq!(proposal.target_slug, "attention");
+        assert!(
+            proposal.before_markdown.contains("Original body."),
+            "before_markdown should hold the pre-merge body"
+        );
+        assert!(
+            proposal.after_markdown.contains("多头注意力"),
+            "after_markdown should hold the LLM-merged body"
+        );
+        assert!(
+            proposal.before_markdown != proposal.after_markdown,
+            "before != after: LLM actually produced a change"
+        );
+        assert!(proposal.summary.contains("追加"));
+        assert!(proposal.generated_at > 0);
+
+        // Inbox entry persists the proposal.
+        let entries = wiki_store::list_inbox_entries(&paths).unwrap();
+        let entry = entries.iter().find(|e| e.id == inbox_id).unwrap();
+        assert_eq!(entry.proposal_status.as_deref(), Some("pending"));
+        assert_eq!(
+            entry.proposed_after_markdown.as_deref(),
+            Some(proposal.after_markdown.as_str())
+        );
+        assert_eq!(
+            entry.before_markdown_snapshot.as_deref(),
+            Some(proposal.before_markdown.as_str())
+        );
+        assert_eq!(
+            entry.proposal_summary.as_deref(),
+            Some(proposal.summary.as_str())
+        );
+        // W1 bookkeeping also stamped so a page refresh knows the target.
+        assert_eq!(entry.maintain_action.as_deref(), Some("update_existing"));
+        assert_eq!(entry.target_page_slug.as_deref(), Some("attention"));
+        // Status still pending — apply hasn't been called yet.
+        assert_eq!(entry.status, wiki_store::InboxStatus::Pending);
+    }
+
+    #[tokio::test]
+    async fn apply_update_proposal_writes_page_and_updates_inbox() {
+        let tmp = tempdir().unwrap();
+        wiki_store::init_wiki(tmp.path()).unwrap();
+        let paths = wiki_store::WikiPaths::resolve(tmp.path());
+
+        wiki_store::write_wiki_page(
+            &paths,
+            "dropout",
+            "Dropout",
+            "Summary.",
+            "# Dropout\n\nBefore content.",
+            None,
+        )
+        .unwrap();
+        let (inbox_id, _raw_id) = seed_raw_with_inbox(&paths, "Dropout details.");
+
+        // Phase 1: propose.
+        let merged = "# Dropout\n\nBefore content.\n\n## Extra\n\nmerged.";
+        let broker = MockBrokerSender {
+            canned: canned_merge_response(merged, "追加 Extra 小节"),
+        };
+        let _proposal = propose_update(&paths, inbox_id, "dropout", &broker)
+            .await
+            .unwrap();
+
+        // Phase 2: apply.
+        let outcome = apply_update_proposal(&paths, inbox_id).unwrap();
+        match outcome {
+            MaintainOutcome::Updated { target_page_slug } => {
+                assert_eq!(target_page_slug, "dropout");
+            }
+            other => panic!("expected Updated, got {other:?}"),
+        }
+
+        // Page on disk has the merged body.
+        let (_summary, body) = wiki_store::read_wiki_page(&paths, "dropout").unwrap();
+        assert!(body.contains("## Extra"));
+        assert!(body.contains("merged."));
+
+        // Inbox entry: proposal_status=applied, status=Approved, staged
+        // markdown cleared, summary retained for audit.
+        let entries = wiki_store::list_inbox_entries(&paths).unwrap();
+        let entry = entries.iter().find(|e| e.id == inbox_id).unwrap();
+        assert_eq!(entry.status, wiki_store::InboxStatus::Approved);
+        assert_eq!(entry.proposal_status.as_deref(), Some("applied"));
+        assert!(entry.proposed_after_markdown.is_none(),
+            "proposed_after_markdown must be cleared on apply");
+        assert!(entry.before_markdown_snapshot.is_none(),
+            "before_markdown_snapshot must be cleared on apply");
+        assert_eq!(entry.proposal_summary.as_deref(), Some("追加 Extra 小节"),
+            "proposal_summary retained for audit");
+        assert_eq!(entry.maintain_action.as_deref(), Some("update_existing"));
+        assert_eq!(entry.target_page_slug.as_deref(), Some("dropout"));
+        assert!(entry.resolved_at.is_some(), "resolved_at stamped on apply");
+
+        // Audit log has update-concept line.
+        let log_path = wiki_store::wiki_log_path(&paths);
+        let log = std::fs::read_to_string(&log_path).unwrap_or_default();
+        assert!(log.contains("update-concept"));
+    }
+
+    #[tokio::test]
+    async fn cancel_update_proposal_clears_fields() {
+        let tmp = tempdir().unwrap();
+        wiki_store::init_wiki(tmp.path()).unwrap();
+        let paths = wiki_store::WikiPaths::resolve(tmp.path());
+
+        wiki_store::write_wiki_page(
+            &paths,
+            "relu",
+            "ReLU",
+            "Summary.",
+            "# ReLU\n\nBefore.",
+            None,
+        )
+        .unwrap();
+        let (inbox_id, _raw_id) = seed_raw_with_inbox(&paths, "ReLU insight.");
+
+        let broker = MockBrokerSender {
+            canned: canned_merge_response("# ReLU\n\nMerged.", "改写整段"),
+        };
+        propose_update(&paths, inbox_id, "relu", &broker).await.unwrap();
+
+        // Cancel — should clear the staged markdown but keep the inbox pending.
+        cancel_update_proposal(&paths, inbox_id).unwrap();
+
+        let entries = wiki_store::list_inbox_entries(&paths).unwrap();
+        let entry = entries.iter().find(|e| e.id == inbox_id).unwrap();
+        assert_eq!(entry.proposal_status.as_deref(), Some("cancelled"));
+        assert!(entry.proposed_after_markdown.is_none());
+        assert!(entry.before_markdown_snapshot.is_none());
+        // Summary retained so UI can show "last proposal said…".
+        assert_eq!(entry.proposal_summary.as_deref(), Some("改写整段"));
+        // Status stays Pending — user can re-propose without restart.
+        assert_eq!(entry.status, wiki_store::InboxStatus::Pending);
+        // maintain_action / target_page_slug preserved for re-propose.
+        assert_eq!(entry.maintain_action.as_deref(), Some("update_existing"));
+        assert_eq!(entry.target_page_slug.as_deref(), Some("relu"));
+    }
+
+    #[test]
+    fn apply_without_pending_proposal_returns_error() {
+        let tmp = tempdir().unwrap();
+        wiki_store::init_wiki(tmp.path()).unwrap();
+        let paths = wiki_store::WikiPaths::resolve(tmp.path());
+
+        // Seed an inbox entry that has NEVER been proposed against.
+        let (inbox_id, _raw_id) = seed_raw_with_inbox(&paths, "Body.");
+
+        let err = apply_update_proposal(&paths, inbox_id).unwrap_err();
+        match err {
+            MaintainerError::InvalidProposal(msg) => {
+                assert!(msg.contains("no pending proposal"),
+                    "expected 'no pending proposal' in error, got: {msg}");
+            }
+            other => panic!("expected InvalidProposal, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn apply_detects_concurrent_edit_and_refuses() {
+        let tmp = tempdir().unwrap();
+        wiki_store::init_wiki(tmp.path()).unwrap();
+        let paths = wiki_store::WikiPaths::resolve(tmp.path());
+
+        wiki_store::write_wiki_page(
+            &paths,
+            "softmax",
+            "Softmax",
+            "Summary.",
+            "# Softmax\n\nOriginal.",
+            None,
+        )
+        .unwrap();
+        let (inbox_id, _raw_id) = seed_raw_with_inbox(&paths, "body");
+
+        let broker = MockBrokerSender {
+            canned: canned_merge_response("# Softmax\n\nMerged.", "改写"),
+        };
+        propose_update(&paths, inbox_id, "softmax", &broker).await.unwrap();
+
+        // Simulate a concurrent external edit: overwrite the page body.
+        wiki_store::write_wiki_page(
+            &paths,
+            "softmax",
+            "Softmax",
+            "Summary.",
+            "# Softmax\n\nExternally edited.",
+            None,
+        )
+        .unwrap();
+
+        // Apply should now fail with a conflict error.
+        let err = apply_update_proposal(&paths, inbox_id).unwrap_err();
+        match err {
+            MaintainerError::Store(msg) => {
+                assert!(msg.contains("changed since proposal"), "got: {msg}");
+            }
+            other => panic!("expected Store conflict error, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn propose_update_rejects_malformed_llm_json() {
+        let tmp = tempdir().unwrap();
+        wiki_store::init_wiki(tmp.path()).unwrap();
+        let paths = wiki_store::WikiPaths::resolve(tmp.path());
+
+        wiki_store::write_wiki_page(
+            &paths,
+            "loss",
+            "Loss",
+            "s",
+            "# Loss\n\nbody.",
+            None,
+        )
+        .unwrap();
+        let (inbox_id, _raw_id) = seed_raw_with_inbox(&paths, "body");
+
+        let broker = MockBrokerSender {
+            canned: "this is not JSON at all".to_string(),
+        };
+        let err = propose_update(&paths, inbox_id, "loss", &broker)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, MaintainerError::BadJson { .. }));
+
+        // Inbox entry must NOT have a pending proposal — propose failed
+        // before the persist step.
+        let entries = wiki_store::list_inbox_entries(&paths).unwrap();
+        let entry = entries.iter().find(|e| e.id == inbox_id).unwrap();
+        assert!(entry.proposal_status.is_none());
     }
 }

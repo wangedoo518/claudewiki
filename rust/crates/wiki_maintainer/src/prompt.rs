@@ -106,6 +106,85 @@ pub fn build_concept_request(entry: &RawEntry, body: &str) -> MessageRequest {
     }
 }
 
+// ── W2: merge (update-existing) prompt ────────────────────────────
+//
+// W2 flips `update_existing` from a deterministic "append under a
+// dated heading" step into a two-phase LLM proposal. The prompt
+// below is the merge ask: given an existing wiki page and a new
+// raw entry, return a JSON object with the merged page markdown
+// plus a one-line summary of what changed. The summary is what
+// the frontend shows in the diff preview header, so it must stay
+// short and factual.
+
+/// System prompt for the merge step. Kept separate from the
+/// concept system prompt because the expectations differ:
+///   - this prompt expects TWO inputs (existing page + raw body)
+///   - the output is the FULL merged page, not a fresh proposal
+///   - preservation (don't drop existing info) matters more than
+///     conciseness (the 200-word cap of concept generation does
+///     not apply — the merged page can grow as knowledge grows)
+pub const MERGE_SYSTEM_PROMPT: &str = r#"你是 ClawWiki 的 Wiki 维护者。
+现在要把一则新素材合并到一页已经存在的概念页面上。
+
+Hard rules:
+1. 输出 STRICT JSON only (no prose, no code fences). Exactly two fields:
+   - after_markdown  (string): the complete merged Markdown body (no YAML frontmatter).
+   - summary         (string): one short sentence in Chinese describing what you changed.
+2. 保持原页面的章节结构，只在确实有新信息时补充或修改；不要平白无故重写。
+3. 不要丢失原有信息。若素材和原内容冲突，追加「## 待确认」小节并并列展示两种说法。
+4. 若素材完全不相关或没有可合并的新信息，把 after_markdown 原样返回原内容，summary 写 "未合并：原因"。
+5. 引用素材时单段引用不超过 15 个连续词。
+"#;
+
+/// Build the merge request for [`propose_update`]. The user message
+/// contains both the existing page body and the raw entry body, with
+/// a short header telling the LLM which is which. The assistant is
+/// asked to return `{after_markdown, summary}`.
+///
+/// Output cap: 4000 tokens. Higher than concept generation because a
+/// merged page can legitimately be larger than a fresh proposal
+/// (existing content + new insertions). Still bounded so a runaway
+/// response can't blow up the broker budget.
+pub const MERGE_MAX_OUTPUT_TOKENS: u32 = 4000;
+
+/// Build the merge chat request.
+///
+/// `target_slug` and `target_title` are plumbed in so the LLM knows
+/// which page it's editing; they show up in the user message as
+/// context but are not part of the expected output.
+pub fn build_merge_request(
+    target_slug: &str,
+    target_title: &str,
+    existing_body: &str,
+    raw_body: &str,
+) -> MessageRequest {
+    let user_text = format!(
+        "目标页面:\n\
+         - slug: {target_slug}\n\
+         - title: {target_title}\n\
+         \n\
+         ── 现有 Markdown 正文 ──\n\
+         {existing_body}\n\
+         ── 新素材（raw body）──\n\
+         {raw_body}\n\
+         \n\
+         请把新素材合并进现有正文，返回 {{\"after_markdown\": \"...\", \"summary\": \"...\"}}。"
+    );
+
+    MessageRequest {
+        model: MAINTAINER_MODEL.to_string(),
+        max_tokens: MERGE_MAX_OUTPUT_TOKENS,
+        system: Some(MERGE_SYSTEM_PROMPT.to_string()),
+        messages: vec![InputMessage {
+            role: "user".to_string(),
+            content: vec![InputContentBlock::Text { text: user_text }],
+        }],
+        tools: None,
+        tool_choice: None,
+        stream: false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -166,5 +245,36 @@ mod tests {
         assert!(first.contains("00042_paste_hello-world_2026-04-09.md"));
         assert!(first.contains("Body content here."));
         assert!(first.contains("source_raw_id must equal 42"));
+    }
+
+    #[test]
+    fn merge_system_prompt_pins_json_shape_and_preserve_rule() {
+        assert!(MERGE_SYSTEM_PROMPT.contains("after_markdown"));
+        assert!(MERGE_SYSTEM_PROMPT.contains("summary"));
+        assert!(MERGE_SYSTEM_PROMPT.contains("STRICT JSON"));
+        assert!(MERGE_SYSTEM_PROMPT.contains("不要丢失原有信息"));
+    }
+
+    #[test]
+    fn build_merge_request_shape_and_body() {
+        let req = build_merge_request(
+            "attention",
+            "注意力机制",
+            "# Attention\n\nOriginal body.",
+            "New insights about multi-head attention.",
+        );
+        assert_eq!(req.model, MAINTAINER_MODEL);
+        assert_eq!(req.max_tokens, MERGE_MAX_OUTPUT_TOKENS);
+        assert!(!req.stream);
+        assert_eq!(req.system.as_deref(), Some(MERGE_SYSTEM_PROMPT));
+        assert_eq!(req.messages.len(), 1);
+        let text = match &req.messages[0].content[0] {
+            InputContentBlock::Text { text } => text.clone(),
+            _ => panic!("expected text block"),
+        };
+        assert!(text.contains("slug: attention"));
+        assert!(text.contains("title: 注意力机制"));
+        assert!(text.contains("Original body."));
+        assert!(text.contains("multi-head attention"));
     }
 }

@@ -19,6 +19,7 @@ use serde_json::Value;
 use tokio::sync::{broadcast, oneshot, Mutex};
 use tokio_util::sync::CancellationToken;
 
+use crate::ask_context::{self, ContextMode};
 use crate::{DesktopConversationMessage, DesktopSessionEvent, SessionId};
 
 // ── Constants ────────────────────────────────────────────────────────
@@ -319,6 +320,17 @@ pub struct AgenticLoopConfig {
     pub mcp_manager: Arc<Mutex<Option<McpServerManager>>>,
     /// Discovered MCP tools to include in the LLM's tool list.
     pub mcp_tools: Vec<ManagedMcpTool>,
+    /// A1: how the LLM request should treat session history for
+    /// this turn. `SourceFirst` causes `build_api_request` to trim
+    /// `session.messages` to the trailing 2 entries so the LLM
+    /// doesn't stick to an earlier topic after a new URL arrives.
+    /// `FollowUp` (default) and `Combine` both pass the full array.
+    ///
+    /// `#[serde]` skipped — this field is populated at
+    /// `AgenticLoopConfig` construction time from the HTTP body's
+    /// `mode` field (via `append_user_message`), and the config
+    /// itself is never serialised.
+    pub context_mode: ContextMode,
 }
 
 /// Run the async agentic conversation loop.
@@ -340,6 +352,33 @@ pub async fn run_agentic_loop(
     let mut current_session = session;
     let mut iterations = 0usize;
     let mut model_label = config.model.clone();
+
+    // A1: apply context-mode trimming ONCE here, before the loop
+    // starts. We can't trim inside `build_api_request` on each
+    // iteration because the loop appends `tool_use` / `tool_result`
+    // pairs to `current_session.messages` as it runs, and the LLM
+    // API rejects any request where a `tool_result` block appears
+    // without its matching `tool_use` id. Trimming pre-existing
+    // history once, then letting the loop grow the trimmed slice
+    // naturally with fresh tool exchanges, preserves the pairing
+    // invariant while still giving `SourceFirst` its topic reset.
+    //
+    // Note: the trim operates on the slice *as observed on entry*.
+    // That includes the brand-new user turn `append_user_message`
+    // pushed before spawning the loop, so `SourceFirst` keeps the
+    // user question plus at most one prior assistant turn.
+    if matches!(config.context_mode, ContextMode::SourceFirst) {
+        let packaged =
+            ask_context::package_history(config.context_mode, &current_session.messages);
+        let removed = current_session.messages.len().saturating_sub(packaged.len());
+        if removed > 0 {
+            eprintln!(
+                "[agentic_loop] SourceFirst: trimmed {} historical message(s) for topic reset",
+                removed
+            );
+            current_session.messages = packaged;
+        }
+    }
 
     // Use the shared HTTP client from DesktopState.
     let client = config.http_client.clone();
@@ -416,12 +455,18 @@ pub async fn run_agentic_loop(
         }
 
         // ── Build Anthropic Messages API request (streaming) ─────
+        // A1: mode plumbed through so `SourceFirst` can trim session
+        // history to the trailing turn inside `build_api_request`.
+        // Applied on every iteration so tool-use ping-pong turns
+        // stay scoped to the current task and don't regrow the
+        // request with older history.
         let api_request = build_api_request(
             &current_session,
             &config.model,
             config.system_prompt.as_deref(),
             &tool_specs,
             &config.mcp_tools,
+            config.context_mode,
         );
 
         // ── Call LLM via code-tools-bridge (streaming SSE) ──────
@@ -671,13 +716,46 @@ pub async fn run_agentic_loop(
 // ── Helper functions ─────────────────────────────────────────────────
 
 /// Build an Anthropic Messages API request body from the current session state.
+///
+/// A1: `context_mode` controls how the session history is packaged.
+///   * `FollowUp` / `Combine` — the full `session.messages` array is
+///     serialized, matching the pre-A1 behaviour.
+///   * `SourceFirst` — `run_agentic_loop` already trimmed the session
+///     array at entry so only the trailing pre-turn entries + every
+///     in-flight `tool_use` / `tool_result` pair survive. We do NOT
+///     re-trim here per-iteration because that would break the
+///     LLM-enforced pairing of `tool_use` ids with their results. The
+///     `context_mode` argument is passed so future per-iteration
+///     policy knobs (e.g. cache control, metadata tagging) can land
+///     without another signature change.
 fn build_api_request(
     session: &RuntimeSession,
     model: &str,
     system_prompt: Option<&str>,
     tool_specs: &[tools::ToolSpec],
     mcp_tools: &[ManagedMcpTool],
+    context_mode: ContextMode,
 ) -> Value {
+    // A1: `current_session.messages` has already been shaped at loop
+    // entry according to `context_mode` (see the trim block in
+    // `run_agentic_loop`). We do NOT re-trim here per-iteration —
+    // once tool_use / tool_result pairs start landing in the session,
+    // naive trimming would drop the `tool_use` but keep the
+    // `tool_result`, and the LLM rejects that mismatch with a 400.
+    // So we always serialise the full (already-trimmed) array.
+    // `context_mode` is accepted to keep the signature future-proof
+    // for per-iteration policy knobs.
+    //
+    // Touch the mode so the parameter doesn't read as unused — also
+    // gives us a cheap assertion surface if someone ever adds a
+    // fourth variant without updating the loop-entry trim block.
+    debug_assert!(
+        matches!(
+            context_mode,
+            ContextMode::FollowUp | ContextMode::SourceFirst | ContextMode::Combine
+        ),
+        "unhandled ContextMode variant; update run_agentic_loop entry trim"
+    );
     let messages: Vec<Value> = session
         .messages
         .iter()

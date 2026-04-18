@@ -131,6 +131,43 @@ export interface InboxEntry {
   rejection_reason?: string | null;
   /** For `failed` outcome — user-visible error message. */
   maintain_error?: string | null;
+
+  // ── W2 update_existing preview/apply additions (all optional) ──
+  //
+  // Populated by Worker A's /proposal endpoints. When
+  // `proposal_status === "pending"`, the frontend must render the
+  // diff preview (Phase 2) instead of Phase 1's "generate proposal"
+  // button — including after a reload (persisted on the inbox entry,
+  // so users can close/reopen the Workbench without losing the draft).
+  //
+  // `before_markdown_snapshot` captures the target wiki page content
+  // at proposal creation time; `proposed_after_markdown` is the full
+  // LLM-merged result. `proposal_summary` is a one-line change digest
+  // rendered above the diff columns.
+
+  /** Current lifecycle of the W2 update proposal. */
+  proposal_status?: "pending" | "applied" | "cancelled" | null;
+  /** Full markdown the LLM merged; shown as the "after" column. */
+  proposed_after_markdown?: string | null;
+  /** Snapshot of the target page at proposal-generation time. */
+  before_markdown_snapshot?: string | null;
+  /** One-line summary describing what changed. */
+  proposal_summary?: string | null;
+}
+
+/**
+ * W2 update_existing proposal envelope. Returned verbatim by
+ * `POST /api/wiki/inbox/{id}/proposal`. The frontend stores it
+ * in local state after creation and falls back to reconstructing
+ * it from the `proposal_*` fields on `InboxEntry` across reloads.
+ */
+export interface UpdateProposal {
+  target_slug: string;
+  before_markdown: string;
+  after_markdown: string;
+  summary: string;
+  /** Epoch seconds when the proposal was generated on the server. */
+  generated_at: number;
 }
 
 /**

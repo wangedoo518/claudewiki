@@ -31,12 +31,29 @@ import {
 import { getToolMeta } from "./tool-meta";
 import { cn } from "@/lib/utils";
 import type { ConversationMessage } from "@/features/common/message-types";
+import { ContextBasisLabel } from "./ContextBasisLabel";
+import { UsedSourcesBar } from "./UsedSourcesBar";
+import type { ContextBasis, SourceRef } from "@/lib/tauri";
+import { FailureBanner } from "@/components/ui/failure-banner";
+import {
+  classifyAskError,
+  looksLikeAskRuntimeError,
+} from "./ask-error-classifier";
 
 interface MessageProps {
   message: ConversationMessage;
+  /**
+   * A3 — forwarded to UsedSourcesBar so the "📌 固定到会话" button
+   * on an auto-bound assistant turn can upgrade the turn-local
+   * auto-binding into a persistent session binding.
+   */
+  onPromoteToSession?: (source: SourceRef) => void | Promise<void>;
 }
 
-export const Message = memo(function Message({ message }: MessageProps) {
+export const Message = memo(function Message({
+  message,
+  onPromoteToSession,
+}: MessageProps) {
   switch (message.type) {
     case "text":
       return message.role === "user" ? (
@@ -44,7 +61,12 @@ export const Message = memo(function Message({ message }: MessageProps) {
       ) : message.role === "system" ? (
         <SystemMessage content={message.content} />
       ) : (
-        <AssistantMessage content={message.content} usage={message.usage} />
+        <AssistantMessage
+          content={message.content}
+          usage={message.usage}
+          contextBasis={message.contextBasis}
+          onPromoteToSession={onPromoteToSession}
+        />
       );
     case "tool_use":
       return <ToolUseMessage message={message} />;
@@ -246,7 +268,17 @@ function UserMessage({ content }: { content: string }) {
 
 /* ─── Assistant message with markdown ────────────────────────────── */
 
-function AssistantMessage({ content, usage }: { content: string; usage?: { inputTokens: number; outputTokens: number } }) {
+function AssistantMessage({
+  content,
+  usage,
+  contextBasis,
+  onPromoteToSession,
+}: {
+  content: string;
+  usage?: { inputTokens: number; outputTokens: number };
+  contextBasis?: ContextBasis | null;
+  onPromoteToSession?: (source: SourceRef) => void | Promise<void>;
+}) {
   const [copied, setCopied] = useState(false);
 
   const handleCopy = () => {
@@ -273,6 +305,23 @@ function AssistantMessage({ content, usage }: { content: string; usage?: { input
           <div className="mb-1 text-[11px] text-muted-foreground/40">
             Assistant · 输入 {fmt(usage.inputTokens)}
           </div>
+        )}
+
+        {/* A1 — context-basis explainer chip (rendered ABOVE markdown body).
+            Hidden for follow_up turns by default; source_first/combine show. */}
+        {contextBasis != null && <ContextBasisLabel basis={contextBasis} />}
+
+        {/* A2/A3 — "Used sources" citation strip directly below the basis
+            label. A2: reads bound_source from basis; falls back to a generic
+            "本链接" badge when source_included=true without a discrete ref.
+            A3: differentiates auto_bound turn-local sources (blue tone +
+            inline "📌 固定到会话" action wired to `onPromoteToSession`).
+            Renders null when no source was used. */}
+        {contextBasis != null && (
+          <UsedSourcesBar
+            basis={contextBasis}
+            onPromoteToSession={onPromoteToSession}
+          />
         )}
 
         {/* Message body — 15px, generous line height, break long URLs */}
@@ -770,7 +819,26 @@ function DiffDisplay({ content }: { content: string }) {
 
 /* ─── Error message ──────────────────────────────────────────────── */
 
+/**
+ * R1 trust-layer — if the error payload is a recognisable Ask-runtime
+ * failure string (credentials missing, broker empty, session not
+ * found, etc.) render the friendly `FailureBanner` shell. Otherwise
+ * keep the legacy mono red box so unfamiliar / unclassified errors
+ * still leak through verbatim for diagnosis.
+ */
 function ErrorMessage({ content }: { content: string }) {
+  if (looksLikeAskRuntimeError(content)) {
+    const { kind, raw } = classifyAskError(content);
+    const copy = askErrorCopy(kind);
+    return (
+      <FailureBanner
+        severity={copy.severity}
+        title={copy.title}
+        description={copy.description}
+        technicalDetail={raw}
+      />
+    );
+  }
   return (
     <div
       className="flex items-start gap-2 rounded-lg border px-3 py-2"
@@ -785,6 +853,58 @@ function ErrorMessage({ content }: { content: string }) {
       </div>
     </div>
   );
+}
+
+/**
+ * Copy fragments for Message-rendered runtime failures. Intentionally
+ * no recovery CTAs here — the Ask-level banner in `AskWorkbench.tsx`
+ * owns the interactive "打开设置 / 新建对话" actions so we don't
+ * duplicate them inside an assistant-turn bubble. We only need
+ * (title, description, severity) for the read-only in-thread view.
+ */
+function askErrorCopy(
+  kind: ReturnType<typeof classifyAskError>["kind"],
+): {
+  severity: "error" | "warning" | "info";
+  title: string;
+  description: string;
+} {
+  switch (kind) {
+    case "credentials_missing":
+      return {
+        severity: "error",
+        title: "🔐 还没连接大模型账号",
+        description:
+          "Ask 需要一个大模型账号来生成回答。当前没找到有效的 API key，请在设置里配置。",
+      };
+    case "broker_empty":
+      return {
+        severity: "warning",
+        title: "🪫 大模型账号池空",
+        description:
+          "暂时没有可用的 Claude 账号来处理这一轮。稍等片刻再重试。",
+      };
+    case "session_not_found":
+      return {
+        severity: "warning",
+        title: "📝 对话不存在或已过期",
+        description: "后端找不到这个会话 id。请新建一个对话继续。",
+      };
+    case "url_enrich_failed":
+      return {
+        severity: "warning",
+        title: "🔗 链接抓取失败",
+        description:
+          "没能从你发的链接里取到正文。可能是网站挡了 bot 或超时。",
+      };
+    case "unknown":
+    default:
+      return {
+        severity: "error",
+        title: "出错了",
+        description: "后端在处理这一轮时失败了。查看下方技术细节了解更多。",
+      };
+  }
 }
 
 /* ─── Tool metadata — imported from tool-meta.ts ───────────────── */

@@ -152,6 +152,150 @@ export interface RuntimeConversationMessage {
   role: "system" | "user" | "assistant" | "tool";
   blocks: ContentBlock[];
   usage?: TokenUsageData;
+  /**
+   * A1 sprint — context-basis side-channel. Populated by the backend on
+   * assistant messages so the UI can surface "what context did the
+   * model actually see for this turn?" via `<ContextBasisLabel>`.
+   * Absent/null for legacy sessions and for non-assistant roles.
+   *
+   * Wire format matches `ContextBasis` in `desktop-core::ask_context`
+   * (Worker A). See ContextBasis interface below.
+   */
+  context_basis?: ContextBasis | null;
+}
+
+/**
+ * Response-context mode — decided per-turn either client-side
+ * (auto-detect via `classifyContextMode`) or by the user's explicit
+ * override. Mirrors the Rust enum `ContextMode` in
+ * `desktop-core::ask_context` (Worker A's contract).
+ *
+ *   - `follow_up`    — continue the dialogue using prior turns only.
+ *   - `source_first` — treat the selected source (URL / raw entry) as
+ *                      primary; history is secondary.
+ *   - `combine`      — splice prior turns + the selected source into
+ *                      a single context.
+ */
+export type ContextMode = "follow_up" | "source_first" | "combine";
+
+/**
+ * Per-turn explanation of what the backend actually fed to the model.
+ * Wire format (snake_case) is the serialization of Worker A's
+ * `ContextBasis` struct. Attached to assistant messages via
+ * `RuntimeConversationMessage.context_basis` and also broadcast on
+ * `DesktopSessionEvent::Message`.
+ */
+export interface ContextBasis {
+  /** Which mode the backend resolved for this turn. */
+  mode: ContextMode;
+  /** How many prior conversation turns were included in the prompt. */
+  history_turns_included: number;
+  /** Whether a source (URL / raw entry) was injected as context. */
+  source_included: boolean;
+  /**
+   * Approximate token count the backend estimated for the source
+   * payload. Absent when `source_included=false` or when the backend
+   * did not attempt a token estimate.
+   */
+  source_token_hint?: number;
+  /**
+   * True when a hard boundary marker was injected to prevent the
+   * model from blending source content with conversational history
+   * (e.g. explicit "---" separator + instruction reset).
+   */
+  boundary_marker: boolean;
+  /**
+   * A2 sprint — the concrete source the backend injected for this
+   * turn, when one was chosen. Populated only when
+   * `source_included === true` AND the backend resolved a discrete
+   * source ref (typed raw/wiki/inbox). Absent / null on legacy
+   * sessions and for turns where `source_included` is derived from a
+   * raw URL rather than a bound ref.
+   */
+  bound_source?: SourceRef | null;
+  /**
+   * A3 sprint — true when `bound_source` was auto-derived from a
+   * fresh URL enrich this turn (not from a persistent session
+   * binding). Auto-bound sources don't write SessionMetadata and
+   * expire naturally on next turn if no new URL arrives. When
+   * absent or false, a present `bound_source` means the A2 session
+   * binding is active.
+   */
+  auto_bound?: boolean;
+  /**
+   * A4 sprint — true when the system prompt included the "Grounded
+   * Mode" instruction block (quote anchoring + conservative
+   * behavior + 依据片段 section). Mirrors `bound_source` presence
+   * under the A2/A3 paths. UI renders a "✓ Grounded" badge when true.
+   */
+  grounding_applied?: boolean;
+}
+
+/* ──────────────────────────────────────────────────────────────────
+ * A2 sprint — Session source binding
+ *
+ * A persistent, session-scoped binding to a specific source
+ * (raw entry / wiki page / inbox task). When a binding is present,
+ * the backend's Ask pipeline treats that source as the authoritative
+ * context for every turn in the session until the binding is cleared.
+ *
+ * Wire format mirrors Worker A's Rust `SourceRef` enum with
+ * `#[serde(tag = "kind", rename_all = "snake_case")]`:
+ *   - { kind: "raw",   id: number,   title: string }
+ *   - { kind: "wiki",  slug: string, title: string }
+ *   - { kind: "inbox", id: number,   title: string }
+ *
+ * The parent `SessionSourceBinding` carries the ref plus provenance
+ * (`bound_at` epoch-ms, optional `binding_reason` free text for
+ * debugging / audit trails).
+ * ────────────────────────────────────────────────────────────────── */
+
+export type SourceRefKind = "raw" | "wiki" | "inbox";
+
+export type SourceRef =
+  | { kind: "raw"; id: number; title: string }
+  | { kind: "wiki"; slug: string; title: string }
+  | { kind: "inbox"; id: number; title: string };
+
+export interface SessionSourceBinding {
+  source: SourceRef;
+  /** Epoch-ms when the binding was established. */
+  bound_at: number;
+  /** Optional free-text describing why the binding was made. */
+  binding_reason?: string;
+}
+
+/**
+ * Stable, human-readable display label for a SourceRef.
+ * Examples:
+ *   - raw   → "raw #00123 · Example Domain"
+ *   - wiki  → "wiki:foo-slug · Title"
+ *   - inbox → "inbox #42 · Title"
+ */
+export function formatSourceRefLabel(source: SourceRef): string {
+  switch (source.kind) {
+    case "raw":
+      return `raw #${String(source.id).padStart(5, "0")} · ${source.title}`;
+    case "wiki":
+      return `wiki:${source.slug} · ${source.title}`;
+    case "inbox":
+      return `inbox #${String(source.id).padStart(5, "0")} · ${source.title}`;
+  }
+}
+
+/**
+ * Stable, unique key for a SourceRef — safe for React `key={}` and
+ * for equality checks. Format: `"<kind>:<id-or-slug>"`.
+ */
+export function sourceRefKey(source: SourceRef): string {
+  switch (source.kind) {
+    case "raw":
+      return `raw:${source.id}`;
+    case "wiki":
+      return `wiki:${source.slug}`;
+    case "inbox":
+      return `inbox:${source.id}`;
+  }
 }
 
 export interface RuntimeSession {
@@ -209,6 +353,26 @@ export interface DesktopSessionDetail {
    * See `EnrichStatus` for the variant shapes.
    */
   enrich_status?: EnrichStatus | null;
+  /**
+   * A1 sprint — per-turn context-basis side-channel. Populated by
+   * `DesktopState::append_user_message` on the snapshot that fires
+   * right after a new user turn is appended; `None` on subsequent
+   * snapshots (including reloads / background refetches). Frontend
+   * falls back to this when `RuntimeConversationMessage.context_basis`
+   * isn't populated (current backend contract).
+   *
+   * See `ContextBasis` for the shape.
+   */
+  context_basis?: ContextBasis | null;
+  /**
+   * A2 sprint — persistent session-scoped source binding. When
+   * non-null, the backend injects this source into every turn's
+   * context until the binding is cleared. Populated by
+   * `POST /api/desktop/sessions/{id}/bind`; cleared by
+   * `DELETE /api/desktop/sessions/{id}/bind`. Absent on legacy
+   * sessions and on sessions that have never been bound.
+   */
+  source_binding?: SessionSourceBinding | null;
 }
 
 export interface DesktopProviderSetting {
@@ -690,6 +854,17 @@ export type DesktopSessionEvent =
       type: "message";
       session_id: string;
       message: RuntimeConversationMessage;
+      /**
+       * A1 sprint — context-basis side-channel on assistant messages.
+       * Worker A broadcasts this alongside the runtime message so the
+       * UI can render `<ContextBasisLabel>` without a polling round-trip.
+       * Same payload as `RuntimeConversationMessage.context_basis`;
+       * duplicated here so the top-level event carries an authoritative
+       * value even if the embedded message was materialized before the
+       * basis was known. Optional to stay backwards-compatible with
+       * pre-A1 backends.
+       */
+      context_basis?: ContextBasis | null;
     }
   | {
       type: "text_delta";
@@ -855,7 +1030,12 @@ export async function openclawGetDashboardUrl(): Promise<string> {
 // `{ entry, body }`. `maintainInboxEntry` talks to Worker B's
 // `/api/wiki/inbox/{id}/maintain` contract.
 import { fetchJson as _fetchJsonForMaintain } from "@/lib/desktop/transport";
-import { getRawEntry as _getRawEntry } from "@/features/ingest/persist";
+import {
+  getRawEntry as _getRawEntry,
+  createProposal as _createProposal,
+  applyProposal as _applyProposal,
+  cancelProposal as _cancelProposal,
+} from "@/features/ingest/persist";
 import type {
   InboxEntry,
   MaintainAction,
@@ -863,6 +1043,7 @@ import type {
   MaintainRequest,
   MaintainResponse,
   RawDetailResponse,
+  UpdateProposal,
 } from "@/features/ingest/types";
 
 // ── W1 Maintainer Workbench type mirrors (re-export + alias) ──────────
@@ -893,6 +1074,11 @@ export type {
 // Also re-export under the short names for callers that followed the
 // original ingest/types.ts naming.
 export type { MaintainRequest, MaintainResponse };
+// W2 update_existing preview/apply surface — the `UpdateProposal`
+// type + the three HTTP wrappers (create / apply / cancel) hang off
+// the single @/lib/tauri import boundary so the Workbench doesn't
+// need to know about the ingest module structure.
+export type { UpdateProposal };
 
 /**
  * Fetch a single raw entry by id, returning metadata + markdown body.
@@ -921,6 +1107,143 @@ export async function maintainInboxEntry(
       method: "POST",
       body: JSON.stringify(payload),
     },
+  );
+}
+
+// ── Q1 Inbox Queue Intelligence: batch resolve ──────────────────────
+//
+// `POST /api/wiki/inbox/batch/resolve` — resolve many inbox entries
+// in one HTTP round trip. Backs the Batch Triage UI: multi-select a
+// group of pending tasks, pick an action (Q1 MVP: only `reject`),
+// optionally supply a shared rejection reason (>=4 chars), submit.
+//
+// Partial success is allowed — the server loops per-id and returns
+// two lists (`success` + `failed`) so the UI can toast "已处理 N/M"
+// and highlight which ids to inspect.
+
+/** Server-side wire shape — one id that failed to resolve. */
+export interface BatchFailedItem {
+  id: number;
+  error: string;
+}
+
+/** Server-side wire shape for the batch resolve response. */
+export interface BatchResolveInboxResponse {
+  success: number[];
+  failed: BatchFailedItem[];
+  total: number;
+  processed: number;
+}
+
+/**
+ * `POST /api/wiki/inbox/batch/resolve` — apply the same action to
+ * many inbox ids in a single call. Q1 MVP accepts only
+ * `action === "reject"`; passing `"approve"` will surface the
+ * server's 400 "not supported in Q1" error. `reason` is required
+ * (>=4 chars) when `action === "reject"`.
+ */
+export async function batchResolveInboxEntries(
+  ids: number[],
+  action: "reject" | "approve",
+  reason?: string,
+): Promise<BatchResolveInboxResponse> {
+  return _fetchJsonForMaintain<BatchResolveInboxResponse>(
+    "/api/wiki/inbox/batch/resolve",
+    {
+      method: "POST",
+      body: JSON.stringify({ ids, action, reason }),
+    },
+  );
+}
+
+/**
+ * `POST /api/wiki/inbox/{id}/proposal` — generate a diff proposal
+ * for merging the raw into the target wiki slug. Re-export of
+ * `persist.createProposal`; see that function for the contract.
+ */
+export async function createProposal(
+  inboxId: number,
+  targetSlug: string,
+): Promise<UpdateProposal> {
+  return _createProposal(inboxId, targetSlug);
+}
+
+/**
+ * `POST /api/wiki/inbox/{id}/proposal/apply` — commit the pending
+ * update proposal. Re-export of `persist.applyProposal`.
+ */
+export async function applyProposal(
+  inboxId: number,
+): Promise<{ outcome: string; target_page_slug: string }> {
+  return _applyProposal(inboxId);
+}
+
+/**
+ * `POST /api/wiki/inbox/{id}/proposal/cancel` — discard the pending
+ * update proposal. Re-export of `persist.cancelProposal`.
+ */
+export async function cancelProposal(inboxId: number): Promise<void> {
+  return _cancelProposal(inboxId);
+}
+
+// ---------------------------------------------------------------------------
+// G1 sprint — Per-page relations graph (backlinks + outgoing + related)
+// ---------------------------------------------------------------------------
+//
+// Wire contract produced by Worker A at
+// `GET /api/wiki/pages/:slug/graph`. Supersedes the legacy
+// `/api/wiki/pages/:slug/backlinks` endpoint the old `BacklinksSection`
+// read — the new 3-panel `WikiArticleRelationsPanel` component consumes
+// the fuller shape (outgoing + backlinks + related-with-reasons) in a
+// single round trip.
+//
+// The `reasons[]` strings on each related hit come verbatim from the
+// backend scorer (e.g. "共同作者", "同分类", "距离 2 跳") — the UI
+// just joins them with " · " as small muted caption text.
+
+/** One entry in the related-pages list returned by the graph endpoint. */
+export interface RelatedPageHit {
+  slug: string;
+  title: string;
+  category: string;
+  summary?: string;
+  /** Backend-authored reason tags explaining why this page is related. */
+  reasons: string[];
+  /** Opaque scorer output; callers shouldn't interpret the magnitude. */
+  score: number;
+}
+
+/** Minimal node descriptor used for backlinks / outgoing links. */
+export interface PageGraphNode {
+  slug: string;
+  title: string;
+  category: string;
+}
+
+/**
+ * Response envelope for `GET /api/wiki/pages/:slug/graph`.
+ * Owned by Worker A; consumed by `WikiArticleRelationsPanel`.
+ */
+export interface PageGraph {
+  slug: string;
+  title: string;
+  category: string;
+  summary?: string;
+  /** Pages this page links out to. */
+  outgoing: PageGraphNode[];
+  /** Pages that link to this page. */
+  backlinks: PageGraphNode[];
+  /** Related (non-adjacent) pages with scorer reasons. */
+  related: RelatedPageHit[];
+}
+
+/**
+ * Fetch the per-page relations graph for a single wiki slug. Used by
+ * the 3-panel `WikiArticleRelationsPanel` under the markdown body.
+ */
+export async function getWikiPageGraph(slug: string): Promise<PageGraph> {
+  return _fetchJsonForMaintain<PageGraph>(
+    `/api/wiki/pages/${encodeURIComponent(slug)}/graph`,
   );
 }
 

@@ -47,13 +47,23 @@ import { useNavigate, type NavigateFunction } from "react-router-dom";
 
 import { useSettingsStore } from "@/state/settings-store";
 import { useWikiTabStore } from "@/state/wiki-tab-store";
+import type { SourceRef } from "@/lib/tauri";
 
 /** Origin of the nav request. Purely for logging/telemetry today. */
 export type WikiNavContext =
   | "maintain-result"
   | "recent-raw"
   | "inbox-detail"
-  | "command-palette";
+  | "command-palette"
+  // G1 sprint — four new origins for cross-page wiki navigation
+  // driven by the 3-panel Relations UI (backlinks / related /
+  // outgoing) on the article page and the focus-mode entry on the
+  // Graph page. Kept as discriminators today (no per-context
+  // branching yet) so the telemetry slot stays non-breaking.
+  | "wiki-backlink"
+  | "wiki-related"
+  | "wiki-outgoing"
+  | "wiki-graph";
 
 /** Shared side effects: switch app mode + open/activate the tab. */
 function applyTabHandoff(slug: string, title: string): void {
@@ -116,4 +126,45 @@ export function useWikiNavigator(): (
     },
     [navigate],
   );
+}
+
+/**
+ * S1 sprint — Build an Ask route URL that pre-binds a session source.
+ * Consumed by `AskWorkbench`'s URL-param bind flow (A2/A3). The page's
+ * `parseBindParam` accepts an optional `&title=...` so we pass the
+ * source's display title for nicer first-paint before the session
+ * detail fetch completes.
+ *
+ * Examples:
+ *   buildAskBindUrl({ kind: "wiki",  slug: "foo", title: "Foo" })
+ *     → "#/ask?bind=wiki:foo&title=Foo"
+ *   buildAskBindUrl({ kind: "raw",   id: 42,     title: "Example" })
+ *     → "#/ask?bind=raw:42&title=Example"
+ *   buildAskBindUrl({ kind: "inbox", id: 7,      title: "Task" })
+ *     → "#/ask?bind=inbox:7&title=Task"
+ */
+export function buildAskBindUrl(source: SourceRef): string {
+  const title = encodeURIComponent(source.title ?? "");
+  const titleParam = title ? `&title=${title}` : "";
+  switch (source.kind) {
+    case "wiki":
+      return `#/ask?bind=wiki:${encodeURIComponent(source.slug)}${titleParam}`;
+    case "raw":
+      return `#/ask?bind=raw:${source.id}${titleParam}`;
+    case "inbox":
+      return `#/ask?bind=inbox:${source.id}${titleParam}`;
+  }
+}
+
+/**
+ * S1 sprint — Build a Graph route URL that focuses on a specific wiki
+ * slug. Consumed by `GraphPage`'s `?focus=` URL param (G1), which
+ * seeds the `ForceGraph` initial search query so the node is
+ * highlighted and its neighbors dimmed on first paint.
+ *
+ * Example:
+ *   buildGraphFocusUrl("example-slug") → "#/graph?focus=example-slug"
+ */
+export function buildGraphFocusUrl(slug: string): string {
+  return `#/graph?focus=${encodeURIComponent(slug)}`;
 }

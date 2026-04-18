@@ -21,6 +21,7 @@ import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { ChevronDown, ChevronRight, History } from "lucide-react";
 import { fetchJson } from "@/lib/desktop/transport";
+import { InfoTooltip } from "@/components/ui/info-tooltip";
 import type {
   IngestDecision,
   RecentIngestEntry,
@@ -268,6 +269,10 @@ function DecisionDetail({ entry }: { entry: RecentIngestEntry }) {
             Hash:
           </span>
           <span className="font-mono text-foreground/80">{shortHash}…</span>
+          {/* R1 sprint — explain the hash to first-time readers. */}
+          <InfoTooltip side="top">
+            内容指纹 (SHA-256 前 8 位) · 相同指纹表示内容完全一致，系统会复用已有链接。
+          </InfoTooltip>
           {entry.content_hash_hit === true && (
             <span
               className="ml-1 inline-flex items-center rounded-full border px-1.5 py-0.5 text-[10px]"

@@ -12,11 +12,18 @@ import { ToolActionsGroup } from "./ToolActionsGroup";
 import { StreamingMessage } from "./StreamingMessage";
 import { useStickToBottomContext } from "./ConversationScroller";
 import type { ConversationMessage } from "@/features/common/message-types";
+import type { SourceRef } from "@/lib/tauri";
 
 interface MessageListProps {
   messages: ConversationMessage[];
   streamingContent?: string;
   isStreaming?: boolean;
+  /**
+   * A3 — forwarded to <Message> → <UsedSourcesBar> so the inline
+   * "📌 固定到会话" action can upgrade an auto-bound turn source
+   * into a persistent session binding.
+   */
+  onPromoteToSession?: (source: SourceRef) => void | Promise<void>;
 }
 
 interface SingleGroup {
@@ -79,6 +86,7 @@ export const MessageList = memo(function MessageList({
   messages,
   streamingContent,
   isStreaming = false,
+  onPromoteToSession,
 }: MessageListProps) {
   const { scrollElement, isAtBottom } = useStickToBottomContext();
   const items = useMemo(
@@ -141,7 +149,10 @@ export const MessageList = memo(function MessageList({
             ) : item.kind === "streaming" ? (
               <StreamingMessage content={item.content} />
             ) : (
-              <Message message={item.message} />
+              <Message
+                message={item.message}
+                onPromoteToSession={onPromoteToSession}
+              />
             )}
           </div>
         );

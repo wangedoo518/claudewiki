@@ -22,9 +22,11 @@
 import { fetchJson } from "@/lib/desktop/transport";
 import type {
   AppendDesktopMessageResponse,
+  ContextMode,
   CreateDesktopSessionResponse,
   DesktopSessionDetail,
   DesktopSessionsResponse,
+  SourceRef,
 } from "@/lib/tauri";
 
 export async function listSessions(): Promise<DesktopSessionsResponse> {
@@ -51,12 +53,19 @@ export async function createSession(payload: {
 export async function appendMessage(
   sessionId: string,
   message: string,
+  options?: { mode?: ContextMode },
 ): Promise<AppendDesktopMessageResponse> {
+  // A1 sprint — optional `mode` field added to the body when the caller
+  // provides one. Worker A's contract treats the field as optional and
+  // falls back to `follow_up` / `Default` when omitted, so legacy
+  // callers keep working.
+  const body: Record<string, unknown> = { message };
+  if (options?.mode) body.mode = options.mode;
   return fetchJson<AppendDesktopMessageResponse>(
     `/api/desktop/sessions/${sessionId}/messages`,
     {
       method: "POST",
-      body: JSON.stringify({ message }),
+      body: JSON.stringify(body),
     },
   );
 }
@@ -190,6 +199,50 @@ export function subscribeToSessionEvents(
   })();
 
   return controller;
+}
+
+/**
+ * A2 sprint — bind a source (raw / wiki / inbox) to the given session.
+ * The backend treats this as the authoritative context for every
+ * subsequent turn until a `clearSourceBinding` call lands.
+ *
+ * Wire contract owned by Worker A:
+ *   POST /api/desktop/sessions/{id}/bind
+ *   body = SourceRef (tagged enum, snake_case)
+ *   response = 200 + DesktopSessionDetail (with `source_binding` populated)
+ */
+export async function bindSourceToSession(
+  sessionId: string,
+  source: SourceRef,
+): Promise<DesktopSessionDetail> {
+  // A2 integration fix: Worker A's Rust handler deserializes
+  // `BindSourceBody { source: SourceRef, reason?: Option<String> }`,
+  // NOT a bare SourceRef — sending SourceRef directly yields 422.
+  // Wrap in `{ source }` to match the canonical Rust body shape.
+  return fetchJson<DesktopSessionDetail>(
+    `/api/desktop/sessions/${sessionId}/bind`,
+    {
+      method: "POST",
+      body: JSON.stringify({ source }),
+    },
+  );
+}
+
+/**
+ * A2 sprint — clear any active source binding on the given session.
+ * After this call the Ask pipeline reverts to its default per-turn
+ * source-resolution policy (URL enrich, etc.).
+ *
+ *   DELETE /api/desktop/sessions/{id}/bind
+ *   response = 200 + DesktopSessionDetail (with `source_binding = null`)
+ */
+export async function clearSourceBinding(
+  sessionId: string,
+): Promise<DesktopSessionDetail> {
+  return fetchJson<DesktopSessionDetail>(
+    `/api/desktop/sessions/${sessionId}/bind`,
+    { method: "DELETE" },
+  );
 }
 
 export async function forwardPermissionDecision(

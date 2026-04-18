@@ -24,6 +24,7 @@
 import {
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
   type KeyboardEvent,
@@ -55,6 +56,10 @@ import {
   type SlashCommand,
 } from "./SlashCommandPalette";
 import { fetchJson } from "@/lib/desktop/transport";
+import { ResponseModeChip } from "./ResponseModeChip";
+import { SourceBindingChip } from "./SourceBindingChip";
+import { classifyContextMode, extractFirstUrl } from "./mode-classifier";
+import type { ContextMode, SessionSourceBinding } from "@/lib/tauri";
 
 /* ─── MarkItDown constants ──────────────────────────────────────── */
 
@@ -192,7 +197,16 @@ interface ProviderOption {
 }
 
 interface ComposerProps {
-  onSend: (message: string) => void | Promise<void>;
+  /**
+   * Submit handler. A1 sprint — optional second argument carries the
+   * per-turn context mode (auto-detected, possibly overridden). Legacy
+   * callers that accept only a single string argument keep working;
+   * the parameter is positional and defaults away cleanly.
+   */
+  onSend: (
+    message: string,
+    options?: { mode?: ContextMode },
+  ) => void | Promise<void>;
   onStop?: () => void;
   isBusy?: boolean;
   modelLabel?: string;
@@ -204,6 +218,21 @@ interface ComposerProps {
   onNewSession?: () => void;
   onExportMarkdown?: () => void;
   onCompact?: () => void;
+  /**
+   * Optional source-pin id (raw-entry / URL the user pinned via the
+   * side panel). Feeds the context-mode classifier. Omit when no
+   * source is pinned (default: classifier treats as no-pin).
+   */
+  selectedSourceId?: string;
+  /**
+   * A2 sprint — persistent session-level source binding (from
+   * `DesktopSessionDetail.source_binding`). When non-null, a
+   * `SourceBindingChip` renders above the URL-detect row so the user
+   * sees which source is currently pinned for the whole session.
+   */
+  binding?: SessionSourceBinding | null;
+  /** A2 sprint — clear the session source binding. */
+  onClearBinding?: () => void;
 }
 
 export function Composer({
@@ -219,6 +248,9 @@ export function Composer({
   onNewSession,
   onExportMarkdown,
   onCompact,
+  selectedSourceId,
+  binding,
+  onClearBinding,
 }: ComposerProps) {
   const permissionMode = useSettingsStore((state) => state.permissionMode);
   const setPermissionMode = useSettingsStore((state) => state.setPermissionMode);
@@ -235,6 +267,17 @@ export function Composer({
   const [isDragging, setIsDragging] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
   const [convertingFile, setConvertingFile] = useState<string | null>(null);
+
+  // A1 sprint — per-keystroke context-mode classification. `overrideMode`
+  // is set when the user clicks the ResponseModeChip to force a
+  // particular mode; null means "trust the auto-detected value".
+  const [overrideMode, setOverrideMode] = useState<ContextMode | null>(null);
+  const classification = useMemo(
+    () => classifyContextMode(value, { selectedSourceId }),
+    [value, selectedSourceId],
+  );
+  const effectiveMode: ContextMode = overrideMode ?? classification.mode;
+  const detectedUrl = useMemo(() => extractFirstUrl(value), [value]);
   const internalRef = useRef<HTMLTextAreaElement>(null);
   const textareaRef = inputRef ?? internalRef;
   const mountedRef = useRef(true);
@@ -520,9 +563,16 @@ export function Composer({
     // Raw Library still has its own explicit ingest button that calls
     // `ingestRawEntry` via `features/ingest/adapters/url.ts` — that path
     // is unchanged and intentional (user opts in to ingest a specific URL).
+
+    // A1 sprint — hand the effective mode (override ?? detected) to the
+    // upstream sender. Legacy callers that ignore the second arg stay
+    // working (JS variadic dispatch). We reset `overrideMode` after
+    // sending so the next turn is auto-classified fresh.
+    const modeToSend = overrideMode ?? classification.mode;
     resetComposer();
-    await onSend(finalMessage);
-  }, [value, attachments, isBusy, onSend, textareaRef, resetComposer]);
+    setOverrideMode(null);
+    await onSend(finalMessage, { mode: modeToSend });
+  }, [value, attachments, isBusy, onSend, resetComposer, overrideMode, classification.mode]);
 
   const handleStop = useCallback(() => {
     onStop?.();
@@ -692,6 +742,28 @@ export function Composer({
         onSelect={handleSlashSelect}
         onClose={handleSlashClose}
       />
+
+      {/* A2 — persistent session source-binding chip. Rendered above
+          the URL-detect row so the user always sees which source is
+          currently pinned for the whole session. Null binding → null. */}
+      {binding && onClearBinding && (
+        <div className="mb-1.5 flex items-center gap-2 px-1 text-[11px] text-muted-foreground">
+          <SourceBindingChip binding={binding} onClear={onClearBinding} />
+        </div>
+      )}
+
+      {/* A1 — URL detection chip. Inline div (no new component). Shown
+          whenever the draft contains a URL so the user has explicit
+          feedback that the backend will try to enrich it. Empty string
+          deliberately makes this render nothing (not a zero-height div). */}
+      {detectedUrl && (
+        <div className="mb-1.5 flex items-center gap-1 px-1 text-[11px] text-muted-foreground">
+          <span aria-hidden="true">🔗</span>
+          <span className="truncate" title={detectedUrl}>
+            识别：{detectedUrl.length > 60 ? `${detectedUrl.slice(0, 60)}…` : detectedUrl}
+          </span>
+        </div>
+      )}
 
       {/* Input area — CodePilot style: textarea with inline tools */}
       <div
@@ -868,6 +940,14 @@ export function Composer({
             </div>
           )}
         </div>
+
+        {/* A1 — context-mode chip (auto-detected, user-overridable). */}
+        <ResponseModeChip
+          mode={effectiveMode}
+          confidence={classification.confidence}
+          onChange={(next) => setOverrideMode(next === classification.mode ? null : next)}
+        />
+
 
         {/* Model selector — in bottom bar so no overflow clip */}
         <ModelSelector

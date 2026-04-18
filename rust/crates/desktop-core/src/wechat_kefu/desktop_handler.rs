@@ -112,7 +112,9 @@ impl KefuDesktopHandler {
 
         if let Err(e) = self
             .state
-            .append_user_message(session_id, user_text.to_string())
+            // A1: WeChat kefu bridge uses the default FollowUp mode;
+            // pass `None` to preserve legacy behaviour.
+            .append_user_message(session_id, user_text.to_string(), None)
             .await
         {
             match e {

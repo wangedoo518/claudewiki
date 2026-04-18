@@ -7,15 +7,24 @@
  */
 
 import { useQuery } from "@tanstack/react-query";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { Loader2, Network } from "lucide-react";
 import { getWikiGraph, listRawEntries } from "@/features/ingest/persist";
+import { EmptyState } from "@/components/ui/empty-state";
 import { ForceGraph } from "./ForceGraph";
-import { useSettingsStore } from "@/state/settings-store";
-import { useWikiTabStore } from "@/state/wiki-tab-store";
+import { navigateToWikiPage } from "@/features/wiki/navigate-helpers";
 
 export function GraphPage() {
   const navigate = useNavigate();
+  // G1 sprint — focus mode. When the user lands here via a deep link
+  // like `/graph?focus=<slug>` (emitted from the Wiki article page's
+  // "open in graph" action, or any other surface), seed the
+  // ForceGraph's internal search query with that slug so the node is
+  // visually highlighted and its neighbors dimmed on first paint.
+  // Falling back to the built-in search pipeline avoids a rewrite of
+  // the physics/camera code just to add a focus entry point.
+  const [searchParams] = useSearchParams();
+  const focusSlug = searchParams.get("focus") ?? undefined;
 
   const rawQuery = useQuery({
     queryKey: ["wiki", "raw", "list"] as const,
@@ -55,22 +64,25 @@ export function GraphPage() {
         ) : rawQuery.error ? (
           <GraphError message={(rawQuery.error as Error).message} />
         ) : !graphData || (entries.length === 0 && graphData.nodes.length === 0) ? (
-          <GraphEmpty />
+          <GraphEmpty
+            nodeCount={graphData?.nodes.length ?? 0}
+            edgeCount={graphData?.edges.length ?? 0}
+            onOpenInbox={() => navigate("/inbox")}
+            onOpenRaw={() => navigate("/raw")}
+          />
         ) : (
           <ForceGraph
             graphData={graphData}
             rawEntries={entries}
+            initialSearchQuery={focusSlug}
             onClickConcept={(slug) => {
-              // v2: open in Wiki Tab instead of navigating.
-              useSettingsStore.getState().setAppMode("wiki");
-              useWikiTabStore.getState().openTab({
-                id: slug,
-                kind: "article",
-                slug,
-                title: slug,
-                closable: true,
-              });
-              navigate("/wiki");
+              // G1 sprint — route the Graph → Wiki handoff through
+              // the shared `navigateToWikiPage` helper so the jump
+              // carries the "wiki-graph" context discriminator for
+              // future per-origin telemetry. Semantically identical
+              // to the pre-G1 inline setAppMode + openTab + navigate
+              // sequence that used to live here.
+              navigateToWikiPage(slug, slug, "wiki-graph");
             }}
             onClickRaw={() => navigate("/raw")}
           />
@@ -80,15 +92,50 @@ export function GraphPage() {
   );
 }
 
-function GraphEmpty() {
+function GraphEmpty({
+  nodeCount,
+  edgeCount,
+  onOpenInbox,
+  onOpenRaw,
+}: {
+  nodeCount: number;
+  edgeCount: number;
+  onOpenInbox: () => void;
+  onOpenRaw: () => void;
+}) {
+  // R1 sprint — replace the single-line "认知网络还是空的" with a
+  // proper EmptyState that surfaces the current node/edge counts and
+  // teaches users the two mechanisms by which edges appear (Wiki-to-
+  // Wiki markdown links + shared source_raw_id). CTAs point at the
+  // two common places to create new material.
   return (
-    <div className="flex h-full items-center justify-center p-6 text-center">
-      <div className="max-w-sm">
-        <Network className="mx-auto mb-2 size-8 opacity-30" />
-        <p className="text-body text-muted-foreground">
-          你的认知网络还是空的。入库一条素材，第一个节点就会出现。
-        </p>
-      </div>
+    <div className="flex h-full items-center justify-center">
+      <EmptyState
+        size="full"
+        icon={Network}
+        title="你的知识图谱还很新"
+        description={
+          <>
+            当前: {nodeCount} 个节点 · {edgeCount} 条连线
+            <br />
+            <br />
+            关系会在以下情况下自动建立:
+            <br />
+            · Wiki 页面间有{" "}
+            <code className="rounded bg-[var(--color-muted)] px-1 py-0.5 text-[11px]">
+              [slug](concepts/xxx.md)
+            </code>{" "}
+            链接
+            <br />
+            · 两个 Wiki 页共享同一条素材 (source_raw_id)
+            <br />
+            <br />
+            继续在 Ask 聊天、或入库素材，关系会自动生长。
+          </>
+        }
+        primaryAction={{ label: "打开 Inbox", onClick: onOpenInbox }}
+        secondaryAction={{ label: "打开素材库", onClick: onOpenRaw }}
+      />
     </div>
   );
 }

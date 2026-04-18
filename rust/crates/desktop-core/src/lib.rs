@@ -38,6 +38,12 @@ use tokio_util::sync::CancellationToken;
 use tools::GlobalToolRegistry;
 
 pub mod agentic_loop;
+// A1 — Ask context engine. Owns `ContextMode`, `ContextBasis`,
+// history trimming, and boundary-marker / enrich-prefix rendering.
+// Centralises the per-turn context packaging that used to be implicit
+// in `build_api_request` + `maybe_enrich_url`. See the module docstring
+// for the mode semantics the frontend switches between.
+pub mod ask_context;
 pub mod attachments;
 mod codex_auth;
 // Optional private-cloud account pool. OSS builds keep this feature
@@ -73,6 +79,8 @@ pub mod wechat_kefu;
 // straight into propose_for_raw_entry.
 pub mod wiki_maintainer_adapter;
 
+pub use ask_context::binding::{SessionSourceBinding, SourceRef};
+pub use ask_context::{ContextBasis, ContextMode};
 pub use codex_auth::{
     DesktopCodexAuthOverview, DesktopCodexAuthSource, DesktopCodexInstallationRecord,
     DesktopCodexLoginSessionSnapshot, DesktopCodexLoginSessionStatus, DesktopCodexProfileSummary,
@@ -295,6 +303,24 @@ pub struct DesktopSessionDetail {
     /// persisted to disk still deserialize cleanly.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub enrich_status: Option<EnrichStatus>,
+    /// A1 side-channel: carries how the backend packaged the user's
+    /// most recent turn for the LLM (mode, history-kept count,
+    /// boundary-marker-injected flag). Only populated by
+    /// `append_user_message` on the turn that triggered it; every
+    /// other detail builder leaves it `None`. Frontend uses it to
+    /// render the `ContextBasisLabel` chip explaining which mode
+    /// actually ran.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_basis: Option<ContextBasis>,
+    /// A2: session-level pinned source. Echoed from
+    /// `SessionMetadata.source_binding` on every `record.detail()`
+    /// call — including list/get/SSE-snapshot paths — so the UI can
+    /// render the binding chip without subscribing to extra events.
+    /// `None` when no source is currently bound to the session.
+    /// Legacy JSON without this field decodes to `None` via
+    /// `#[serde(default)]`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_binding: Option<crate::ask_context::binding::SessionSourceBinding>,
 }
 
 /// Side-channel status reported by `DesktopState::append_user_message`
@@ -962,6 +988,12 @@ pub struct CreateDesktopSessionRequest {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AppendDesktopMessageRequest {
     pub message: String,
+    /// A1: opt-in context mode for this turn. `None` (or an absent
+    /// field in the HTTP body) falls back to `ContextMode::FollowUp`,
+    /// preserving the pre-A1 behaviour. Frontend sends one of
+    /// `"follow_up" | "source_first" | "combine"`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<ContextMode>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1068,6 +1100,36 @@ struct SessionMetadata {
     lifecycle_status: DesktopLifecycleStatus,
     #[serde(default = "default_flagged")]
     flagged: bool,
+    /// A1.1: persistent record of the most-recent turn's ContextBasis,
+    /// stamped by `append_user_message` when a user turn is pushed.
+    /// Replaces the pre-A1.1 "transient snapshot side-channel" design
+    /// so the ContextBasisLabel can render reliably on short turns,
+    /// after reload, after SSE reconnect, etc.
+    ///
+    /// Per-session, not per-message — we keep only the last turn's
+    /// basis so scrollback shows the latest decision. The `ContextBasis`
+    /// type already has `#[derive(Serialize, Deserialize)]`; the outer
+    /// `#[serde(default, skip_serializing_if)]` guards legacy session
+    /// JSON (pre-A1.1) which doesn't have this field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    last_context_basis: Option<crate::ask_context::ContextBasis>,
+    /// A2: session-level pinned source. Persists across turns until
+    /// explicitly cleared or overwritten by another `bind_source`
+    /// call. When present it overrides the A1 mode classifier — the
+    /// bound source becomes the highest-priority context slice in
+    /// the system prompt.
+    ///
+    /// Cleared by:
+    ///   * `DesktopState::clear_source_binding(session_id)` — user-
+    ///     triggered unbind.
+    ///   * `DesktopState::bind_source(session_id, new_source)` —
+    ///     implicit overwrite (binding a new ref replaces the prior).
+    ///
+    /// `#[serde(default, skip_serializing_if = "Option::is_none")]`
+    /// guards legacy session JSON (pre-A2) which doesn't have this
+    /// field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    source_binding: Option<crate::ask_context::binding::SessionSourceBinding>,
 }
 
 #[derive(Debug, Default)]
@@ -2484,6 +2546,82 @@ impl DesktopState {
         Ok(detail)
     }
 
+    /// A2: bind a session to an explicit internal source (raw entry,
+    /// wiki page, or inbox item). Persists until explicitly cleared
+    /// or overwritten by another bind call.
+    ///
+    /// Every subsequent `append_user_message` on this session will
+    /// resolve the binding's body, prepend it to the system prompt,
+    /// and force a SourceFirst-style framing (see `append_user_message`
+    /// for the integration details). The binding does NOT auto-clear
+    /// on turn completion — the user owns the lifecycle.
+    ///
+    /// Errors
+    /// ──────
+    ///   * `SessionNotFound` — no session with `session_id` in store.
+    ///
+    /// Broadcasts a `DesktopSessionEvent::Snapshot` so every live SSE
+    /// subscriber reconciles the new binding without polling.
+    pub async fn bind_source(
+        &self,
+        session_id: &str,
+        source: crate::ask_context::binding::SourceRef,
+        reason: Option<String>,
+    ) -> Result<DesktopSessionDetail, DesktopStateError> {
+        let mut store = self.store.write().await;
+        let record = store
+            .sessions
+            .get_mut(session_id)
+            .ok_or_else(|| DesktopStateError::SessionNotFound(session_id.to_string()))?;
+        let binding = crate::ask_context::binding::SessionSourceBinding::new(source, reason);
+        record.metadata.source_binding = Some(binding);
+        record.metadata.updated_at = unix_timestamp_millis();
+        let detail = record.detail();
+        let sender = record.events.clone();
+        drop(store);
+        self.persist().await;
+        let _ = sender.send(DesktopSessionEvent::Snapshot {
+            session: detail.clone(),
+        });
+        Ok(detail)
+    }
+
+    /// A2: drop a session's source binding. After this call the
+    /// session reverts to pure A1 `ContextMode` framing — the next
+    /// turn is packaged using whatever mode the frontend supplies
+    /// (or `FollowUp` by default) without a prepended bound source.
+    ///
+    /// No-op semantics
+    /// ───────────────
+    /// Clearing an already-unbound session is explicitly allowed — we
+    /// still write the detail + broadcast so the UI can confirm state.
+    /// This matches the "idempotent write" pattern used by
+    /// `set_session_flagged` / `set_session_lifecycle_status`.
+    ///
+    /// Errors
+    /// ──────
+    ///   * `SessionNotFound` — no session with `session_id` in store.
+    pub async fn clear_source_binding(
+        &self,
+        session_id: &str,
+    ) -> Result<DesktopSessionDetail, DesktopStateError> {
+        let mut store = self.store.write().await;
+        let record = store
+            .sessions
+            .get_mut(session_id)
+            .ok_or_else(|| DesktopStateError::SessionNotFound(session_id.to_string()))?;
+        record.metadata.source_binding = None;
+        record.metadata.updated_at = unix_timestamp_millis();
+        let detail = record.detail();
+        let sender = record.events.clone();
+        drop(store);
+        self.persist().await;
+        let _ = sender.send(DesktopSessionEvent::Snapshot {
+            session: detail.clone(),
+        });
+        Ok(detail)
+    }
+
     pub async fn resume_session(
         &self,
         session_id: &str,
@@ -2915,6 +3053,10 @@ impl DesktopState {
             turn_state: DesktopTurnState::Idle,
             lifecycle_status: DesktopLifecycleStatus::Todo,
             flagged: false,
+            last_context_basis: None,
+            // A2: fresh sessions start with no binding; populated by
+            // a later `bind_source` call.
+            source_binding: None,
         });
 
         let detail = record.detail();
@@ -2986,6 +3128,15 @@ impl DesktopState {
             turn_state: DesktopTurnState::Idle,
             lifecycle_status: DesktopLifecycleStatus::Todo,
             flagged: false,
+            // A1.1: fresh fork starts with no basis; it gets stamped
+            // on the next user turn. (Inheriting parent's basis would
+            // be confusing — fork is effectively a new conversation.)
+            last_context_basis: None,
+            // A2: fork does NOT inherit the parent's source_binding.
+            // Forks frequently pivot topic; carrying a binding across
+            // would surprise the user. The forked session starts
+            // fresh and can be re-bound explicitly if desired.
+            source_binding: None,
         });
 
         let mut store_record = record;
@@ -3047,6 +3198,88 @@ impl DesktopState {
         }
     }
 
+    /// A2: resolve a `SourceRef` to a (source, body-string) pair,
+    /// ready for `format_bound_source`. The body is read from
+    /// `wiki_store`:
+    ///
+    ///   * `Raw { id }` → `wiki_store::read_raw_entry(paths, id)` →
+    ///     body string.
+    ///   * `Wiki { slug }` → `wiki_store::read_wiki_page(paths, slug)`
+    ///     → body string.
+    ///   * `Inbox { id }` → scan `list_inbox_entries(paths)` for the
+    ///     matching `id`, then resolve `source_raw_id` via
+    ///     `read_raw_entry`. Inbox items are pointers at raws, not
+    ///     bodies themselves.
+    ///
+    /// Returns `None` on any lookup failure (entry deleted, slug
+    /// missing, inbox id not found, `source_raw_id` stale). The
+    /// caller degrades gracefully — the turn still runs, just without
+    /// the bound-source prepend.
+    ///
+    /// Token budgeting + truncation is applied here so every caller
+    /// gets a size-clamped body and doesn't have to call
+    /// `truncate_source_body` manually.
+    fn resolve_bound_source_body(
+        source: &crate::ask_context::binding::SourceRef,
+    ) -> Option<String> {
+        use crate::ask_context::binding::{
+            token_budget_for_source, truncate_source_body, SourceRef,
+        };
+
+        // Resolve `WikiPaths` once — matches the pattern
+        // `url_ingest::resolve_wiki_paths` uses elsewhere.
+        let root = wiki_store::default_root();
+        if let Err(e) = wiki_store::init_wiki(&root) {
+            eprintln!("[bind_source] init_wiki failed: {e}");
+            return None;
+        }
+        let paths = wiki_store::WikiPaths::resolve(&root);
+
+        let body = match source {
+            SourceRef::Raw { id, .. } => match wiki_store::read_raw_entry(&paths, *id) {
+                Ok((_entry, body)) => body,
+                Err(e) => {
+                    eprintln!("[bind_source] read_raw_entry({id}) failed: {e}");
+                    return None;
+                }
+            },
+            SourceRef::Wiki { slug, .. } => match wiki_store::read_wiki_page(&paths, slug) {
+                Ok((_summary, body)) => body,
+                Err(e) => {
+                    eprintln!("[bind_source] read_wiki_page({slug}) failed: {e}");
+                    return None;
+                }
+            },
+            SourceRef::Inbox { id, .. } => {
+                // Inbox items point at raws via `source_raw_id`. Scan
+                // the full list (no `read_inbox_by_id` helper exists
+                // in wiki_store yet) — cheap enough since inboxes stay
+                // small in practice.
+                let inbox_entries = match wiki_store::list_inbox_entries(&paths) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        eprintln!("[bind_source] list_inbox_entries failed: {e}");
+                        return None;
+                    }
+                };
+                let entry = inbox_entries.iter().find(|e| e.id == *id)?;
+                let raw_id = entry.source_raw_id?;
+                match wiki_store::read_raw_entry(&paths, raw_id) {
+                    Ok((_entry, body)) => body,
+                    Err(e) => {
+                        eprintln!(
+                            "[bind_source] inbox#{id} → raw#{raw_id} read failed: {e}"
+                        );
+                        return None;
+                    }
+                }
+            }
+        };
+
+        let budget = token_budget_for_source(source);
+        Some(truncate_source_body(&body, budget))
+    }
+
     /// If the message contains a URL, try to fetch its content and
     /// return an enriched message with the article text prepended.
     ///
@@ -3079,8 +3312,15 @@ impl DesktopState {
     /// this helper — it returns the plan so `append_user_message` can
     /// spawn with access to the `DesktopState` + session event sender
     /// and broadcast a `Snapshot` once the outcome lands.
+    ///
+    /// A1: accepts a `mode` so `SourceFirst` / `Combine` turns get
+    /// the new "新素材：..." prefix instead of the legacy `FollowUp`
+    /// framing. The prefix change lives in
+    /// `ask_context::format_enriched_source` so this function just
+    /// delegates.
     async fn maybe_enrich_url(
         message: String,
+        mode: crate::ask_context::ContextMode,
     ) -> (String, Option<EnrichStatus>, Option<BgIngestPlan>) {
         // Quick check: does the message contain a URL?
         let url = match message.split_whitespace()
@@ -3112,12 +3352,15 @@ impl DesktopState {
             ..
         } = simple_outcome
         {
-            let enriched = format!(
-                "请基于以下文章内容回答我的问题。\n\n\
-                 标题：{}\n\n{}\n\n---\n用户原始消息：{}",
+            // A1: delegate the prefix/wrapper to ask_context so
+            // SourceFirst / Combine get the new "新素材" framing.
+            // FollowUp continues to emit bit-for-bit the prior
+            // "请基于以下文章内容..." wording.
+            let enriched = crate::ask_context::format_enriched_source(
+                mode,
                 title,
                 Self::safe_truncate(body, 6000),
-                message
+                &message,
             );
             // M4: when the ingest wrote a new raw because content
             // drifted on an existing URL (RefreshedContent), surface
@@ -3156,15 +3399,17 @@ impl DesktopState {
             // Load the prior raw body so the LLM context stays
             // identical to a fresh ingest — otherwise the dedupe
             // path silently regresses the conversation quality.
+            // A1: same `format_enriched_source` delegation as the
+            // fresh-ingest arm; keeps the FollowUp / SourceFirst /
+            // Combine framings consistent across both paths.
             let (enriched, title_for_status) =
                 match crate::url_ingest::load_reused_body(entry.id) {
                     Some((reused_title, reused_body)) => (
-                        format!(
-                            "请基于以下文章内容回答我的问题。\n\n\
-                             标题：{}\n\n{}\n\n---\n用户原始消息：{}",
-                            reused_title,
+                        crate::ask_context::format_enriched_source(
+                            mode,
+                            &reused_title,
                             Self::safe_truncate(&reused_body, 6000),
-                            message
+                            &message,
                         ),
                         reused_title,
                     ),
@@ -3207,12 +3452,12 @@ impl DesktopState {
                     decision,
                     ..
                 } => {
-                    let enriched = format!(
-                        "请基于以下文章内容回答我的问题。\n\n\
-                         标题：{}\n\n{}\n\n---\n用户原始消息：{}",
-                        title,
+                    // A1: same delegation as the simple-fetch arm.
+                    let enriched = crate::ask_context::format_enriched_source(
+                        mode,
+                        &title,
                         Self::safe_truncate(&body, 6000),
-                        message
+                        &message,
                     );
                     // M4 parity with the simple-fetch arm — mark
                     // RefreshedContent as a Reused (with a
@@ -3244,15 +3489,15 @@ impl DesktopState {
                     // context, but tag the status as Reused so the
                     // UI shows "已在素材库 #NNNNN" instead of a fresh
                     // "saved" banner.
+                    // A1: same delegation as the simple-fetch dedupe arm.
                     let (enriched, title_for_status) =
                         match crate::url_ingest::load_reused_body(entry.id) {
                             Some((reused_title, reused_body)) => (
-                                format!(
-                                    "请基于以下文章内容回答我的问题。\n\n\
-                                     标题：{}\n\n{}\n\n---\n用户原始消息：{}",
-                                    reused_title,
+                                crate::ask_context::format_enriched_source(
+                                    mode,
+                                    &reused_title,
                                     Self::safe_truncate(&reused_body, 6000),
-                                    message
+                                    &message,
                                 ),
                                 reused_title,
                             ),
@@ -3346,15 +3591,119 @@ impl DesktopState {
         &self,
         session_id: &str,
         message: String,
+        mode: Option<crate::ask_context::ContextMode>,
     ) -> Result<DesktopSessionDetail, DesktopStateError> {
+        // A1: resolve the effective context mode. `None` (old HTTP
+        // bodies, WeChat bridges, scheduled tasks, dispatch items)
+        // maps to FollowUp so legacy behaviour is preserved.
+        let user_mode = mode.unwrap_or_default();
+
+        // A2: peek at the session binding (if any) before we start
+        // URL enrichment. Resolution fails gracefully — on any
+        // wiki_store lookup error we fall back to the pre-A2 path
+        // (no bound-source prepend, no mode override) so an orphaned
+        // binding never blocks the LLM call. The peek is a separate
+        // short-lived read lock so it doesn't race with the main
+        // write lock below; if a parallel `bind_source` / `clear`
+        // lands between the peek and the write, at worst we use a
+        // stale binding — which is bounded by the user's perception
+        // (they just clicked Send, the binding at Send-time is what
+        // the turn ran with).
+        let session_binding: Option<crate::ask_context::binding::SessionSourceBinding> = {
+            let store = self.store.read().await;
+            store
+                .sessions
+                .get(session_id)
+                .and_then(|record| record.metadata.source_binding.clone())
+        };
+        // Resolve outside the read lock — wiki_store I/O is
+        // synchronous but potentially slow (filesystem hit). If it
+        // fails we log + degrade to pre-A2 behaviour.
+        let bound_body: Option<(
+            crate::ask_context::binding::SourceRef,
+            String,
+        )> = session_binding.as_ref().and_then(|b| {
+            Self::resolve_bound_source_body(&b.source)
+                .map(|body| (b.source.clone(), body))
+        });
+        if session_binding.is_some() && bound_body.is_none() {
+            eprintln!(
+                "[bind_source] session {session_id} has binding but resolve failed; degrading to non-bound turn"
+            );
+        }
+        // A2: when a binding resolves successfully, force SourceFirst
+        // framing unless the user explicitly picked `Combine` (which
+        // keeps history + asks the LLM to dual-source). `FollowUp`
+        // with a binding is upgraded to `SourceFirst` — the binding
+        // is the whole point of this turn.
+        let effective_mode = if bound_body.is_some() && user_mode != crate::ask_context::ContextMode::Combine
+        {
+            crate::ask_context::ContextMode::SourceFirst
+        } else {
+            user_mode
+        };
+
         // URL interception: fetch content for LLM context.
         // CRITICAL: only the original URL goes into session history.
         // Enriched content is injected as a temporary system message for
         // the current turn only — it does NOT persist in the session,
         // preventing context pollution and LLM hallucination.
         let (enriched, enrich_status, bg_plan) =
-            Self::maybe_enrich_url(message.clone()).await;
+            Self::maybe_enrich_url(message.clone(), effective_mode).await;
         let has_enrichment = enriched != message;
+
+        // A3 — Fresh-Link auto-binding.
+        //
+        // When the user's message contains a URL AND enrichment
+        // succeeded AND no persistent `SessionSourceBinding` is
+        // active (A2 takes precedence), we auto-promote the fresh
+        // raw entry to a turn-scoped `bound_source`. This gives
+        // the UI a binding chip for "turn-local" sources and lets
+        // the rest of the pipeline treat the enriched content like
+        // an A2-bound source (force SourceFirst unless Combine).
+        //
+        // Intentionally NOT done:
+        //  * No write into `SessionMetadata.source_binding` — A3 is
+        //    turn-local. If the next turn has no new URL, the
+        //    auto-bind naturally expires (enrich_status is None).
+        //  * No re-injection of the raw body into the system prompt
+        //    — A1's `maybe_enrich_url` already prepended the enriched
+        //    content above. Calling `format_bound_source` again
+        //    would duplicate the body.
+        //  * No `resolve_bound_source_body` hit on wiki_store — same
+        //    reason: the enriched string is already authoritative
+        //    for this turn.
+        //
+        // The flag flows into `ContextBasis.auto_bound = true` so
+        // the frontend chip can render "自动绑定" rather than the
+        // "绑定来源" label used by A2.
+        let auto_bound_source: Option<crate::ask_context::binding::SourceRef> =
+            if bound_body.is_none() {
+                match enrich_status.as_ref() {
+                    Some(EnrichStatus::Success { title, raw_id })
+                    | Some(EnrichStatus::Reused {
+                        title, raw_id, ..
+                    }) => Some(crate::ask_context::binding::SourceRef::Raw {
+                        id: *raw_id,
+                        title: title.clone(),
+                    }),
+                    _ => None,
+                }
+            } else {
+                None
+            };
+        // A3: when auto-bind fires, force SourceFirst just like A2
+        // session bindings do — unless the user picked Combine. This
+        // re-trims history on top of whatever `user_mode` asked for,
+        // so a fresh-URL turn always sees the reset boundary marker.
+        let effective_mode = if auto_bound_source.is_some()
+            && effective_mode != crate::ask_context::ContextMode::Combine
+        {
+            crate::ask_context::ContextMode::SourceFirst
+        } else {
+            effective_mode
+        };
+
         let user_message = ConversationMessage::user_text(message.clone());
         let session_id = session_id.to_string();
 
@@ -3392,6 +3741,68 @@ impl DesktopState {
             }
             record.session.messages.push(user_message.clone());
 
+            // A1.1: compute + persist the turn's ContextBasis onto
+            // SessionMetadata BEFORE building `detail`, so the detail
+            // we return (and the Snapshot we broadcast right after)
+            // already carries the stable field. Persisted in
+            // SessionMetadata.last_context_basis so subsequent
+            // `record.detail()` calls (idle refresh, GET after reload,
+            // SSE reconnect) still see it until the NEXT user turn
+            // overwrites it. Fixes A1's short-turn subscription race
+            // where ContextBasisLabel failed to render when running→
+            // idle happened faster than the SSE subscribe.
+            //
+            // A2: `source_bytes` is set to the bound-source body size
+            // when a binding resolved, so the frontend chip shows the
+            // combined token footprint. If both URL enrichment AND a
+            // binding ran, the binding wins (it's the explicit pin).
+            let source_bytes: Option<usize> = if let Some((_, body)) = &bound_body {
+                Some(body.len())
+            } else if has_enrichment {
+                Some(enriched.len())
+            } else {
+                None
+            };
+            let history_turns_included =
+                crate::ask_context::history_turns_after_packaging(
+                    effective_mode,
+                    &record.session.messages,
+                );
+            let mut basis = crate::ask_context::ContextBasis::new(
+                effective_mode,
+                history_turns_included,
+                source_bytes,
+            );
+            // A2: attach the bound source to the basis so the UI chip
+            // can render without subscribing to extra events. A2 path
+            // (explicit SessionSourceBinding) wins over A3 auto-bind
+            // — if both exist, the explicit pin is the authoritative
+            // source and the auto_bound flag stays false.
+            //
+            // A4: on both the A2 and A3 paths, also stamp
+            // `grounding_applied = true` so the frontend can render a
+            // "✓ Grounded" badge. The A2 branch gets the rules
+            // through `format_bound_source` (agentic/fallback prompt
+            // assembly below); the A3 branch gets them through
+            // `grounding_instruction_block()` tacked on at the end
+            // of `system_prompt_text`. Either way the LLM saw the
+            // Grounded Mode guardrails, so the flag is true.
+            if let Some((source, _)) = &bound_body {
+                basis = basis
+                    .with_bound_source(Some(source.clone()))
+                    .with_grounding_applied(true);
+            } else if let Some(source) = &auto_bound_source {
+                // A3: no explicit binding, but enrichment produced a
+                // raw → auto-bind for this turn. Mark the basis so
+                // the UI can render the "自动绑定" chip and so
+                // downstream consumers know the source is turn-local.
+                basis = basis
+                    .with_bound_source(Some(source.clone()))
+                    .with_auto_bound(true)
+                    .with_grounding_applied(true);
+            }
+            record.metadata.last_context_basis = Some(basis);
+
             (
                 record.detail(),
                 record.events.clone(),
@@ -3407,6 +3818,11 @@ impl DesktopState {
         // subsequent refresh calls since every other `detail()`
         // builder defaults `enrich_status` back to `None`.
         detail.enrich_status = enrich_status;
+
+        // A1.1: `detail.context_basis` is now populated inside
+        // `record.detail()` from the persistent
+        // `SessionMetadata.last_context_basis` we stamped above.
+        // No transient-side-channel assignment needed here.
 
         self.persist().await;
         let _ = sender.send(DesktopSessionEvent::Snapshot {
@@ -3605,13 +4021,64 @@ impl DesktopState {
                 // the LLM saw only the raw URL. Fix: append enriched content
                 // to the system prompt string here so both branches behave
                 // identically.
+                //
+                // A2: if a session-level binding resolved, prepend the
+                // bound source BEFORE the boundary marker. The LLM reads
+                // the binding as "the canonical source for this session",
+                // the marker as "and this turn is a fresh task", then
+                // finally any URL enrichment as "oh and there's also
+                // this fresh URL content". Ordering matters — the
+                // binding is top-priority.
+                if let Some((source, body)) = &bound_body {
+                    eprintln!(
+                        "[bind_source] injecting bound {} ({}) into system_prompt (agentic)",
+                        source.display_kind(),
+                        source.binding_key()
+                    );
+                    system_prompt_text.push_str(
+                        &crate::ask_context::binding::format_bound_source(source, body),
+                    );
+                }
+                //
+                // A1: insert the mode-specific boundary marker BEFORE the
+                // enriched content. For SourceFirst this is the "新任务开始"
+                // reset instruction; for Combine it's the "结合历史与新素材"
+                // dual-sourcing instruction. FollowUp emits no marker, so
+                // the text is appended verbatim as before.
+                if let Some(marker) =
+                    crate::ask_context::boundary_marker_for(effective_mode)
+                {
+                    system_prompt_text.push_str(marker);
+                }
                 if has_enrichment {
                     eprintln!(
-                        "[live_turn] injecting url_context: {} chars into system_prompt (agentic)",
-                        enriched.len()
+                        "[live_turn] injecting url_context: {} chars into system_prompt (agentic, mode={:?})",
+                        enriched.len(),
+                        effective_mode
                     );
                     system_prompt_text.push_str("\n\n");
                     system_prompt_text.push_str(&enriched);
+                }
+
+                // A4 — Grounded Mode instruction block for the A3 path.
+                //
+                // A2 (explicit session binding): `format_bound_source`
+                // already appended the rules inline with the body, so
+                // we skip the tacking-on here to avoid duplicating the
+                // instruction list.
+                //
+                // A3 (auto-bind from URL enrich): the enriched body was
+                // pushed via `maybe_enrich_url` / `format_enriched_source`
+                // above, which does NOT carry Grounded Mode rules. Append
+                // the standalone instruction block so the LLM operates
+                // under the same guardrails A2 gets. The block lands
+                // at the very end of the system prompt — after the
+                // enriched content — so the "上方" phrasing in the
+                // rules still correctly points at the material the
+                // LLM just read.
+                if bound_body.is_none() && auto_bound_source.is_some() {
+                    system_prompt_text
+                        .push_str(crate::ask_context::binding::grounding_instruction_block());
                 }
 
                 // Load runtime config ONCE and extract both permission mode
@@ -3719,6 +4186,11 @@ impl DesktopState {
                     http_client: self.http_client.clone(),
                     mcp_manager: Arc::clone(&self.mcp_manager),
                     mcp_tools: self.mcp_tools.read().await.clone(),
+                    // A1: tell the agentic loop how to package history
+                    // for this turn. `SourceFirst` truncates to the last
+                    // two messages inside `build_api_request`; `FollowUp`
+                    // and `Combine` pass the full array.
+                    context_mode: effective_mode,
                 };
 
                 let mut session_for_loop = session;
@@ -3790,6 +4262,67 @@ impl DesktopState {
             Err(_) => {
                 // No managed auth credentials available — fall back to the old
                 // synchronous turn executor (no local tool execution).
+                //
+                // A1 limitation: this fallback path hands off to the
+                // vendored `execute_turn`, which builds its own LLM
+                // request from the full `session.messages`. We can't
+                // trim history here without touching the vendored
+                // crate, so `SourceFirst` degrades to FollowUp for
+                // the purposes of history packaging on this path.
+                // What we *can* do is prepend the mode-specific
+                // boundary marker to `url_context` so at least the
+                // system-prompt instruction propagates.
+                let marker_for_fallback =
+                    crate::ask_context::boundary_marker_for(effective_mode);
+                // A2: prepend the bound source (if resolved) to the
+                // fallback url_context so the vendored turn executor
+                // sees it too. Ordering matches the agentic path:
+                // binding → marker → enrichment.
+                let bound_prefix: Option<String> = bound_body
+                    .as_ref()
+                    .map(|(s, b)| crate::ask_context::binding::format_bound_source(s, b));
+                let fallback_url_context = match (&bound_prefix, has_enrichment) {
+                    (Some(bind), true) => Some(match marker_for_fallback {
+                        Some(m) => format!("{bind}{m}\n\n{enriched}"),
+                        None => format!("{bind}{enriched}"),
+                    }),
+                    (Some(bind), false) => Some(match marker_for_fallback {
+                        Some(m) => format!("{bind}{m}"),
+                        None => bind.clone(),
+                    }),
+                    (None, true) => Some(match marker_for_fallback {
+                        Some(m) => format!("{m}\n\n{enriched}"),
+                        None => enriched.clone(),
+                    }),
+                    (None, false) => {
+                        // No enrichment and no binding: if we still
+                        // have a marker (e.g. SourceFirst without a
+                        // URL), surface it as a standalone url_context
+                        // block so it shapes the LLM's answer.
+                        marker_for_fallback.map(std::string::ToString::to_string)
+                    }
+                };
+
+                // A4 — append the Grounded Mode instruction block to
+                // the fallback's url_context when the turn has an A3
+                // auto-bind (enrichment produced a raw, no A2 binding
+                // is pinned). The A2 path's `bound_prefix` already
+                // carries the rules inline via `format_bound_source`,
+                // so we skip it to avoid duplication. For the vendored
+                // turn executor, `url_context` is the sole carrier of
+                // system-prompt-adjacent framing — without this append
+                // the fallback path would drop Grounded Mode silently.
+                let fallback_url_context = if bound_body.is_none()
+                    && auto_bound_source.is_some()
+                {
+                    let rules = crate::ask_context::binding::grounding_instruction_block();
+                    Some(match fallback_url_context {
+                        Some(ctx) => format!("{ctx}{rules}"),
+                        None => rules.to_string(),
+                    })
+                } else {
+                    fallback_url_context
+                };
                 tokio::spawn(async move {
                     // Pass original message to turn executor (not enriched).
                     // Enriched content travels inside the request struct so
@@ -3803,11 +4336,7 @@ impl DesktopState {
                             DesktopTurnRequest {
                                 message: message.clone(),
                                 project_path,
-                                url_context: if has_enrichment {
-                                    Some(enriched.clone())
-                                } else {
-                                    None
-                                },
+                                url_context: fallback_url_context,
                             },
                             turn_executor,
                         )
@@ -4020,8 +4549,11 @@ impl DesktopState {
     async fn execute_scheduled_task_run(&self, task: ScheduledTaskMetadata) {
         let started_at = unix_timestamp_millis();
         let outcome = if let Some(session_id) = &task.target_session_id {
+            // A1: scheduled tasks run on the FollowUp default (no
+            // per-task mode selector today). Passing `None` keeps
+            // the legacy behaviour unchanged.
             match self
-                .append_user_message(session_id, task.prompt.clone())
+                .append_user_message(session_id, task.prompt.clone(), None)
                 .await
             {
                 Ok(session) => ScheduledTaskRunOutcome::success(
@@ -4040,7 +4572,7 @@ impl DesktopState {
                 .await;
 
             match self
-                .append_user_message(&session.id, task.prompt.clone())
+                .append_user_message(&session.id, task.prompt.clone(), None)
                 .await
             {
                 Ok(session) => ScheduledTaskRunOutcome::success(
@@ -4087,7 +4619,7 @@ impl DesktopState {
             }
         };
 
-        self.append_user_message(&target_session_id, item.body.clone())
+        self.append_user_message(&target_session_id, item.body.clone(), None)
             .await?;
         Ok(target_session_id)
     }
@@ -4268,6 +4800,19 @@ impl DesktopSessionRecord {
             // `append_user_message`); the default builder leaves it
             // `None` and only that function populates it.
             enrich_status: None,
+            // A1.1: `context_basis` now sources from the persistent
+            // `SessionMetadata.last_context_basis` — stamped by
+            // `append_user_message` on each new user turn, survives
+            // reload / SSE reconnect / idle refresh, and is
+            // overwritten when the next turn starts. Legacy sessions
+            // (pre-A1.1 on-disk) lack the field and deserialize to
+            // `None` via `#[serde(default)]` — UI tolerates null.
+            context_basis: self.metadata.last_context_basis.clone(),
+            // A2: session-level binding, echoed on every detail
+            // build (list/get/SSE/snapshot). Persists across turns
+            // until `clear_source_binding` or `bind_source` with a
+            // new ref runs.
+            source_binding: self.metadata.source_binding.clone(),
         }
     }
 
@@ -7086,6 +7631,9 @@ fn seeded_record(
             turn_state: DesktopTurnState::Idle,
             lifecycle_status: DesktopLifecycleStatus::Todo,
             flagged: false,
+            last_context_basis: None,
+            // A2: seeded fixtures start with no binding.
+            source_binding: None,
         },
         session: {
             let mut session = RuntimeSession::new();
@@ -7155,8 +7703,8 @@ mod tests {
         AppendDesktopMessageRequest, CreateDesktopDispatchItemRequest,
         CreateDesktopScheduledTaskRequest, CreateDesktopSessionRequest, DesktopDispatchPriority,
         DesktopDispatchStatus, DesktopLifecycleStatus, DesktopPersistence,
-        DesktopScheduledRunStatus, DesktopScheduledSchedule, DesktopState, DesktopStateError,
-        DesktopTurnState,
+        DesktopScheduledRunStatus, DesktopScheduledSchedule,
+        DesktopSessionBucket, DesktopState, DesktopStateError, DesktopTurnState,
     };
     use tokio::time::{sleep, Duration};
 
@@ -7187,8 +7735,10 @@ mod tests {
                 &session.id,
                 AppendDesktopMessageRequest {
                     message: "Hook up the session view.".to_string(),
+                    mode: None,
                 }
                 .message,
+                None,
             )
             .await
             .expect("message append should succeed");
@@ -7411,6 +7961,160 @@ mod tests {
         assert_eq!(detail.session.messages.len(), 1);
 
         let _ = fs::remove_file(path);
+    }
+
+    // ── A1.1 persistence of ContextBasis on SessionMetadata ─────────
+
+    /// Legacy session metadata JSON (pre-A1.1) doesn't have the
+    /// `last_context_basis` field. It must deserialize cleanly with
+    /// `last_context_basis = None` (serde default).
+    #[test]
+    fn session_metadata_legacy_json_without_last_context_basis_deserializes_to_none() {
+        let legacy_json = r#"{
+            "id": "desktop-session-legacy",
+            "title": "Legacy session",
+            "preview": "hello",
+            "bucket": "today",
+            "created_at": 0,
+            "updated_at": 0,
+            "project_name": "test",
+            "project_path": "/tmp/x",
+            "environment_label": "Local",
+            "model_label": "Claude",
+            "turn_state": "idle",
+            "lifecycle_status": "todo",
+            "flagged": false
+        }"#;
+        let meta: super::SessionMetadata = serde_json::from_str(legacy_json)
+            .expect("legacy SessionMetadata JSON (pre-A1.1) must deserialize");
+        assert!(
+            meta.last_context_basis.is_none(),
+            "legacy metadata must map last_context_basis to None, got {:?}",
+            meta.last_context_basis
+        );
+    }
+
+    /// Fresh metadata with a basis round-trips cleanly, and the field
+    /// is included in the output when Some (UI relies on this).
+    #[test]
+    fn session_metadata_with_basis_round_trips_through_json() {
+        let meta = super::SessionMetadata {
+            id: "desktop-session-rt".to_string(),
+            title: "Round-trip".to_string(),
+            preview: "p".to_string(),
+            bucket: super::DesktopSessionBucket::Today,
+            created_at: 1,
+            updated_at: 2,
+            project_name: "proj".to_string(),
+            project_path: "/tmp/proj".to_string(),
+            environment_label: "Local".to_string(),
+            model_label: "Claude".to_string(),
+            turn_state: super::DesktopTurnState::Idle,
+            lifecycle_status: super::DesktopLifecycleStatus::InProgress,
+            flagged: false,
+            last_context_basis: Some(crate::ask_context::ContextBasis::new(
+                crate::ask_context::ContextMode::SourceFirst,
+                0,
+                Some(400),
+            )),
+            // A2: no binding — ensures the round-trip test still
+            // covers the legacy shape where binding is absent.
+            source_binding: None,
+        };
+        let json = serde_json::to_string(&meta).expect("serialize");
+        assert!(
+            json.contains("\"last_context_basis\""),
+            "Some(basis) must serialize (skip_serializing_if only skips None): {json}"
+        );
+        assert!(
+            json.contains("\"source_first\""),
+            "basis.mode must serialize as snake_case: {json}"
+        );
+        let decoded: super::SessionMetadata = serde_json::from_str(&json).expect("decode");
+        assert_eq!(decoded.last_context_basis, meta.last_context_basis);
+    }
+
+    /// When basis is None, the field must be omitted from the JSON
+    /// (so old consumers / disk footprint stays tidy).
+    #[test]
+    fn session_metadata_with_none_basis_omits_field_in_json() {
+        let meta = super::SessionMetadata {
+            id: "desktop-session-none".to_string(),
+            title: "None".to_string(),
+            preview: "p".to_string(),
+            bucket: super::DesktopSessionBucket::Today,
+            created_at: 1,
+            updated_at: 2,
+            project_name: "proj".to_string(),
+            project_path: "/tmp/proj".to_string(),
+            environment_label: "Local".to_string(),
+            model_label: "Claude".to_string(),
+            turn_state: super::DesktopTurnState::Idle,
+            lifecycle_status: super::DesktopLifecycleStatus::Todo,
+            flagged: false,
+            last_context_basis: None,
+            source_binding: None,
+        };
+        let json = serde_json::to_string(&meta).expect("serialize");
+        assert!(
+            !json.contains("last_context_basis"),
+            "None should be skipped by skip_serializing_if: {json}"
+        );
+        // A2: None binding is also skipped — disk footprint stays
+        // tidy and legacy consumers don't see an unexpected field.
+        assert!(
+            !json.contains("source_binding"),
+            "None source_binding should be skipped too: {json}"
+        );
+    }
+
+    /// A2: SessionMetadata with a populated source_binding round-trips
+    /// through JSON unchanged and the field is included in the output
+    /// (UI relies on the snake_case shape).
+    #[test]
+    fn session_metadata_with_binding_round_trips() {
+        use crate::ask_context::binding::{SessionSourceBinding, SourceRef};
+
+        let meta = super::SessionMetadata {
+            id: "desktop-session-bind-rt".to_string(),
+            title: "Bound".to_string(),
+            preview: "p".to_string(),
+            bucket: super::DesktopSessionBucket::Today,
+            created_at: 1,
+            updated_at: 2,
+            project_name: "proj".to_string(),
+            project_path: "/tmp/proj".to_string(),
+            environment_label: "Local".to_string(),
+            model_label: "Claude".to_string(),
+            turn_state: super::DesktopTurnState::Idle,
+            lifecycle_status: super::DesktopLifecycleStatus::InProgress,
+            flagged: false,
+            last_context_basis: None,
+            source_binding: Some(SessionSourceBinding {
+                source: SourceRef::Wiki {
+                    slug: "foo-bar".to_string(),
+                    title: "Foo Bar".to_string(),
+                },
+                bound_at: 1_700_000_000_000,
+                binding_reason: Some("pinned".to_string()),
+            }),
+        };
+        let json = serde_json::to_string(&meta).expect("serialize");
+        assert!(
+            json.contains("\"source_binding\""),
+            "Some(binding) must serialize: {json}"
+        );
+        assert!(
+            json.contains("\"wiki\""),
+            "source.kind must encode as wiki: {json}"
+        );
+        assert!(
+            json.contains("\"foo-bar\""),
+            "source.slug must round-trip: {json}"
+        );
+        let decoded: super::SessionMetadata =
+            serde_json::from_str(&json).expect("decode");
+        assert_eq!(decoded.source_binding, meta.source_binding);
     }
 
     #[test]
@@ -7843,7 +8547,7 @@ mod tests {
             })
             .await;
         state
-            .append_user_message(&kept.id, "hello".to_string())
+            .append_user_message(&kept.id, "hello".to_string(), None)
             .await
             .expect("append should succeed");
 
@@ -7955,5 +8659,131 @@ mod tests {
             !deleted.contains(&running.id),
             "running session must not be swept even if empty"
         );
+    }
+
+    /// A2: bind_source + clear_source_binding + bind overwrite. Covers
+    /// the three lifecycle transitions the frontend relies on:
+    ///   * Initial state → source_binding is None.
+    ///   * After bind → detail carries the binding; persistent on
+    ///     subsequent read-only `get_session` calls.
+    ///   * Second bind → the prior binding is replaced (no stack).
+    ///   * Clear → detail reverts to source_binding: None.
+    ///   * Unknown session → SessionNotFound.
+    #[tokio::test]
+    async fn bind_clear_source_binding_round_trip() {
+        use super::{
+            CreateDesktopSessionRequest, DesktopState, DesktopStateError, MockTurnExecutor,
+            SessionSourceBinding, SourceRef,
+        };
+
+        let state = DesktopState::with_executor(
+            Arc::new(MockTurnExecutor),
+            None,
+            None,
+            None,
+        );
+        let created = state
+            .create_session(CreateDesktopSessionRequest {
+                title: Some("bind test".into()),
+                project_name: None,
+                project_path: None,
+            })
+            .await;
+        assert!(created.source_binding.is_none(), "fresh session unbound");
+
+        // Bind a raw source.
+        let bound = state
+            .bind_source(
+                &created.id,
+                SourceRef::Raw {
+                    id: 7,
+                    title: "First Raw".into(),
+                },
+                Some("test".into()),
+            )
+            .await
+            .expect("bind should succeed");
+        let binding = bound
+            .source_binding
+            .as_ref()
+            .expect("binding populated after bind");
+        assert!(matches!(
+            binding.source,
+            SourceRef::Raw { id: 7, .. }
+        ));
+        assert_eq!(binding.binding_reason.as_deref(), Some("test"));
+
+        // get_session reflects the binding — persistence check.
+        let detail = state
+            .get_session(&created.id)
+            .await
+            .expect("get works");
+        let persisted = detail
+            .source_binding
+            .as_ref()
+            .expect("persisted binding");
+        assert!(matches!(
+            persisted.source,
+            SourceRef::Raw { id: 7, .. }
+        ));
+
+        // Second bind replaces the first — no stack of bindings.
+        let rebound = state
+            .bind_source(
+                &created.id,
+                SourceRef::Wiki {
+                    slug: "foo".into(),
+                    title: "Foo".into(),
+                },
+                None,
+            )
+            .await
+            .expect("rebind should succeed");
+        let b2 = rebound
+            .source_binding
+            .as_ref()
+            .expect("binding after rebind");
+        assert!(matches!(b2.source, SourceRef::Wiki { .. }));
+        assert_eq!(b2.binding_reason, None);
+
+        // Clear drops the binding entirely.
+        let cleared = state
+            .clear_source_binding(&created.id)
+            .await
+            .expect("clear should succeed");
+        assert!(cleared.source_binding.is_none());
+
+        // Idempotent: clearing an already-unbound session still succeeds.
+        let cleared_again = state
+            .clear_source_binding(&created.id)
+            .await
+            .expect("clear is idempotent");
+        assert!(cleared_again.source_binding.is_none());
+
+        // Unknown session → SessionNotFound.
+        let err = state
+            .bind_source(
+                "nonexistent",
+                SourceRef::Raw {
+                    id: 1,
+                    title: "t".into(),
+                },
+                None,
+            )
+            .await;
+        assert!(matches!(err, Err(DesktopStateError::SessionNotFound(_))));
+
+        let err = state.clear_source_binding("nonexistent").await;
+        assert!(matches!(err, Err(DesktopStateError::SessionNotFound(_))));
+
+        // Final sanity: SessionSourceBinding is the type actually returned.
+        let b: SessionSourceBinding = SessionSourceBinding::new(
+            SourceRef::Inbox {
+                id: 1,
+                title: "t".into(),
+            },
+            None,
+        );
+        assert!(b.bound_at > 0, "bound_at stamped");
     }
 }

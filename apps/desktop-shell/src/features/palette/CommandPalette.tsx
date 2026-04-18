@@ -13,10 +13,17 @@
  * Data / filtering / action execution all live in Worker B's modules:
  *   - `useGroupedPaletteItems(query)` → pre-filtered `PaletteGroup[]`
  *   - `executePaletteItem(item, ctx)` → canonical navigation + pushRecent
+ *   - `executePaletteItemAction(item, actionId, ctx)` → secondary chips
  *
- * This component intentionally never filters items itself — `Command`
- * defaults to `shouldFilter={false}` (see components/ui/command.tsx) so
- * cmdk only handles keyboard + selection, not matching.
+ * S1 — Unified Search extensions
+ *   - Each row now renders (left → right):
+ *       [kind icon] [title / subtitle+kind-badge / why-tag] [chips]
+ *   - Kind badge: small coloured pill (wiki=success, raw=primary,
+ *     inbox=warning, route=muted) matching R1 design tokens.
+ *   - Why tag: muted 11px caption explaining the match reason
+ *     (populated by Worker A).
+ *   - Secondary chips: one per `item.secondaryActions[]`. Tab enters
+ *     the chip row; Shift+Enter fires the first chip action.
  */
 
 import * as React from "react";
@@ -33,12 +40,162 @@ import {
   CommandLoading,
   CommandSeparator,
 } from "@/components/ui/command";
+import { Button } from "@/components/ui/button";
 import { useCommandPaletteStore } from "@/state/command-palette-store";
 import { useWikiTabStore } from "@/state/wiki-tab-store";
 import { useSettingsStore } from "@/state/settings-store";
 import { useGroupedPaletteItems } from "@/features/palette/usePaletteItems";
-import { executePaletteItem } from "@/features/palette/actions";
-import type { PaletteItem } from "@/features/palette/types";
+import {
+  executePaletteItem,
+  executePaletteItemAction,
+  type PaletteActionContext,
+} from "@/features/palette/actions";
+import type {
+  PaletteItem,
+  PaletteItemKind,
+  PaletteItemSecondaryAction,
+} from "@/features/palette/types";
+
+// ── S1 visual config ──────────────────────────────────────────────
+
+/**
+ * Per-kind badge visuals. Colours are expressed via CSS vars +
+ * alpha so both light and dark themes stay on brand. Label is the
+ * literal text rendered inside the pill.
+ */
+const KIND_BADGE: Record<
+  PaletteItemKind,
+  { label: string; background: string; color: string }
+> = {
+  wiki: {
+    label: "wiki",
+    background: "color-mix(in oklab, var(--color-success) 10%, transparent)",
+    color: "var(--color-success)",
+  },
+  raw: {
+    label: "raw",
+    background: "color-mix(in oklab, var(--color-primary) 10%, transparent)",
+    color: "var(--color-primary)",
+  },
+  inbox: {
+    label: "inbox",
+    background: "color-mix(in oklab, var(--color-warning) 10%, transparent)",
+    color: "var(--color-warning)",
+  },
+  route: {
+    label: "route",
+    background: "var(--muted)",
+    color: "var(--muted-foreground)",
+  },
+};
+
+/** Read a loose optional property from a palette item without a cast. */
+function readItemWhy(item: PaletteItem): string | undefined {
+  const v = (item as { why?: unknown }).why;
+  return typeof v === "string" && v.length > 0 ? v : undefined;
+}
+
+/** Read the secondary action list from an item; empty array when absent. */
+function readItemSecondaryActions(
+  item: PaletteItem,
+): PaletteItemSecondaryAction[] {
+  const v = (item as { secondaryActions?: unknown }).secondaryActions;
+  if (!Array.isArray(v)) return [];
+  // Defensive filter — only keep entries with the expected shape.
+  return v.filter(
+    (x): x is PaletteItemSecondaryAction =>
+      x !== null &&
+      typeof x === "object" &&
+      typeof (x as { id?: unknown }).id === "string" &&
+      typeof (x as { label?: unknown }).label === "string",
+  );
+}
+
+/**
+ * Read the "subtitle" of a row. Item types expose `hint`; the S1
+ * contract also allows a dedicated `subtitle` field. Prefer
+ * `subtitle` when present, fall back to `hint`.
+ */
+function readItemSubtitle(item: PaletteItem): string | undefined {
+  const sub = (item as { subtitle?: unknown }).subtitle;
+  if (typeof sub === "string" && sub.length > 0) return sub;
+  return item.hint;
+}
+
+/**
+ * Read the "title" of a row. Prefer `title` (new S1 field) over
+ * `label` (existing field) for display consistency with Worker A's
+ * data — both are human-friendly strings.
+ */
+function readItemTitle(item: PaletteItem): string {
+  const t = (item as { title?: unknown }).title;
+  if (typeof t === "string" && t.length > 0) return t;
+  return item.label;
+}
+
+// ── Sub-components ────────────────────────────────────────────────
+
+function KindBadge({ kind }: { kind: PaletteItemKind }) {
+  const cfg = KIND_BADGE[kind];
+  return (
+    <span
+      aria-label={`${cfg.label} 类型`}
+      className="inline-flex items-center rounded-full px-1.5 py-0 text-[10px] font-medium leading-4"
+      style={{ backgroundColor: cfg.background, color: cfg.color }}
+    >
+      {cfg.label}
+    </span>
+  );
+}
+
+/**
+ * A single secondary action chip. Uses the shadcn Button (ghost /
+ * sm) so hover + focus-visible styling is consistent with the rest
+ * of the app. Clicks are stopped from propagating to the parent
+ * `CommandItem` so they don't trigger the primary select action.
+ */
+function SecondaryChip({
+  action,
+  onRun,
+}: {
+  action: PaletteItemSecondaryAction;
+  onRun: (actionId: PaletteItemSecondaryAction["id"]) => void;
+}) {
+  // onMouseDown prevents the cmdk item from being "selected" the
+  // instant the chip takes focus — otherwise a click would both
+  // fire the primary action and the chip action.
+  const stop = (e: React.SyntheticEvent) => {
+    e.stopPropagation();
+  };
+  return (
+    <Button
+      type="button"
+      size="sm"
+      variant="ghost"
+      aria-label={action.label}
+      className="h-6 px-2 text-[11px]"
+      onMouseDown={stop}
+      onPointerDown={stop}
+      onClick={(e) => {
+        stop(e);
+        onRun(action.id);
+      }}
+      onKeyDown={(e) => {
+        // Keep Enter inside the chip scope; cmdk would otherwise
+        // also interpret Enter as "select the focused item".
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          e.stopPropagation();
+          onRun(action.id);
+        }
+      }}
+    >
+      {action.label}
+    </Button>
+  );
+}
+
+// ── Main component ────────────────────────────────────────────────
 
 export function CommandPalette() {
   // --- Store selectors (each picked narrowly to avoid needless rerenders) ---
@@ -95,19 +252,35 @@ export function CommandPalette() {
     return () => cancelAnimationFrame(raf);
   }, [open]);
 
+  // --- Action context (memoized so child callbacks stay stable) -----------
+  const actionCtx: PaletteActionContext = React.useMemo(
+    () => ({
+      navigate,
+      openTab,
+      setAppMode,
+      pushRecent,
+      removeRecent,
+    }),
+    [navigate, openTab, setAppMode, pushRecent, removeRecent],
+  );
+
   // --- Selection dispatcher ----------------------------------------------
   // `executePaletteItem` is responsible for canonical navigation + the
   // pushRecent side-effect. We close the palette *after* it returns; the
   // store's closePalette also clears `query` so the next open starts
   // clean on the Recent view.
   const handleSelect = (item: PaletteItem) => {
-    executePaletteItem(item, {
-      navigate,
-      openTab,
-      setAppMode,
-      pushRecent,
-      removeRecent,
-    });
+    executePaletteItem(item, actionCtx);
+    closePalette();
+  };
+
+  // Handler for secondary chip — always closes palette after dispatch,
+  // mirroring the primary select semantics.
+  const handleRunAction = (
+    item: PaletteItem,
+    actionId: PaletteItemSecondaryAction["id"],
+  ) => {
+    executePaletteItemAction(item, actionId, actionCtx);
     closePalette();
   };
 
@@ -183,11 +356,26 @@ export function CommandPalette() {
               <CommandGroup heading={group.heading}>
                 {group.items.map((item) => {
                   const Icon = item.icon;
+                  const title = readItemTitle(item);
+                  const subtitle = readItemSubtitle(item);
+                  const why = readItemWhy(item);
+                  const secondary = readItemSecondaryActions(item);
+                  const firstAction = secondary[0];
+
                   return (
                     <CommandItem
                       key={item.value}
                       value={item.value}
                       onSelect={() => handleSelect(item)}
+                      onKeyDown={(e) => {
+                        // Shift+Enter → first secondary action.
+                        // Plain Enter continues to fire onSelect via cmdk.
+                        if (e.key === "Enter" && e.shiftKey && firstAction) {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          handleRunAction(item, firstAction.id);
+                        }
+                      }}
                     >
                       {Icon && (
                         <Icon
@@ -195,11 +383,39 @@ export function CommandPalette() {
                           aria-hidden="true"
                         />
                       )}
-                      <span className="flex-1 truncate">{item.label}</span>
-                      {item.hint && (
-                        <span className="ml-auto text-xs text-muted-foreground truncate">
-                          {item.hint}
-                        </span>
+                      <div className="flex flex-1 min-w-0 flex-col gap-0.5">
+                        <span className="truncate text-sm">{title}</span>
+                        {(subtitle || item.kind) && (
+                          <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                            {subtitle && (
+                              <span className="truncate">{subtitle}</span>
+                            )}
+                            <KindBadge kind={item.kind} />
+                          </span>
+                        )}
+                        {why && (
+                          <span className="truncate text-[11px] text-muted-foreground/80">
+                            {why}
+                          </span>
+                        )}
+                      </div>
+                      {secondary.length > 0 && (
+                        <div
+                          className="ml-auto flex shrink-0 items-center gap-1"
+                          // Prevent Tab from escaping cmdk's nav — chips
+                          // share the normal tab order so users flow
+                          // through them naturally with Tab.
+                          role="group"
+                          aria-label="次动作"
+                        >
+                          {secondary.map((action) => (
+                            <SecondaryChip
+                              key={action.id}
+                              action={action}
+                              onRun={(id) => handleRunAction(item, id)}
+                            />
+                          ))}
+                        </div>
                       )}
                     </CommandItem>
                   );

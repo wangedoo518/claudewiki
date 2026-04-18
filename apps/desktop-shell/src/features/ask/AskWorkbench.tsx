@@ -45,14 +45,28 @@ import { useStreamingStore } from "@/state/streaming-store";
 import {
   forwardPermissionDecision,
   type ContentBlock,
+  type ContextBasis,
+  type ContextMode,
   type DesktopSessionDetail,
   type EnrichStatus,
   type RuntimeConversationMessage,
+  type SourceRef,
 } from "@/lib/tauri";
-import { compactSession } from "./api/client";
+import {
+  bindSourceToSession,
+  clearSourceBinding,
+  compactSession,
+} from "./api/client";
+import { useQueryClient } from "@tanstack/react-query";
 import type { ConversationMessage } from "@/features/common/message-types";
 import { MOCK_DEMO_MESSAGES } from "./mockDemoMessages";
 import { formatIngestError } from "@/lib/ingest/format-error";
+import { FailureBanner } from "@/components/ui/failure-banner";
+import {
+  classifyAskError,
+  type AskErrorClassification,
+} from "./ask-error-classifier";
+import { useNavigate } from "react-router-dom";
 
 /** Pull the optional `enrich_status` off a session detail. Returns
  * `undefined` when the session object isn't loaded yet, `null` when
@@ -72,6 +86,64 @@ function extractUrl(text: string): string | null {
   return match ? match[0] : null;
 }
 
+/**
+ * A2 — parse a handoff `bind=<kind>:<id-or-slug>` query string (with
+ * optional `&title=...`) into a concrete `SourceRef`. Returns null when
+ * the param is missing / malformed. URL format locked to
+ *   bind=raw:123&title=Example%20Domain
+ *   bind=wiki:foo-slug&title=Foo%20Page
+ *   bind=inbox:42&title=Inbox%20Task
+ * Worker C must emit links in exactly this shape.
+ */
+function parseBindParam(search: string): SourceRef | null {
+  const params = new URLSearchParams(search);
+  const bind = params.get("bind");
+  if (!bind) return null;
+  const colon = bind.indexOf(":");
+  if (colon <= 0) return null;
+  const kind = bind.slice(0, colon);
+  const rest = bind.slice(colon + 1);
+  if (!rest) return null;
+  const title = params.get("title") ?? "";
+  if (kind === "raw") {
+    const id = Number.parseInt(rest, 10);
+    if (!Number.isFinite(id)) return null;
+    return { kind: "raw", id, title };
+  }
+  if (kind === "inbox") {
+    const id = Number.parseInt(rest, 10);
+    if (!Number.isFinite(id)) return null;
+    return { kind: "inbox", id, title };
+  }
+  if (kind === "wiki") {
+    return { kind: "wiki", slug: rest, title };
+  }
+  return null;
+}
+
+/**
+ * A2 — strip the `bind` + `title` params from the current URL after a
+ * handoff has been processed, without triggering a navigation.
+ */
+function stripBindFromUrl() {
+  try {
+    const url = new URL(window.location.href);
+    const hash = url.hash; // e.g. "#/ask?bind=raw:123&title=..."
+    const qIdx = hash.indexOf("?");
+    if (qIdx < 0) return;
+    const hashPath = hash.slice(0, qIdx);
+    const hashSearch = hash.slice(qIdx + 1);
+    const params = new URLSearchParams(hashSearch);
+    params.delete("bind");
+    params.delete("title");
+    const rebuilt = params.toString();
+    url.hash = rebuilt ? `${hashPath}?${rebuilt}` : hashPath;
+    window.history.replaceState(null, "", url.toString());
+  } catch {
+    // Non-fatal — leave the URL alone if parsing fails.
+  }
+}
+
 // v2 bugfix: fetchAndIngestUrl + isValidContent removed from the frontend.
 // Backend's `maybe_enrich_url` (desktop-core) now handles the entire
 // fetch → ingest → inject-to-system-prompt flow. The frontend only
@@ -89,7 +161,10 @@ interface AskWorkbenchProps {
   isLoadingSession: boolean;
   isSending: boolean;
   errorMessage?: string;
-  onSend: (message: string) => void | Promise<void>;
+  onSend: (
+    message: string,
+    options?: { mode?: ContextMode },
+  ) => void | Promise<void>;
   onStop?: () => void;
   onCreateSession?: () => void;
   modelLabel?: string;
@@ -97,6 +172,13 @@ interface AskWorkbenchProps {
   projectPath?: string;
   providers?: ProviderOption[];
   onSwitchProvider?: (id: string) => void;
+  /**
+   * A2 — hook-backed ensure-session-and-bind. When provided, the URL
+   * handoff parser can attach a bind to the (possibly freshly created)
+   * active session. Typically wired to `useAskSession`'s `onSend` ladder
+   * so session lifecycle guarantees are preserved.
+   */
+  onEnsureAndBind?: (source: SourceRef) => Promise<DesktopSessionDetail>;
   /** v2: compact mode for the ChatSidePanel (Wiki mode right-side chat).
    * Tightens message spacing and Composer padding, hides the Agent panel
    * toggle. All state visualization (streaming cursor, token counts,
@@ -121,9 +203,12 @@ export function AskWorkbench({
   projectPath,
   providers,
   onSwitchProvider,
+  onEnsureAndBind,
   compact = false,
   hideHeader = false,
 }: AskWorkbenchProps) {
+  const queryClient = useQueryClient();
+  const navigate = useNavigate();
   // Python deps auto-installed by backend on startup — no frontend action needed.
 
   const pendingPermission = usePermissionsStore(
@@ -142,8 +227,21 @@ export function AskWorkbench({
   const [showAgentPanel, setShowAgentPanel] = useState(false);
 
   const messages = useMemo(
-    () => flattenSessionMessages(session?.session.messages ?? []),
-    [session?.session.messages]
+    () =>
+      flattenSessionMessages(
+        session?.session.messages ?? [],
+        // A1 integration patch: backend currently emits `context_basis`
+        // on the top-level `DesktopSessionDetail` (per-Snapshot side
+        // channel), not on individual `RuntimeConversationMessage`
+        // entries. Pass the detail-level basis through so flatten can
+        // fall back to it for the most recent assistant turn when the
+        // message-level field is absent. See Worker A report §"SSE
+        // ContextBasis 字段": basis is only stamped on the snapshot
+        // triggered by append_user_message; subsequent snapshots carry
+        // None, so this label is turn-local and disappears on reload.
+        session?.context_basis ?? null
+      ),
+    [session?.session.messages, session?.context_basis]
   );
   const displayMessages = useMemo(() => {
     if (messages.length > 0) return [...messages, ...localMessages];
@@ -358,6 +456,73 @@ export function AskWorkbench({
     pendingEnrichIdRef.current = null;
   }, [enrichStatus, updateLocalMessage]);
 
+  // ─── A2: source-binding integration ───────────────────────────────
+  //
+  // Persistent binding state comes from the session detail (never from
+  // the query string). The URL-handoff parser lives in an effect below
+  // and is a ONE-SHOT: it consumes `?bind=...` on mount, calls into
+  // `onEnsureAndBind`, and strips the param so the next render no
+  // longer sees it. Critical: we do NOT touch `useAskSession` — the
+  // ensure-create ladder stays owned by that hook.
+  const binding = session?.source_binding ?? null;
+  const bindHandledRef = useRef(false);
+
+  useEffect(() => {
+    if (bindHandledRef.current) return;
+    if (!onEnsureAndBind) return;
+    // Hash-based routing: the query string lives inside `location.hash`
+    // (e.g. "#/ask?bind=raw:123&title=X"). Fall back to search for dev.
+    const hash = window.location.hash;
+    const qIdx = hash.indexOf("?");
+    const search = qIdx >= 0 ? hash.slice(qIdx) : window.location.search;
+    const parsed = parseBindParam(search);
+    if (!parsed) return;
+    bindHandledRef.current = true;
+    void onEnsureAndBind(parsed)
+      .then(() => stripBindFromUrl())
+      .catch((err) => {
+        console.warn("[ask:bind] handoff bind failed", err);
+        // Still strip so we don't retry the failing param on next mount.
+        stripBindFromUrl();
+      });
+  }, [onEnsureAndBind]);
+
+  const handleClearBinding = useCallback(async () => {
+    if (!session?.id) return;
+    try {
+      const next = await clearSourceBinding(session.id);
+      queryClient.setQueryData(
+        ["clawwiki", "ask", "session", session.id],
+        next,
+      );
+    } catch (err) {
+      console.warn("[ask:bind] clear failed", err);
+    }
+  }, [session?.id, queryClient]);
+
+  // A3 — promote a turn-local auto-binding to a persistent session
+  // binding. Invoked from the inline "📌 固定到会话" button inside
+  // <UsedSourcesBar> on an assistant message with
+  // `context_basis.auto_bound === true`. After the POST succeeds the
+  // next SSE snapshot will reflect `source_binding` populated +
+  // `auto_bound=false`, so the chip tone transitions from blue (A3)
+  // to orange (A2) automatically.
+  const handlePromoteToSession = useCallback(
+    async (source: SourceRef) => {
+      if (!session?.id) return;
+      try {
+        const next = await bindSourceToSession(session.id, source);
+        queryClient.setQueryData(
+          ["clawwiki", "ask", "session", session.id],
+          next,
+        );
+      } catch (err) {
+        console.warn("[a3:promote] failed", err);
+      }
+    },
+    [session?.id, queryClient],
+  );
+
   // Slash command handlers
   const handleClear = useCallback(() => {
     setLocalMessages([]);
@@ -382,7 +547,10 @@ export function AskWorkbench({
   const wikiQuery = useWikiQuery();
 
   // Wrap onSend: detect ? prefix → wiki query; detect URLs → fetch; else → session send
-  const handleSendWithUrlFetch = useCallback(async (message: string) => {
+  const handleSendWithUrlFetch = useCallback(async (
+    message: string,
+    options?: { mode?: ContextMode },
+  ) => {
     // ?-prefix: route to /query (wiki knowledge Q&A)
     const trimmed = message.trimStart();
     if (trimmed.startsWith("?") || trimmed.startsWith("/query ")) {
@@ -430,7 +598,7 @@ export function AskWorkbench({
       // Fall through to backend. maybe_enrich_url will handle fetch/ingest
       // and inject content into the turn's system prompt.
     }
-    await onSend(message);
+    await onSend(message, options);
   }, [onSend, addSystemMessage, wikiQuery]);
 
   return (
@@ -501,6 +669,7 @@ export function AskWorkbench({
             messages={displayMessages}
             streamingContent={streamingContent}
             isStreaming={isRunning && !pendingPermission}
+            onPromoteToSession={handlePromoteToSession}
           />
 
           {/* v2: Wiki query result (? prefix) — not stored in session history */}
@@ -522,24 +691,23 @@ export function AskWorkbench({
             />
           )}
 
-          {/* Error banner */}
+          {/* Error banner — R1 trust layer: classifier-driven friendly
+              `FailureBanner`. Known kinds (credentials, broker, session)
+              get bespoke titles + recovery CTAs; unknown kinds fall
+              through to a generic message with the raw string parked
+              under the technical-detail `<details>`. */}
           {errorMessage && (
-            <div
-              className="flex items-start gap-2 rounded-lg border px-3 py-2 text-body-sm"
-              style={{
-                borderColor: "color-mix(in srgb, var(--color-error) 30%, transparent)",
-                backgroundColor: "color-mix(in srgb, var(--color-error) 5%, transparent)",
-                color: "var(--color-error)",
+            <AskFailureBannerSwitch
+              classification={classifyAskError(errorMessage)}
+              onOpenSettings={() => navigate("/settings")}
+              onNewSession={() => {
+                onCreateSession?.();
+                addSystemMessage("已新建对话，请重试你的消息。");
               }}
-            >
-              <span className="flex-1">{errorMessage}</span>
-              <button
-                className="shrink-0 rounded px-1.5 py-0.5 text-label font-medium transition-colors hover:bg-[color-mix(in_srgb,var(--color-error)_15%,transparent)]"
-                onClick={() => addSystemMessage("错误已忽略。你可以重试上一条消息。")}
-              >
-                忽略
-              </button>
-            </div>
+              onDismiss={() =>
+                addSystemMessage("错误已忽略。你可以重试上一条消息。")
+              }
+            />
           )}
 
           </div>
@@ -559,6 +727,8 @@ export function AskWorkbench({
         onClear={handleClear}
         onNewSession={handleNewSession}
         onCompact={handleCompact}
+        binding={binding}
+        onClearBinding={handleClearBinding}
       />
 
       {/* StatusLine removed — Composer's inline toolbar now shows model + permission + environment */}
@@ -718,13 +888,18 @@ function WelcomeScreen({ onShowDemo }: { onShowDemo?: () => void }) {
 /* ─── Message flattening ─────────────────────────────────────────── */
 
 function flattenSessionMessages(
-  source: RuntimeConversationMessage[]
+  source: RuntimeConversationMessage[],
+  detailContextBasis: ContextBasis | null = null
 ): ConversationMessage[] {
   const items: ConversationMessage[] = [];
   let order = 0;
 
   for (const message of source) {
     let usageAttached = false;
+    // A1 sprint — context-basis attaches to the FIRST assistant text
+    // block of each message, same policy as usage. Legacy messages
+    // without the field skip this branch (UI tolerates null).
+    let basisAttached = false;
     for (const block of message.blocks) {
       order += 1;
       const entry = toDisplayMessage(message.role, block, order);
@@ -737,7 +912,30 @@ function flattenSessionMessages(
           };
           usageAttached = true;
         }
+        if (
+          !basisAttached &&
+          message.context_basis != null &&
+          entry.role === "assistant" &&
+          entry.type === "text"
+        ) {
+          entry.contextBasis = message.context_basis;
+          basisAttached = true;
+        }
         items.push(entry);
+      }
+    }
+  }
+
+  // A1 integration fallback: if no message-level context_basis was
+  // found (current backend reality — see Worker A/B contract gap)
+  // but the session detail carries a top-level basis, attach it to
+  // the LAST assistant-text entry as the "turn-local" basis.
+  if (detailContextBasis) {
+    for (let i = items.length - 1; i >= 0; i--) {
+      const entry = items[i];
+      if (entry.role === "assistant" && entry.type === "text" && !entry.contextBasis) {
+        entry.contextBasis = detailContextBasis;
+        break;
       }
     }
   }
@@ -788,4 +986,108 @@ function toDisplayMessage(
       isError: block.is_error,
     },
   };
+}
+
+/**
+ * R1 trust-layer helper — picks the right `FailureBanner` copy + CTAs
+ * based on the classifier output. Scoped to this file because the
+ * copy is Ask-specific ("设置", "新建对话", "文档", etc.); other
+ * surfaces (Maintainer, Graph) pass their own strings.
+ *
+ * All unknown kinds fall through to a generic banner so we never
+ * silently drop a runtime error — the raw string is preserved under
+ * the technical-detail `<details>`.
+ */
+function AskFailureBannerSwitch({
+  classification,
+  onOpenSettings,
+  onNewSession,
+  onDismiss,
+}: {
+  classification: AskErrorClassification;
+  onOpenSettings: () => void;
+  onNewSession: () => void;
+  onDismiss: () => void;
+}) {
+  const { kind, raw } = classification;
+  if (kind === "credentials_missing") {
+    return (
+      <FailureBanner
+        severity="error"
+        title="🔐 还没连接大模型账号"
+        description={
+          <>
+            Ask 需要一个大模型账号来生成回答。当前没找到有效的 API
+            key（<code className="font-mono">ANTHROPIC_AUTH_TOKEN</code>{" "}
+            或 <code className="font-mono">ANTHROPIC_API_KEY</code>）。
+          </>
+        }
+        actions={[
+          { label: "打开设置", onClick: onOpenSettings, variant: "primary" },
+          {
+            label: "查看文档",
+            href: "https://docs.anthropic.com/claude/reference/getting-started-with-the-api",
+            variant: "secondary",
+          },
+        ]}
+        technicalDetail={raw}
+        dismissible
+        onDismiss={onDismiss}
+      />
+    );
+  }
+  if (kind === "broker_empty") {
+    return (
+      <FailureBanner
+        severity="warning"
+        title="🪫 大模型账号池空"
+        description="暂时没有可用的 Claude 账号来处理这一轮。稍等片刻再重试，或在设置里补充账号。"
+        actions={[
+          { label: "打开设置", onClick: onOpenSettings, variant: "primary" },
+        ]}
+        technicalDetail={raw}
+        dismissible
+        onDismiss={onDismiss}
+      />
+    );
+  }
+  if (kind === "session_not_found") {
+    return (
+      <FailureBanner
+        severity="warning"
+        title="📝 对话不存在或已过期"
+        description="后端找不到这个会话 id。可能是服务重启清空了内存状态，或会话已被删除。新建一个对话即可继续。"
+        actions={[
+          { label: "新建对话", onClick: onNewSession, variant: "primary" },
+        ]}
+        technicalDetail={raw}
+        dismissible
+        onDismiss={onDismiss}
+      />
+    );
+  }
+  if (kind === "url_enrich_failed") {
+    return (
+      <FailureBanner
+        severity="warning"
+        title="🔗 链接抓取失败"
+        description="没能从你发的链接里取到正文。可能是网站挡了 bot、超时，或者这不是一个可读的网页。"
+        technicalDetail={raw}
+        dismissible
+        onDismiss={onDismiss}
+      />
+    );
+  }
+  // Unknown — preserve the raw string visibly but still in the nicer
+  // banner shell so layout is consistent.
+  return (
+    <FailureBanner
+      severity="error"
+      title="出错了"
+      description="后端在处理这一轮时失败了。你可以忽略后重试上一条消息，或查看下面的技术细节。"
+      technicalDetail={raw}
+      dismissible
+      onDismiss={onDismiss}
+    />
+  );
 }

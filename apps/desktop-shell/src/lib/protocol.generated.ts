@@ -24,6 +24,20 @@ export type GeneratedSessionSummary = {
 };
 
 export type GeneratedSessionDetail = {
+  context_basis: {
+    auto_bound: boolean;
+    bound_source: {
+      id: number;
+      kind: string;
+      title: string;
+    };
+    boundary_marker: boolean;
+    grounding_applied: boolean;
+    history_turns_included: number;
+    mode: string;
+    source_included: boolean;
+    source_token_hint: number;
+  };
   created_at: number;
   enrich_status: {
     kind: string;
@@ -46,6 +60,15 @@ export type GeneratedSessionDetail = {
     session_id: string;
     updated_at_ms: number;
     version: number;
+  };
+  source_binding: {
+    binding_reason: string;
+    bound_at: number;
+    source: {
+      id: number;
+      kind: string;
+      title: string;
+    };
   };
   title: string;
   turn_state: string;
@@ -71,5 +94,75 @@ export type GeneratedEnrichStatusPrereq = {
   dep: string;
   hint: string;
   kind: string;
+};
+
+export type GeneratedContextBasis = {
+  auto_bound: boolean;
+  bound_source: {
+    id: number;
+    kind: string;
+    title: string;
+  };
+  boundary_marker: boolean;
+  grounding_applied: boolean;
+  history_turns_included: number;
+  mode: string;
+  source_included: boolean;
+  source_token_hint: number;
+};
+
+export type GeneratedContextModeFollowUp = string;
+
+export type GeneratedContextModeSourceFirst = string;
+
+export type GeneratedContextModeCombine = string;
+
+export type GeneratedSourceRefRaw = {
+  id: number;
+  kind: string;
+  title: string;
+};
+
+export type GeneratedSourceRefWiki = {
+  kind: string;
+  slug: string;
+  title: string;
+};
+
+export type GeneratedSourceRefInbox = {
+  id: number;
+  kind: string;
+  title: string;
+};
+
+export type GeneratedSessionSourceBinding = {
+  binding_reason: string;
+  bound_at: number;
+  source: {
+    id: number;
+    kind: string;
+    title: string;
+  };
+};
+
+export type GeneratedBatchResolveInboxRequest = {
+  action: string;
+  ids: Array<number>;
+  reason: string;
+};
+
+export type GeneratedBatchFailedItem = {
+  error: string;
+  id: number;
+};
+
+export type GeneratedBatchResolveInboxResponse = {
+  failed: Array<{
+    error: string;
+    id: number;
+  }>;
+  processed: number;
+  success: Array<number>;
+  total: number;
 };
 

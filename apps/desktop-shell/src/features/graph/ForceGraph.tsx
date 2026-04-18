@@ -46,6 +46,16 @@ export interface ForceGraphProps {
   rawEntries: RawEntry[];
   onClickConcept: (slug: string) => void;
   onClickRaw: () => void;
+  /**
+   * G1 sprint — optional initial value for the internal search query.
+   * When set (typically from `?focus=<slug>` on the Graph page URL),
+   * the existing search-match pipeline lights up the node + its
+   * immediate neighbors on first mount, giving a "focus on this slug"
+   * entry point without a new code path through the physics engine.
+   * Users can still clear or retype the query — this is an initial
+   * value, not a controlled prop.
+   */
+  initialSearchQuery?: string;
 }
 
 /* ─── Physics Constants (精确复制 Rowboat) ────────────────────── */
@@ -151,6 +161,7 @@ export function ForceGraph({
   rawEntries,
   onClickConcept,
   onClickRaw,
+  initialSearchQuery,
 }: ForceGraphProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const positionsRef = useRef<Map<string, NodePosition>>(new Map());
@@ -173,7 +184,7 @@ export function ForceGraph({
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const [zoom, setZoom] = useState(0.6);
   const [hoveredNodeId, setHoveredNodeId] = useState<string | null>(null);
-  const [searchQuery, setSearchQuery] = useState("");
+  const [searchQuery, setSearchQuery] = useState(initialSearchQuery ?? "");
   const [selectedGroup, setSelectedGroup] = useState<NodeCategory | null>(null);
   const [, forceRender] = useState(0);
 

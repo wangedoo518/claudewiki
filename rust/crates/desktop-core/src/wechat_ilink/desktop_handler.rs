@@ -189,7 +189,9 @@ impl DesktopAgentHandler {
         // turn, surface that to the user immediately rather than blocking.
         match self
             .state
-            .append_user_message(session_id, user_text.to_string())
+            // A1: WeChat bridge has no UI for mode selection; pass
+            // `None` so the default FollowUp behaviour applies.
+            .append_user_message(session_id, user_text.to_string(), None)
             .await
         {
             Ok(_) => {}

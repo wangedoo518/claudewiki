@@ -1187,6 +1187,103 @@ export async function cancelProposal(inboxId: number): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
+// Q2 Target Resolver — ranked target-page candidates for an inbox entry
+// ---------------------------------------------------------------------------
+//
+// Wire contract produced by Worker A at
+// `GET /api/wiki/inbox/{id}/candidates`. Pure read route. The backend
+// scores every wiki page against the inbox entry using an 8-signal
+// additive scheme (see `wiki_maintainer::resolve_target_candidates`)
+// and returns the top 3 ranked candidates.
+//
+// Consumed by the "pick target page" surface of the Workbench so the
+// user can one-click accept the strongest match (score ≥ 80) or
+// review the Likely / Weak buckets. The shapes below mirror the
+// Rust `TargetCandidate` / `CandidateReason` / `CandidateTier` /
+// `CandidateSource` types surfaced in `protocol.generated.ts` as
+// `GeneratedTargetCandidate` etc.
+
+/**
+ * Confidence bucket assigned to a candidate by the backend scorer.
+ *   * `"strong"` — score ≥ 80, safe to auto-accept.
+ *   * `"likely"` — 40 ≤ score < 80, review recommended.
+ *   * `"weak"`   — 10 ≤ score < 40, expandable "more options".
+ */
+export type CandidateTier = "strong" | "likely" | "weak";
+
+/**
+ * Provenance of a candidate. Drives whether the UI short-circuits to
+ * an already-locked target or renders the scorer's reason chips.
+ *   * `"existing_target"`   — `inbox.target_page_slug` is already
+ *     set; the candidate echoes that choice.
+ *   * `"existing_proposed"` — `inbox.proposed_wiki_slug` is set but
+ *     not yet committed.
+ *   * `"resolved"`          — produced by the 8-signal scorer.
+ */
+export type CandidateSource =
+  | "existing_target"
+  | "existing_proposed"
+  | "resolved";
+
+/**
+ * One reason the scorer emitted for a candidate. The `detail` string
+ * is Chinese copy ≤ 50 chars, shown verbatim in the UI; `code` is a
+ * machine-stable id (e.g. `"exact_slug"`) for analytics + narrow
+ * type guards.
+ */
+export interface CandidateReason {
+  code: string;
+  weight: number;
+  detail: string;
+}
+
+/**
+ * One ranked target-page suggestion returned by
+ * `GET /api/wiki/inbox/{id}/candidates`. Up to three of these make
+ * the final list, sorted by `score` descending.
+ */
+export interface TargetCandidate {
+  slug: string;
+  title: string;
+  score: number;
+  tier: CandidateTier;
+  source: CandidateSource;
+  /** Top-3 reasons by weight, strongest first. */
+  reasons: CandidateReason[];
+}
+
+/**
+ * Response envelope for `GET /api/wiki/inbox/{id}/candidates`.
+ */
+export interface InboxCandidatesResponse {
+  inbox_id: number;
+  candidates: TargetCandidate[];
+}
+
+/**
+ * `GET /api/wiki/inbox/{id}/candidates` — fetch ranked target-page
+ * candidates for an inbox entry. Used by the Workbench target
+ * picker.
+ *
+ * Options:
+ *   * `with_graph` (default `false`) — when `true`, the backend
+ *     runs a second scoring pass that folds graph-based signals
+ *     (backlinks / related / outgoing) from the top-3 preliminary
+ *     hits into the final scores. Costs 3 extra page-graph
+ *     reads; turn on only when the user is triaging a single
+ *     entry, not during list-view prefetches.
+ */
+export async function fetchInboxCandidates(
+  id: number,
+  options?: { with_graph?: boolean },
+): Promise<InboxCandidatesResponse> {
+  const qs = options?.with_graph ? "?with_graph=true" : "";
+  return _fetchJsonForMaintain<InboxCandidatesResponse>(
+    `/api/wiki/inbox/${id}/candidates${qs}`,
+  );
+}
+
+// ---------------------------------------------------------------------------
 // G1 sprint — Per-page relations graph (backlinks + outgoing + related)
 // ---------------------------------------------------------------------------
 //

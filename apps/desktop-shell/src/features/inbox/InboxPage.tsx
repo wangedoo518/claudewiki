@@ -74,12 +74,21 @@ import { WikiPageDiffPreview } from "@/features/inbox/components/WikiPageDiffPre
 import { RecommendedActionBadge } from "@/features/inbox/components/RecommendedActionBadge";
 import { QueueGroupHeader } from "@/features/inbox/components/QueueGroupHeader";
 import { BatchActionsToolbar } from "@/features/inbox/components/BatchActionsToolbar";
+import { TargetCandidatePicker } from "@/features/inbox/components/TargetCandidatePicker";
+import { DuplicateGuardBanner } from "@/features/inbox/components/DuplicateGuardBanner";
+import { DuplicateGuardDialog } from "@/features/inbox/components/DuplicateGuardDialog";
+import { SharedTargetBadge } from "@/features/inbox/components/SharedTargetBadge";
 import {
   computeQueueIntelligence,
   groupAndSortByAction,
   markCohorts,
   type QueueIntelligence,
 } from "@/features/inbox/queue-intelligence";
+import type { TargetCandidate } from "@/lib/tauri";
+import { fetchInboxCandidates } from "@/features/ingest/persist";
+
+/** Q2 — Layer 1 duplicate-guard trigger threshold (inclusive). */
+const DUPLICATE_GUARD_SCORE_THRESHOLD = 75;
 
 // Worker C integration — the real WikiPageSearchField picker for
 // update_existing and the navigateToWikiPage handoff for the
@@ -217,6 +226,20 @@ export function InboxPage() {
         : null,
     [intelligentEntries, selectedId],
   );
+
+  // Q2 — per-slug count across the whole queue. A row's
+  // `SharedTargetBadge` only lights up when `count > 1`. We build the
+  // map once per enrichment pass so every row reads an O(1) lookup.
+  const sharedTargetCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const entry of intelligentEntries) {
+      const slug = entry.intelligence.target_candidate?.slug;
+      if (slug) {
+        counts.set(slug, (counts.get(slug) ?? 0) + 1);
+      }
+    }
+    return counts;
+  }, [intelligentEntries]);
 
   // Focus state: renders to chip/banner/placeholder in a mutually
   // exclusive way. Unlike the pre-F2 silent-clear useEffect, we never
@@ -385,6 +408,7 @@ export function InboxPage() {
             selectedIds={selectedIds}
             onToggleSelect={toggleSelected}
             onBulkSelect={bulkSelect}
+            sharedTargetCounts={sharedTargetCounts}
           />
         </aside>
         <main className="flex min-w-0 flex-1 flex-col overflow-hidden rounded-xl">
@@ -497,6 +521,7 @@ function EntryList({
   selectedIds,
   onToggleSelect,
   onBulkSelect,
+  sharedTargetCounts,
 }: {
   entries: IntelligentEntry[];
   isLoading: boolean;
@@ -507,6 +532,8 @@ function EntryList({
   selectedIds: Set<number>;
   onToggleSelect: (id: number) => void;
   onBulkSelect: (ids: number[], on: boolean) => void;
+  /** Q2 — slug → queue-wide count map for `SharedTargetBadge`. */
+  sharedTargetCounts: Map<string, number>;
 }) {
   const queryClient = useQueryClient();
 
@@ -660,6 +687,17 @@ function EntryList({
                           action={entry.intelligence.recommended_action}
                           compact
                         />
+                        {/* Q2 — shared-target cohort indicator. Only
+                            renders when ≥ 2 entries target the same slug. */}
+                        {(() => {
+                          const slug =
+                            entry.intelligence.target_candidate?.slug;
+                          if (!slug) return null;
+                          const count = sharedTargetCounts.get(slug) ?? 0;
+                          return (
+                            <SharedTargetBadge slug={slug} count={count} />
+                          );
+                        })()}
                         {entry.intelligence.cohort_raw_id != null && (
                           <span
                             className="inline-flex items-center gap-0.5 rounded-full border border-border/40 px-1.5 py-0.5 text-muted-foreground/70"
@@ -791,6 +829,13 @@ function EntryDetail({
   // reload (see `displayProposal` below). Reset on entry switch.
   const [activeProposal, setActiveProposal] = useState<UpdateProposal | null>(null);
 
+  // Q2 — Duplicate-concept guard state. `guardDismissed` suppresses
+  // both Layer 1 (ambient banner) and Layer 2 (modal) for the rest of
+  // this entry's lifecycle. `showGuardDialog` gates Layer 2 visibility.
+  // Both reset on entry switch (see the effect below).
+  const [guardDismissed, setGuardDismissed] = useState(false);
+  const [showGuardDialog, setShowGuardDialog] = useState(false);
+
   // Raw detail — drives §1 Evidence (skipped when source_raw_id is null).
   const rawQuery = useQuery({
     queryKey: ["raw", entry.source_raw_id ?? null],
@@ -803,6 +848,22 @@ function EntryDetail({
   });
   const rawEntry = rawQuery.data?.entry ?? null;
   const rawBody = rawQuery.data?.body ?? null;
+
+  // Q2 — target-candidate query. Only fetched while the user is in a
+  // decision state where the candidates actually matter (`update_existing`
+  // picker or `create_new` duplicate guard). A 30 s staleTime keeps the
+  // picker snappy on intra-entry toggles without starving cold reloads.
+  const candidatesQuery = useQuery({
+    queryKey: ["inbox", entry.id, "candidates"],
+    queryFn: () => fetchInboxCandidates(entry.id, { with_graph: true }),
+    enabled:
+      maintainAction === "update_existing" ||
+      maintainAction === "create_new",
+    staleTime: 30_000,
+  });
+  const candidates: TargetCandidate[] =
+    candidatesQuery.data?.candidates ?? [];
+  const topCandidate: TargetCandidate | null = candidates[0] ?? null;
 
   // Legacy Propose → Approve flow — fallback inside §2, unchanged.
   const resolveMutation = useMutation({
@@ -929,6 +990,10 @@ function EntryDetail({
     setRejectionReason("");
     setMaintainResult(null);
     setActiveProposal(null);
+    // Q2 — reset duplicate-guard state so a previously-dismissed guard
+    // on a different entry doesn't silently carry over.
+    setGuardDismissed(false);
+    setShowGuardDialog(false);
 
     // Scroll the decision section into view so the user lands on the
     // radio they're about to act on (instead of at the top of the
@@ -1041,7 +1106,8 @@ function EntryDetail({
     return displayProposal ? "应用更新" : "生成提案";
   }, [maintainAction, displayProposal]);
 
-  const handleExecute = () => {
+  /** Raw mutation trigger — bypasses the Q2 Layer 2 guard. */
+  const runExecute = () => {
     if (maintainAction === "update_existing") {
       if (displayProposal) {
         applyMutation.mutate();
@@ -1051,6 +1117,23 @@ function EntryDetail({
       return;
     }
     maintainMutation.mutate();
+  };
+
+  const handleExecute = () => {
+    // Q2 — Layer 2 guard. When the user is about to commit a new page
+    // but the top candidate score still crosses the threshold AND the
+    // ambient banner was never dismissed, surface the modal first so
+    // the action requires an explicit "继续新建" confirmation.
+    if (
+      maintainAction === "create_new" &&
+      topCandidate &&
+      topCandidate.score >= DUPLICATE_GUARD_SCORE_THRESHOLD &&
+      !guardDismissed
+    ) {
+      setShowGuardDialog(true);
+      return;
+    }
+    runExecute();
   };
 
   const executePending =
@@ -1285,19 +1368,52 @@ function EntryDetail({
                 // gate still applies.
                 disabled={anyPending || lockFormForProposal}
                 wikiPageSearchSlot={
-                  // Worker C's WikiPageSearchField. Coerce null → undefined
-                  // because Worker A's state carries `string | null` but
-                  // Worker C's `value` prop is `string | undefined` (both
-                  // mean "unselected" — just different nullish dialects).
-                  <WikiPageSearchField
-                    value={
-                      (displayProposal?.target_slug ?? targetPageSlug) ??
-                      undefined
-                    }
-                    onSelect={(slug) => setTargetPageSlug(slug)}
-                  />
+                  <div className="space-y-2">
+                    {/* Q2 — server-ranked candidates sit above the manual
+                        search field. The picker never hides the search,
+                        so a zero-candidate response falls through to the
+                        compact EmptyState + the original search path. */}
+                    <TargetCandidatePicker
+                      candidates={candidates}
+                      onSelect={(slug) => setTargetPageSlug(slug)}
+                      selectedSlug={
+                        displayProposal?.target_slug ?? targetPageSlug
+                      }
+                      disabled={anyPending || lockFormForProposal}
+                    />
+                    {/* Worker C's WikiPageSearchField (fallback search). */}
+                    <WikiPageSearchField
+                      value={
+                        (displayProposal?.target_slug ?? targetPageSlug) ??
+                        undefined
+                      }
+                      onSelect={(slug) => setTargetPageSlug(slug)}
+                    />
+                  </div>
                 }
               />
+
+              {/* Q2 — Layer 1 duplicate-concept guard (ambient banner).
+                  Triggers only in `create_new` with a high-confidence
+                  top candidate (score ≥ 75). Interacts with the Q1
+                  `ask_first` CTA as mutually exclusive by state: if the
+                  user is in `create_new`, they've already moved past
+                  the `ask_first` gate, so the two banners can't coexist
+                  in practice. */}
+              {maintainAction === "create_new" &&
+                topCandidate &&
+                topCandidate.score >= DUPLICATE_GUARD_SCORE_THRESHOLD &&
+                !guardDismissed && (
+                  <DuplicateGuardBanner
+                    candidate={topCandidate}
+                    onSwitchToUpdate={() => {
+                      setMaintainAction("update_existing");
+                      setTargetPageSlug(topCandidate.slug);
+                      setGuardDismissed(true);
+                    }}
+                    onDismiss={() => setGuardDismissed(true)}
+                  />
+                )}
 
               {/* W2 Phase 2 — diff preview (only when update_existing
                   has a live or persisted proposal). Rendered above
@@ -1451,6 +1567,31 @@ function EntryDetail({
           </WorkbenchSection>
         )}
       </div>
+
+      {/* Q2 — Layer 2 duplicate-concept guard (modal). Mounted at the
+          pane root so it overlays the full workbench. Rendered only
+          when a viable top candidate exists — the open flag alone is
+          not enough, since `topCandidate` can toggle between renders
+          (candidate refetch, entry switch). */}
+      {topCandidate && (
+        <DuplicateGuardDialog
+          open={showGuardDialog}
+          onOpenChange={setShowGuardDialog}
+          candidate={topCandidate}
+          onSwitchToUpdate={() => {
+            setMaintainAction("update_existing");
+            setTargetPageSlug(topCandidate.slug);
+            setGuardDismissed(true);
+          }}
+          onProceed={() => {
+            // Mark dismissed so a later re-click of 执行 doesn't reopen
+            // the dialog in an infinite loop — the user has explicitly
+            // opted into the duplicate create.
+            setGuardDismissed(true);
+            runExecute();
+          }}
+        />
+      )}
     </div>
   );
 }

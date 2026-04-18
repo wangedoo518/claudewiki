@@ -589,6 +589,20 @@ pub fn app(state: AppState) -> Router {
             "/api/wiki/inbox/{id}/proposal/cancel",
             post(cancel_proposal_handler),
         )
+        // ── Q2 Target Resolver: ranked target-page candidates ──────
+        // Read-only scorer that suggests up to three wiki pages the
+        // user might want to pick as the `update_existing` target
+        // for an inbox entry. Pure function in `wiki_maintainer`;
+        // this route just plumbs the inbox + wiki store read layer
+        // into the scorer and returns the response. GET is correct
+        // (idempotent, no side effects). Optional `?with_graph=true`
+        // triggers a second pass that folds graph_* signals into
+        // the top-3 — costs 3 extra page-graph builds, so it's
+        // opt-in.
+        .route(
+            "/api/wiki/inbox/{id}/candidates",
+            get(list_inbox_candidates_handler),
+        )
         // ── ClawWiki S4 wiki concept pages (read) ──────────────────
         // Pure read routes for the Wiki tab and the InboxPage diff
         // preview. Writes ONLY happen through the propose →
@@ -2581,6 +2595,116 @@ async fn list_wiki_inbox_handler() -> Result<Json<serde_json::Value>, ApiError> 
         "entries": entries,
         "pending_count": pending,
         "total_count": entries.len(),
+    })))
+}
+
+// ── Q2 Target Resolver: GET /api/wiki/inbox/{id}/candidates ────────
+//
+// Idempotent read route. Loads the target inbox entry and the full
+// wiki page list, then delegates to
+// `wiki_maintainer::resolve_target_candidates` for the pure scoring
+// pass. Errors are surfaced with strict HTTP status codes so the UI
+// can disambiguate "bad id" from "disk read failed":
+//   * 404 — inbox entry not found
+//   * 500 — wiki_store I/O error
+//
+// Optional `?with_graph=true` triggers the graph-signal second pass.
+// We build the graph ONLY for the top-3 preliminary hits, which
+// bounds the extra disk cost at 3 × (outgoing + backlinks + related)
+// calls regardless of how large the wiki grows. The `with_graph`
+// flag defaults to false so the fast path stays fast.
+
+/// Query parameters for `GET /api/wiki/inbox/{id}/candidates`.
+#[derive(Debug, Deserialize)]
+struct InboxCandidatesQuery {
+    /// When `true`, run the graph-signal enrichment pass after the
+    /// preliminary top-3 is chosen. Defaults to `false`.
+    #[serde(default)]
+    with_graph: bool,
+}
+
+async fn list_inbox_candidates_handler(
+    Path(id): Path<u32>,
+    Query(query): Query<InboxCandidatesQuery>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let paths = resolve_wiki_root_for_handler()?;
+
+    // Step 1: locate the inbox entry. `wiki_store` exposes
+    // `list_inbox_entries` but no single-entry getter; scanning the
+    // list is O(inbox_size) which is bounded at a few hundred by
+    // design (see canonical §7.4 on inbox churn).
+    let entries = wiki_store::list_inbox_entries(&paths).map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("list_inbox_entries failed: {e}"),
+            }),
+        )
+    })?;
+    let entry = entries
+        .iter()
+        .find(|e| e.id == id)
+        .cloned()
+        .ok_or_else(|| {
+            (
+                StatusCode::NOT_FOUND,
+                Json(ErrorResponse {
+                    error: format!("inbox entry not found: {id}"),
+                }),
+            )
+        })?;
+
+    // Step 2: snapshot the wiki pages for the scorer. The helper
+    // trims the full `WikiPageSummary` down to the four fields the
+    // scorer consumes (slug / title / source_raw_id / category).
+    let pages = wiki_store::list_page_summaries_for_resolver(&paths).map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("list_page_summaries_for_resolver failed: {e}"),
+            }),
+        )
+    })?;
+
+    // Step 3: first-pass scoring. No graph signals yet.
+    let preliminary =
+        wiki_maintainer::resolve_target_candidates(&entry, &pages, None);
+
+    // Step 4 (optional): second pass with graph signals. Build a
+    // per-slug graph map ONLY for the preliminary hits so the cost
+    // is bounded at the top-3 × O(page_read + backlinks).
+    let candidates = if query.with_graph && !preliminary.is_empty() {
+        let mut graphs: std::collections::HashMap<String, wiki_store::PageGraph> =
+            std::collections::HashMap::new();
+        for c in &preliminary {
+            match wiki_store::get_page_graph(&paths, &c.slug) {
+                Ok(g) => {
+                    graphs.insert(c.slug.clone(), g);
+                }
+                Err(e) => {
+                    // Soft-fail: graph enrichment is a best-effort
+                    // boost. If one slug can't be read we drop its
+                    // graph and keep the preliminary score. Logging
+                    // rather than erroring matches the pattern of
+                    // other "nice-to-have" Wiki reads.
+                    eprintln!(
+                        "list_inbox_candidates_handler: get_page_graph({}) failed: {e}",
+                        c.slug
+                    );
+                }
+            }
+        }
+        // Re-run the scorer with graph map so graph_* signals fold
+        // into the final scores. `resolve_target_candidates` handles
+        // re-sorting internally.
+        wiki_maintainer::resolve_target_candidates(&entry, &pages, Some(&graphs))
+    } else {
+        preliminary
+    };
+
+    Ok(Json(serde_json::json!({
+        "inbox_id": id,
+        "candidates": candidates,
     })))
 }
 

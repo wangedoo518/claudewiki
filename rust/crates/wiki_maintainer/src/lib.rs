@@ -32,6 +32,7 @@ pub mod prompt;
 use api::{MessageRequest, MessageResponse, OutputContentBlock};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
 /// The maintainer's output. The LLM returns this as JSON per the
@@ -1453,6 +1454,494 @@ pub async fn query_wiki(
         total_tokens,
     })
 }
+
+// ─────────────────────────────────────────────────────────────────────
+// Q2: Target Resolver — suggest target wiki pages for an inbox entry
+// ─────────────────────────────────────────────────────────────────────
+//
+// Pure, synchronous scorer. Given an `InboxEntry` (freshly-ingested
+// raw paste / URL) and the full list of wiki pages, return up to
+// three `TargetCandidate` records ranked by a transparent 8-signal
+// additive scoring scheme. Called by the HTTP handler
+// `GET /api/wiki/inbox/{id}/candidates` before the user picks
+// between `create_new` and `update_existing { target_page_slug }`.
+//
+// Why a pure function:
+//   * Deterministic — same inputs always give the same output, so
+//     the UI can cache and the audit log can replay.
+//   * No I/O — tests run in microseconds; `resolve_target_candidates`
+//     never touches the LLM, the network, or the filesystem.
+//   * Composable — a future Q3 pass can layer vector similarity or
+//     LLM re-ranking on top by simply post-processing the output.
+//
+// The scoring pipeline does NOT mutate any inbox or wiki state. It
+// does NOT call `resolve_inbox_entry`, `propose_update`, or
+// `apply_update_proposal`. Read-only by construction.
+
+/// Confidence tier assigned to a candidate based on its final score.
+/// Used by the UI to group hits into "Strong / Likely / Weak"
+/// sections in the Workbench target picker.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CandidateTier {
+    /// score ≥ 80 — user can "one-click accept".
+    Strong,
+    /// 40 ≤ score < 80 — worth reviewing but not auto-accepting.
+    Likely,
+    /// 10 ≤ score < 40 — shown in an expandable "more options" group.
+    Weak,
+}
+
+/// Provenance of a candidate: did it come from existing inbox state
+/// (already resolved / already proposed) or from the Q2 scorer?
+/// Drives which reason chips the UI renders and whether the "accept"
+/// button short-circuits to the confirmed path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CandidateSource {
+    /// `inbox.target_page_slug` is already set — locked in via
+    /// `maintain_action = "update_existing"`. Always tier=Strong.
+    ExistingTarget,
+    /// `inbox.proposed_wiki_slug` is set (maintainer proposal), but
+    /// `target_page_slug` is not yet committed. Tier=Strong, score
+    /// slightly lower than `ExistingTarget` to leave headroom.
+    ExistingProposed,
+    /// Produced by the 8-signal scorer in this module.
+    Resolved,
+}
+
+/// One human-readable reason the scorer emitted for a candidate.
+/// The frontend shows the `detail` string verbatim ( ≤ 50 chars,
+/// Chinese copy) and uses `code` + `weight` for sorting / analytics.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CandidateReason {
+    /// Stable machine id (e.g. `"exact_slug"`, `"title_overlap_high"`).
+    /// Consumers can compile-match on this.
+    pub code: String,
+    /// How many points this reason contributed to the candidate's
+    /// total score.
+    pub weight: u32,
+    /// Chinese short phrase ≤ 50 chars shown verbatim in the UI.
+    pub detail: String,
+}
+
+/// One ranked target-page suggestion for an inbox entry.
+/// Top-3 of these are returned by `resolve_target_candidates`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TargetCandidate {
+    /// Slug of the proposed target page.
+    pub slug: String,
+    /// Display title, copied from the wiki page frontmatter.
+    pub title: String,
+    /// Sum of all reason weights. Used for tier assignment + sort.
+    pub score: u32,
+    /// Confidence tier derived from `score`.
+    pub tier: CandidateTier,
+    /// Provenance flag — see [`CandidateSource`].
+    pub source: CandidateSource,
+    /// Top-3 strongest reasons, highest `weight` first.
+    pub reasons: Vec<CandidateReason>,
+}
+
+/// Stopwords used by [`tokenize_for_scoring`]. Single-token terms
+/// that add noise to the Jaccard signal. Initial 20-word list spans
+/// English function words + a handful of high-frequency Chinese
+/// particles. Intentionally small — the scorer is additive, so
+/// over-aggressive stopword removal would hurt precision. Kept as
+/// a module-private constant so callers can't mutate it.
+const STOPWORDS: &[&str] = &[
+    // English function words (13)
+    "a", "an", "the", "and", "or", "is", "are", "of", "in", "to", "for", "on", "at",
+    // Chinese high-frequency particles (7)
+    "的", "了", "是", "和", "在", "有", "这",
+];
+
+/// Lower-cased + trimmed, nothing else. The Q2 contract deliberately
+/// keeps normalization simple: `to_lowercase` handles ASCII and
+/// most CJK-neutral text, `trim` strips incidental whitespace.
+/// Callers that need accent-folding can layer it on top.
+fn normalize(s: &str) -> String {
+    s.to_lowercase().trim().to_string()
+}
+
+/// Split a string into deduplicated tokens for Jaccard scoring.
+///
+/// Pipeline:
+///   1. Lowercase.
+///   2. Split on `[\s\-_/]+` (whitespace, dash, underscore, slash).
+///   3. Keep tokens with `len() >= 2` (counted in chars, not bytes,
+///      so one CJK glyph is already ≥ 2 by the char count convention
+///      we use — a CJK char is one `char`, so `len() >= 2` means
+///      "at least two characters", which is fine for both alphabets).
+///   4. Drop tokens that appear in `STOPWORDS`.
+///
+/// Returns a `HashSet<String>` so downstream Jaccard can do
+/// intersection / union in linear time with zero duplicates.
+fn tokenize_for_scoring(s: &str) -> HashSet<String> {
+    let lowered = s.to_lowercase();
+    lowered
+        .split(|c: char| c.is_whitespace() || c == '-' || c == '_' || c == '/')
+        .filter(|t| !t.is_empty())
+        // Use char count, not byte len: "你" has byte_len=3 but should
+        // count as one character for the "≥ 2" gate. Since chars()
+        // iterates Unicode scalar values, this is the right primitive.
+        .filter(|t| t.chars().count() >= 2)
+        .filter(|t| !STOPWORDS.contains(t))
+        .map(|t| t.to_string())
+        .collect()
+}
+
+/// Jaccard similarity between two token sets. Returns 0.0 when
+/// either set is empty (vacuous overlap). Pure, no I/O.
+fn jaccard(a: &HashSet<String>, b: &HashSet<String>) -> f32 {
+    let inter = a.intersection(b).count();
+    let union = a.union(b).count();
+    if union == 0 {
+        0.0
+    } else {
+        inter as f32 / union as f32
+    }
+}
+
+/// Slug-ify a title the same way the inbox / raw layer does so that
+/// `exact_slug` can compare apples to apples. We don't call
+/// `wiki_store::slugify` directly because it's a Critical write-path
+/// helper — repurposing it for a read-only scorer pulls it into the
+/// data-loss blast radius. Instead we do the lightweight subset
+/// `resolve_target_candidates` actually needs: lowercase, replace
+/// whitespace/underscore/slash with `-`, strip anything that isn't
+/// alphanumeric or `-`, collapse runs of `-`, trim leading/trailing
+/// `-`. Inputs identical modulo this transform produce identical
+/// outputs.
+fn derive_slug_for_scoring(title: &str) -> String {
+    let lowered = title.to_lowercase();
+    let mut out = String::with_capacity(lowered.len());
+    let mut last_was_dash = false;
+    for c in lowered.chars() {
+        let replaced = if c.is_whitespace() || c == '_' || c == '/' || c == '-' {
+            Some('-')
+        } else if c.is_ascii_alphanumeric() {
+            Some(c)
+        } else {
+            // Keep non-ASCII alphanumerics (CJK titles → `机器学习`),
+            // since the scorer wants a direct compare, not a URL-safe
+            // slug. Drop ASCII punctuation entirely.
+            if c.is_alphanumeric() {
+                Some(c)
+            } else {
+                None
+            }
+        };
+        if let Some(ch) = replaced {
+            if ch == '-' {
+                if last_was_dash {
+                    continue;
+                }
+                last_was_dash = true;
+            } else {
+                last_was_dash = false;
+            }
+            out.push(ch);
+        }
+    }
+    out.trim_matches('-').to_string()
+}
+
+/// Convert a score to a confidence tier. Thresholds match the Q2
+/// contract: ≥ 80 strong, ≥ 40 likely, ≥ 10 weak, < 10 dropped by
+/// the caller.
+fn tier_for_score(score: u32) -> CandidateTier {
+    if score >= 80 {
+        CandidateTier::Strong
+    } else if score >= 40 {
+        CandidateTier::Likely
+    } else {
+        CandidateTier::Weak
+    }
+}
+
+/// Score a single wiki page as a target candidate for an inbox
+/// entry. Returns the score + the list of reasons that contributed,
+/// NOT yet truncated to top-3 (caller does that after ranking so
+/// the cutoff is applied to the final set, not per-page).
+fn score_page_against_inbox(
+    inbox_entry: &wiki_store::InboxEntry,
+    page: &wiki_store::PageSummaryForResolver,
+) -> (u32, Vec<CandidateReason>) {
+    let mut reasons: Vec<CandidateReason> = Vec::new();
+    let mut score: u32 = 0;
+
+    // Signal 1: exact_slug (+100)
+    // Derive a slug from the inbox title the same way the raw layer
+    // does and compare to the wiki page's slug.
+    let derived_slug = derive_slug_for_scoring(&inbox_entry.title);
+    if !derived_slug.is_empty() && derived_slug == page.slug {
+        score += 100;
+        reasons.push(CandidateReason {
+            code: "exact_slug".to_string(),
+            weight: 100,
+            detail: "标题推导 slug 与 wiki 完全一致".to_string(),
+        });
+    }
+
+    // Signal 2: exact_title (+80)
+    // Normalize() both sides, byte-equal.
+    let n_inbox = normalize(&inbox_entry.title);
+    let n_page = normalize(&page.title);
+    if !n_inbox.is_empty() && n_inbox == n_page {
+        score += 80;
+        reasons.push(CandidateReason {
+            code: "exact_title".to_string(),
+            weight: 80,
+            detail: "标题文本完全一致".to_string(),
+        });
+    }
+
+    // Signals 3–5: title_overlap_{high,mid,low} — Jaccard buckets.
+    let toks_inbox = tokenize_for_scoring(&inbox_entry.title);
+    let toks_page = tokenize_for_scoring(&page.title);
+    let j = jaccard(&toks_inbox, &toks_page);
+    if j >= 0.7 {
+        score += 60;
+        reasons.push(CandidateReason {
+            code: "title_overlap_high".to_string(),
+            weight: 60,
+            detail: format!("标题词重合度高 (Jaccard {:.2})", j),
+        });
+    } else if j >= 0.5 {
+        score += 40;
+        reasons.push(CandidateReason {
+            code: "title_overlap_mid".to_string(),
+            weight: 40,
+            detail: format!("标题词重合度中 (Jaccard {:.2})", j),
+        });
+    } else if j >= 0.3 {
+        score += 20;
+        reasons.push(CandidateReason {
+            code: "title_overlap_low".to_string(),
+            weight: 20,
+            detail: format!("标题词重合度低 (Jaccard {:.2})", j),
+        });
+    }
+
+    // Signal 6: shared_raw_source (+50) — cheap: both inbox and
+    // page know their source_raw_id in-memory. No extra I/O.
+    if let (Some(inbox_raw), Some(page_raw)) =
+        (inbox_entry.source_raw_id, page.source_raw_id)
+    {
+        if inbox_raw == page_raw {
+            score += 50;
+            reasons.push(CandidateReason {
+                code: "shared_raw_source".to_string(),
+                weight: 50,
+                detail: format!("来源同一 raw #{inbox_raw}"),
+            });
+        }
+    }
+    // NOTE: This covers the "wiki was generated from the same raw_id
+    // this inbox points at" case (the strongest cheap signal). The
+    // richer "wiki was generated from a sibling raw in the same
+    // source-cluster" case requires a raw-graph lookup and is
+    // out-of-scope for Q2 MVP. See TODO below.
+
+    // Signals 7–9 (graph_*) are added by
+    // `apply_graph_signals_in_place` in a second pass over the top
+    // preliminary hits — see `resolve_target_candidates` below.
+
+    (score, reasons)
+}
+
+/// Second-pass enrichment: given a slice of (page-index, score,
+/// reasons), look at each top preliminary hit's graph (backlinks /
+/// related / outgoing) and add graph_* signals when OTHER top hits
+/// appear in that graph. Runs only when the caller provides a graph
+/// map — the handler passes `Some(...)` when the client requested
+/// `?with_graph=true` and `None` for the default fast path.
+fn apply_graph_signals_in_place(
+    hits: &mut [(usize, u32, Vec<CandidateReason>)],
+    pages: &[wiki_store::PageSummaryForResolver],
+    page_graphs: &HashMap<String, wiki_store::PageGraph>,
+) {
+    // Snapshot the set of top candidate slugs so we can ask "does
+    // page B appear in page A's graph?" in O(1).
+    let top_slugs: HashSet<&str> = hits
+        .iter()
+        .map(|(idx, _, _)| pages[*idx].slug.as_str())
+        .collect();
+
+    for (idx, score, reasons) in hits.iter_mut() {
+        let my_slug = pages[*idx].slug.as_str();
+        let Some(graph) = page_graphs.get(my_slug) else {
+            continue;
+        };
+
+        // graph_backlink (+25): some OTHER top hit links into me.
+        if graph
+            .backlinks
+            .iter()
+            .any(|n| n.slug != my_slug && top_slugs.contains(n.slug.as_str()))
+        {
+            *score += 25;
+            reasons.push(CandidateReason {
+                code: "graph_backlink".to_string(),
+                weight: 25,
+                detail: "同组候选反向链接至此页".to_string(),
+            });
+        }
+
+        // graph_related (+15): some OTHER top hit is in my
+        // `related` section (shared-signal adjacency).
+        if graph
+            .related
+            .iter()
+            .any(|r| r.slug != my_slug && top_slugs.contains(r.slug.as_str()))
+        {
+            *score += 15;
+            reasons.push(CandidateReason {
+                code: "graph_related".to_string(),
+                weight: 15,
+                detail: "与同组候选页相关联".to_string(),
+            });
+        }
+
+        // graph_outgoing (+10): I link out to another top hit.
+        if graph
+            .outgoing
+            .iter()
+            .any(|n| n.slug != my_slug && top_slugs.contains(n.slug.as_str()))
+        {
+            *score += 10;
+            reasons.push(CandidateReason {
+                code: "graph_outgoing".to_string(),
+                weight: 10,
+                detail: "链出至同组候选页".to_string(),
+            });
+        }
+    }
+}
+
+/// Q2 Target Resolver — pure scoring pipeline.
+///
+/// Returns up to three ranked `TargetCandidate` records for an inbox
+/// entry, driven by the 8-signal additive scoring scheme documented
+/// in the Q2 contract.
+///
+/// Short-circuits when the inbox entry has already locked in a target:
+///   * `target_page_slug` present → single `ExistingTarget` hit,
+///     score forced to 100, tier=Strong, single `existing_target`
+///     reason chip.
+///   * `proposed_wiki_slug` present (and no `target_page_slug`)
+///     → single `ExistingProposed` hit, score forced to 90,
+///     tier=Strong.
+///
+/// Otherwise (cold path):
+///   1. Score every page with `score_page_against_inbox`.
+///   2. Drop pages with `score < 10`.
+///   3. Sort descending by score.
+///   4. Take top-3 (NOTE: taken BEFORE graph signals, so graph
+///      enrichment runs over the final set; keeps the O(N·M) graph
+///      cost bounded at 3 · 3 = 9 set-contains lookups).
+///   5. If `page_graphs` is `Some`, apply graph_* signals and
+///      re-sort — the extra weight can shuffle the top-3 order.
+///   6. Cap each candidate's reasons at top-3 by weight.
+///
+/// `page_graphs` is keyed by slug. Callers that don't need graph
+/// enrichment should pass `None` to skip that pass (the HTTP
+/// handler passes `Some(...)` only when `?with_graph=true`).
+pub fn resolve_target_candidates(
+    inbox_entry: &wiki_store::InboxEntry,
+    pages: &[wiki_store::PageSummaryForResolver],
+    page_graphs: Option<&HashMap<String, wiki_store::PageGraph>>,
+) -> Vec<TargetCandidate> {
+    // ── Fast paths: pre-existing target / proposal ───────────────
+    if let Some(target_slug) = inbox_entry.target_page_slug.as_ref() {
+        if let Some(page) = pages.iter().find(|p| &p.slug == target_slug) {
+            return vec![TargetCandidate {
+                slug: page.slug.clone(),
+                title: page.title.clone(),
+                score: 100,
+                tier: CandidateTier::Strong,
+                source: CandidateSource::ExistingTarget,
+                reasons: vec![CandidateReason {
+                    code: "existing_target".to_string(),
+                    weight: 100,
+                    detail: "已关联 wiki 页".to_string(),
+                }],
+            }];
+        }
+        // Fall through when the slug points at a deleted page —
+        // let the cold path compute real candidates.
+    }
+    if inbox_entry.target_page_slug.is_none() {
+        if let Some(prop_slug) = inbox_entry.proposed_wiki_slug.as_ref() {
+            if let Some(page) = pages.iter().find(|p| &p.slug == prop_slug) {
+                return vec![TargetCandidate {
+                    slug: page.slug.clone(),
+                    title: page.title.clone(),
+                    score: 90,
+                    tier: CandidateTier::Strong,
+                    source: CandidateSource::ExistingProposed,
+                    reasons: vec![CandidateReason {
+                        code: "existing_proposed".to_string(),
+                        weight: 90,
+                        detail: "已存在同名提案页".to_string(),
+                    }],
+                }];
+            }
+            // Fall through when the proposal page doesn't exist yet —
+            // the resolver can still suggest other targets.
+        }
+    }
+
+    // ── Cold path: 8-signal scorer ───────────────────────────────
+    let mut scored: Vec<(usize, u32, Vec<CandidateReason>)> = pages
+        .iter()
+        .enumerate()
+        .map(|(idx, page)| {
+            let (score, reasons) = score_page_against_inbox(inbox_entry, page);
+            (idx, score, reasons)
+        })
+        .filter(|(_, score, _)| *score >= 10)
+        .collect();
+
+    // Sort descending by score.
+    scored.sort_by(|a, b| b.1.cmp(&a.1));
+    scored.truncate(3);
+
+    // Optional graph enrichment over the top-3.
+    if let Some(graphs) = page_graphs {
+        apply_graph_signals_in_place(&mut scored, pages, graphs);
+        scored.sort_by(|a, b| b.1.cmp(&a.1));
+    }
+
+    scored
+        .into_iter()
+        .map(|(idx, score, mut reasons)| {
+            // Top-3 reasons by weight desc, stable tie-break on code.
+            reasons.sort_by(|a, b| b.weight.cmp(&a.weight).then_with(|| a.code.cmp(&b.code)));
+            reasons.truncate(3);
+            TargetCandidate {
+                slug: pages[idx].slug.clone(),
+                title: pages[idx].title.clone(),
+                score,
+                tier: tier_for_score(score),
+                source: CandidateSource::Resolved,
+                reasons,
+            }
+        })
+        .collect()
+}
+
+// TODO (Q3): shared_raw_source currently matches only on the exact
+// `page.source_raw_id == inbox.source_raw_id` case. A future pass
+// should widen it to "the wiki page was generated from a raw that
+// shares a source-cluster (e.g. same canonical URL) with this
+// inbox's raw". Requires a raw-graph adjacency lookup in
+// `wiki_store`. Tracked for Q3 scope.
+//
+// TODO (Q3): consider adding a "recent_touch" signal that boosts
+// pages the user has touched in the last N days. Needs a signal
+// source from `wiki/log.md` — out of scope for Q2 MVP.
 
 #[cfg(test)]
 mod tests {

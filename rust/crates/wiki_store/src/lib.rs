@@ -1603,6 +1603,65 @@ pub fn list_all_wiki_pages(paths: &WikiPaths) -> Result<Vec<WikiPageSummary>> {
     Ok(all)
 }
 
+/// ── Q2 Target-Resolver read model ────────────────────────────────
+///
+/// Minimal projection of a wiki page exposed to
+/// `wiki_maintainer::resolve_target_candidates`. Carries just the
+/// fields the 8-signal scorer needs (slug + title + the optional
+/// `source_raw_id` frontmatter field) — no bodies, no byte sizes,
+/// no `confidence`. The resolver runs over every wiki page on each
+/// call, and we'd rather hand it a small struct than leak the full
+/// [`WikiPageSummary`] shape (which carries fields that are
+/// irrelevant and would tempt scorer features to depend on them).
+///
+/// Pure read model — no `write_*` API consumes this type, and
+/// [`list_page_summaries_for_resolver`] is the single constructor.
+/// Data-loss risk is zero: this type never touches `write_raw_entry`
+/// or `slugify`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PageSummaryForResolver {
+    /// Kebab-case slug (primary key, filename stem).
+    pub slug: String,
+    /// Human-readable title from the frontmatter.
+    pub title: String,
+    /// Optional raw/ entry id that seeded the page. `None` when the
+    /// page was hand-written or the frontmatter lacks the key. Drives
+    /// the `shared_raw_source` scorer signal — see
+    /// `wiki_maintainer::resolve_target_candidates`.
+    pub source_raw_id: Option<u32>,
+    /// Wiki category ("concept" | "people" | "topic" | "compare").
+    /// Preserved so the resolver can (future) weight matches by
+    /// category compatibility without re-opening the file.
+    pub category: String,
+}
+
+/// Q2 Target-Resolver read API.
+///
+/// Return a minimal projection of every wiki page across all
+/// categories, suitable for the O(N) pass in
+/// `wiki_maintainer::resolve_target_candidates`. Delegates to
+/// [`list_all_wiki_pages`] and trims each summary to the four
+/// fields the scorer actually reads.
+///
+/// Pure read path — zero filesystem writes, zero side-effects.
+/// Safe to call from any HTTP handler; same "no cache, re-parse
+/// frontmatter on each call" philosophy as the underlying
+/// `list_all_wiki_pages`.
+pub fn list_page_summaries_for_resolver(
+    paths: &WikiPaths,
+) -> Result<Vec<PageSummaryForResolver>> {
+    let pages = list_all_wiki_pages(paths)?;
+    Ok(pages
+        .into_iter()
+        .map(|p| PageSummaryForResolver {
+            slug: p.slug,
+            title: p.title,
+            source_raw_id: p.source_raw_id,
+            category: p.category,
+        })
+        .collect())
+}
+
 /// Read a single wiki concept page by slug. Returns the parsed
 /// summary plus the body text (everything after the closing `---`
 /// of the frontmatter, leading newline trimmed — same convention

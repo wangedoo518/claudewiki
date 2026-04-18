@@ -166,3 +166,42 @@ export type GeneratedBatchResolveInboxResponse = {
   total: number;
 };
 
+export type GeneratedCandidateTier = string;
+
+export type GeneratedCandidateSource = string;
+
+export type GeneratedCandidateReason = {
+  code: string;
+  detail: string;
+  weight: number;
+};
+
+export type GeneratedTargetCandidate = {
+  reasons: Array<{
+    code: string;
+    detail: string;
+    weight: number;
+  }>;
+  score: number;
+  slug: string;
+  source: string;
+  tier: string;
+  title: string;
+};
+
+export type GeneratedInboxCandidatesResponse = {
+  candidates: Array<{
+    reasons: Array<{
+      code: string;
+      detail: string;
+      weight: number;
+    }>;
+    score: number;
+    slug: string;
+    source: string;
+    tier: string;
+    title: string;
+  }>;
+  inbox_id: number;
+};
+

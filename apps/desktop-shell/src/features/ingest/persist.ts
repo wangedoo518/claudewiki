@@ -437,3 +437,59 @@ export async function cancelProposal(inboxId: number): Promise<void> {
     throw new Error(message);
   }
 }
+
+// ── Q2 Target Candidates: fetch with client-side fallback ────────
+//
+// `GET /api/wiki/inbox/{id}/candidates` — returns the top-3 target
+// wiki pages the server thinks this inbox entry should merge into
+// (shape: `InboxCandidatesResponse` in
+// `features/inbox/candidate-scoring.ts`). Backs the Q2
+// `TargetCandidatePicker` chip row.
+//
+// Falls back to the TS-side scorer (`target-resolver.ts`) when:
+//   • the server 404s (older dev server without the Q2 patch).
+// Any other non-2xx propagates as an `Error` so the caller's toast
+// surfaces the real failure reason.
+//
+// `?with_graph=true` asks the server to include graph-derived signals
+// (backlinks / related / outgoing). The fallback path cannot compute
+// the page graph client-side, so `with_graph` is silently dropped in
+// the fallback branch.
+
+import type { InboxCandidatesResponse } from "@/lib/tauri";
+
+export async function fetchInboxCandidates(
+  id: number,
+  options?: { with_graph?: boolean },
+): Promise<InboxCandidatesResponse> {
+  const qs = options?.with_graph ? "?with_graph=true" : "";
+  const base = await getDesktopApiBase();
+  const response = await fetch(
+    `${base}/api/wiki/inbox/${id}/candidates${qs}`,
+    { headers: { Accept: "application/json" } },
+  );
+
+  if (response.ok) {
+    return (await response.json()) as InboxCandidatesResponse;
+  }
+
+  // Fallback — the Q2 endpoint isn't deployed on this server; run the
+  // TS-port of the scorer against the two list endpoints so the UI
+  // still gets candidates. Lazy import so the resolver + its deps
+  // aren't paid for in the happy path.
+  if (response.status === 404) {
+    const { resolveInboxCandidatesClientSide } = await import(
+      "@/features/inbox/target-resolver"
+    );
+    return resolveInboxCandidatesClientSide(id);
+  }
+
+  let message = `fetchInboxCandidates failed with status ${response.status}`;
+  try {
+    const text = await response.text();
+    if (text) message = text;
+  } catch {
+    // fall through with default message
+  }
+  throw new Error(message);
+}

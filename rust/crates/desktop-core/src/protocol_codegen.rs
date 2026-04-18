@@ -395,6 +395,69 @@ mod tests {
                     "processed": 2
                 }),
             ),
+            // ── Q2 Target Resolver: ranked candidate contract ─────
+            // `TargetCandidate` + enums live in `wiki_maintainer`;
+            // the HTTP response envelope lives in `desktop-server`.
+            // We round-trip real Rust instances through serde for
+            // the candidate / reason / tier / source types, and
+            // hand-build the response wrapper (since it's a JSON
+            // map assembled by the handler, not a named struct).
+            (
+                "GeneratedCandidateTier",
+                serde_json::to_value(wiki_maintainer::CandidateTier::Strong).unwrap(),
+            ),
+            (
+                "GeneratedCandidateSource",
+                serde_json::to_value(wiki_maintainer::CandidateSource::Resolved).unwrap(),
+            ),
+            (
+                "GeneratedCandidateReason",
+                serde_json::to_value(wiki_maintainer::CandidateReason {
+                    code: "exact_slug".to_string(),
+                    weight: 100,
+                    detail: "标题推导 slug 与 wiki 完全一致".to_string(),
+                })
+                .unwrap(),
+            ),
+            (
+                "GeneratedTargetCandidate",
+                serde_json::to_value(wiki_maintainer::TargetCandidate {
+                    slug: "example-slug".to_string(),
+                    title: "Example".to_string(),
+                    score: 90,
+                    tier: wiki_maintainer::CandidateTier::Strong,
+                    source: wiki_maintainer::CandidateSource::Resolved,
+                    reasons: vec![wiki_maintainer::CandidateReason {
+                        code: "exact_slug".to_string(),
+                        weight: 100,
+                        detail: "标题推导 slug 与 wiki 完全一致".to_string(),
+                    }],
+                })
+                .unwrap(),
+            ),
+            // Response envelope for GET /api/wiki/inbox/{id}/candidates.
+            // Hand-built JSON because the handler assembles it with
+            // `serde_json::json!` rather than a named struct.
+            (
+                "GeneratedInboxCandidatesResponse",
+                serde_json::json!({
+                    "inbox_id": 1,
+                    "candidates": [
+                        serde_json::to_value(wiki_maintainer::TargetCandidate {
+                            slug: "example-slug".to_string(),
+                            title: "Example".to_string(),
+                            score: 90,
+                            tier: wiki_maintainer::CandidateTier::Strong,
+                            source: wiki_maintainer::CandidateSource::Resolved,
+                            reasons: vec![wiki_maintainer::CandidateReason {
+                                code: "exact_slug".to_string(),
+                                weight: 100,
+                                detail: "标题推导 slug 与 wiki 完全一致".to_string(),
+                            }],
+                        }).unwrap()
+                    ],
+                }),
+            ),
         ];
 
         let file_contents = ts_file(&types);

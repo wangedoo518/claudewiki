@@ -944,6 +944,435 @@ fn unix_ms_now() -> u64 {
         .map_or(0, |d| d.as_millis() as u64)
 }
 
+/// Same as [`unix_ms_now`] but as `i64` for shapes that mirror
+/// JS/TS `number` (Date.now()) on the wire. Used by the W3 combined
+/// proposal response. Overflow has the same year-2554 floor as
+/// `unix_ms_now`.
+#[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+fn unix_ms_now_i64() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis() as i64)
+}
+
+/// Compute the SHA-256 of `input`, returning lowercase hex. Used by
+/// the W3 combined proposal engine to build the `before_hash` guard
+/// that detects concurrent edits between preview and apply.
+#[must_use]
+pub fn sha256_hex(input: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(input.as_bytes());
+    let mut out = String::with_capacity(digest.len() * 2);
+    for byte in digest {
+        use std::fmt::Write as _;
+        let _ = write!(out, "{byte:02x}");
+    }
+    out
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// W3: combined (multi-source) proposal engine
+// ─────────────────────────────────────────────────────────────────────
+//
+// W3 layers a "combined" merge path on top of the single-source W2
+// flow. The shape: user picks 2..=6 pending inbox entries plus one
+// target page; server asks the LLM to fold them all in one shot;
+// user reviews the diff; server atomically writes the wiki page and
+// flips all N inbox entries to Approved.
+//
+// Ephemeral-bundle design (see W3 contract):
+//   * Preview writes NO inbox staging fields — the diff is built on
+//     the fly and returned in one response.
+//   * Apply receives the frontend-echoed `after_markdown` + `summary`
+//     plus an `expected_before_hash` so we can detect concurrent
+//     edits without storing a snapshot.
+//
+// This keeps zero new InboxEntry fields (wiki_store is critical path
+// for data loss) and reuses every W2 staging field for the apply
+// flip.
+
+/// Per-source metadata returned in the combined preview response. The
+/// frontend uses these to render the "merging N sources" header
+/// (title list + inbox ids) without re-fetching each raw entry.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CombinedProposalSource {
+    /// Inbox entry id (the row the user selected).
+    pub inbox_id: u32,
+    /// Human-readable title pulled from the inbox entry.
+    pub title: String,
+    /// The underlying raw entry id if known. Echoed to the frontend
+    /// so the UI can link back to the original paste/url/file for
+    /// inspection.
+    pub source_raw_id: Option<u32>,
+}
+
+/// Response envelope for `POST /api/wiki/proposal/combined` —
+/// the preview produced by [`propose_combined_update`]. Carries the
+/// before/after markdown + a SHA-256 hash the frontend echoes back
+/// to the apply call as `expected_before_hash`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CombinedProposalResponse {
+    pub target_slug: String,
+    pub inbox_ids: Vec<u32>,
+    pub before_markdown: String,
+    pub after_markdown: String,
+    pub summary: String,
+    /// Lowercase hex SHA-256 of `before_markdown`, used by the apply
+    /// endpoint for a concurrent-edit guard.
+    pub before_hash: String,
+    /// Epoch milliseconds when this preview was generated.
+    pub generated_at: i64,
+    /// One entry per source id, in the same order as `inbox_ids`.
+    pub source_titles: Vec<CombinedProposalSource>,
+}
+
+/// Outcome envelope for [`apply_combined_proposal`]. The HTTP handler
+/// stringifies `outcome` onto the wire so the frontend can branch on
+/// a consistent string across success / concurrent-edit / partial /
+/// stale-inbox paths.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CombinedApplyResult {
+    /// One of:
+    ///   * `"applied"` — wiki page written, all N inbox entries flipped.
+    ///   * `"concurrent_edit"` — the page changed between preview and
+    ///     apply; no write happened.
+    ///   * `"stale_inbox"` — one or more inbox ids disappeared or left
+    ///     Pending between preview and apply; no write happened.
+    ///   * `"partial_applied"` — wiki page wrote successfully but at
+    ///     least one inbox flip failed; `failed_ids` lists the survivors.
+    pub outcome: String,
+    /// Slug of the target page that was (or would have been) updated.
+    pub target_page_slug: String,
+    /// Inbox ids that were successfully flipped to Approved.
+    pub applied_inbox_ids: Vec<u32>,
+    /// Inbox ids that failed to flip (only populated on
+    /// `outcome == "partial_applied"`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub failed_inbox_ids: Vec<u32>,
+    /// Single-line audit entry the server appended to `wiki/log.md`
+    /// (empty string when no log line was written, e.g. on
+    /// concurrent_edit / stale_inbox). Echoed to the frontend so a
+    /// future UI can show "logged as …" without re-reading the log.
+    pub audit_entry: String,
+}
+
+/// Bound on how many inbox sources a combined proposal may fold.
+///
+/// Lower bound (2) comes from the W3 contract: one-source merges stay
+/// on the W2 single-source path so the LLM never sees combined-merge
+/// framing for a trivial input. Upper bound (6) keeps the prompt
+/// token budget bounded and gives us headroom below the 8000-token
+/// `COMBINED_MERGE_MAX_OUTPUT_TOKENS` cap.
+pub const COMBINED_MIN_SOURCES: usize = 2;
+pub const COMBINED_MAX_SOURCES: usize = 6;
+
+/// Validation error modes for the combined preview/apply flow. Kept
+/// as plain `MaintainerError::InvalidProposal` strings so the HTTP
+/// handler only needs to translate one error variant into a 400.
+fn validate_combined_inputs(target_slug: &str, inbox_ids: &[u32]) -> Result<()> {
+    if target_slug.trim().is_empty() {
+        return Err(MaintainerError::InvalidProposal(
+            "target_slug is required".to_string(),
+        ));
+    }
+    if inbox_ids.len() < COMBINED_MIN_SOURCES || inbox_ids.len() > COMBINED_MAX_SOURCES {
+        return Err(MaintainerError::InvalidProposal(format!(
+            "combined proposal requires {COMBINED_MIN_SOURCES}..={COMBINED_MAX_SOURCES} \
+             inbox sources, got {}",
+            inbox_ids.len()
+        )));
+    }
+    // Duplicate ids would make the UI ambiguous and let the LLM see
+    // the same body twice. Reject early rather than dedup silently.
+    let mut seen = HashSet::with_capacity(inbox_ids.len());
+    for id in inbox_ids {
+        if !seen.insert(*id) {
+            return Err(MaintainerError::InvalidProposal(format!(
+                "duplicate inbox id: {id}"
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Phase 1 of the W3 combined flow: fan out to 1 LLM call that folds
+/// N inbox entries into a single wiki page. Does NOT write to the
+/// inbox file — the response is ephemeral and the frontend echoes
+/// the critical pieces back on apply.
+///
+/// Flow:
+///   1. Validate `inbox_ids.len() in 2..=6` + `target_slug` non-empty.
+///   2. Load the inbox, resolve each id to a pending entry with a
+///      `source_raw_id` (any missing/non-pending/no-raw → 400).
+///   3. Read the target page (not found → 404 at the HTTP layer).
+///   4. Read each raw body.
+///   5. Compute the `before_hash` of the current page body.
+///   6. Build the combined merge prompt, fire one `chat_completion`.
+///   7. Parse `{after_markdown, summary}` out of the response.
+///   8. Return `CombinedProposalResponse` for immediate HTTP send.
+pub async fn propose_combined_update(
+    paths: &wiki_store::WikiPaths,
+    target_slug: &str,
+    inbox_ids: &[u32],
+    broker: &(impl BrokerSender + ?Sized),
+) -> Result<CombinedProposalResponse> {
+    // Step 1 — validate input shape.
+    validate_combined_inputs(target_slug, inbox_ids)?;
+
+    // Step 2 — resolve each inbox id to a Pending entry.
+    let all_entries = wiki_store::list_inbox_entries(paths)
+        .map_err(|e| MaintainerError::Store(e.to_string()))?;
+    let by_id: HashMap<u32, wiki_store::InboxEntry> = all_entries
+        .into_iter()
+        .map(|e| (e.id, e))
+        .collect();
+
+    let mut resolved: Vec<(wiki_store::InboxEntry, u32)> = Vec::with_capacity(inbox_ids.len());
+    for &id in inbox_ids {
+        let entry = by_id.get(&id).cloned().ok_or_else(|| {
+            MaintainerError::InvalidProposal(format!("inbox entry not found: {id}"))
+        })?;
+        if !matches!(entry.status, wiki_store::InboxStatus::Pending) {
+            return Err(MaintainerError::InvalidProposal(format!(
+                "inbox {id} not pending (status={:?})",
+                entry.status
+            )));
+        }
+        let raw_id = entry.source_raw_id.ok_or_else(|| {
+            MaintainerError::InvalidProposal(format!(
+                "inbox {id} missing source_raw_id"
+            ))
+        })?;
+        resolved.push((entry, raw_id));
+    }
+
+    // Step 3 — read target page.
+    let (target_summary, before_markdown) = wiki_store::read_wiki_page(paths, target_slug)
+        .map_err(|e| {
+            MaintainerError::Store(format!(
+                "target page `{target_slug}` not found: {e}"
+            ))
+        })?;
+
+    // Step 4 — read each raw body, collecting (inbox_id, title, body).
+    let mut prompt_sources: Vec<(u32, String, String)> = Vec::with_capacity(resolved.len());
+    let mut source_titles: Vec<CombinedProposalSource> = Vec::with_capacity(resolved.len());
+    for (entry, raw_id) in &resolved {
+        let (_raw_entry, raw_body) = wiki_store::read_raw_entry(paths, *raw_id)
+            .map_err(|e| MaintainerError::RawNotAvailable(e.to_string()))?;
+        prompt_sources.push((entry.id, entry.title.clone(), raw_body));
+        source_titles.push(CombinedProposalSource {
+            inbox_id: entry.id,
+            title: entry.title.clone(),
+            source_raw_id: Some(*raw_id),
+        });
+    }
+
+    // Step 5 — hash the before body for the apply-time concurrent-edit
+    // guard. The frontend will echo this back in `expected_before_hash`.
+    let before_hash = sha256_hex(&before_markdown);
+
+    // Step 6 — build + fire combined prompt.
+    let request = prompt::build_combined_merge_request(
+        target_slug,
+        &target_summary.title,
+        &before_markdown,
+        &prompt_sources,
+    );
+    let response = broker.chat_completion(request).await?;
+    let raw_text = extract_first_text(&response).ok_or_else(|| {
+        MaintainerError::InvalidProposal(
+            "LLM combined merge response contained no text block".to_string(),
+        )
+    })?;
+
+    // Step 7 — parse `{after_markdown, summary}`.
+    let (after_markdown, summary) = parse_merge_response(&raw_text)?;
+
+    Ok(CombinedProposalResponse {
+        target_slug: target_slug.to_string(),
+        inbox_ids: inbox_ids.to_vec(),
+        before_markdown,
+        after_markdown,
+        summary,
+        before_hash,
+        generated_at: unix_ms_now_i64(),
+        source_titles,
+    })
+}
+
+/// Phase 2 of the W3 combined flow: atomically write the merged
+/// markdown to the target page and flip N inbox entries to Approved.
+///
+/// Contract (matches the W3 spec):
+///   * Every input that failed the preview guard fails again here —
+///     we re-run `validate_combined_inputs` + re-check each entry is
+///     still Pending with a `source_raw_id`. Stale state returns
+///     `outcome: "stale_inbox"` so the UI can re-fetch.
+///   * Concurrent-edit detection uses SHA-256 of the current page
+///     body against `expected_before_hash`. Mismatch →
+///     `outcome: "concurrent_edit"`.
+///   * Inbox flips are best-effort: the wiki write lands first, then
+///     each inbox `update_inbox_proposal` is attempted. A failure on
+///     one flip does NOT roll back the wiki write — we return
+///     `outcome: "partial_applied"` with the failing ids. This
+///     matches the W3 atomicity note in the spec.
+pub fn apply_combined_proposal(
+    paths: &wiki_store::WikiPaths,
+    target_slug: &str,
+    inbox_ids: &[u32],
+    expected_before_hash: &str,
+    after_markdown: &str,
+    summary: &str,
+) -> Result<CombinedApplyResult> {
+    // Step 1 — re-validate basic input shape (guards against hand-rolled
+    // HTTP callers).
+    validate_combined_inputs(target_slug, inbox_ids)?;
+    if after_markdown.trim().is_empty() {
+        return Err(MaintainerError::InvalidProposal(
+            "after_markdown is empty".to_string(),
+        ));
+    }
+    if summary.trim().is_empty() {
+        return Err(MaintainerError::InvalidProposal(
+            "summary is empty".to_string(),
+        ));
+    }
+
+    // Step 2 — re-resolve inbox entries, mirroring the preview guards.
+    // Stale state (missing id / non-pending / missing raw) fails with
+    // outcome="stale_inbox" rather than erroring out, so the UI can
+    // recover by re-fetching.
+    let all_entries = wiki_store::list_inbox_entries(paths)
+        .map_err(|e| MaintainerError::Store(e.to_string()))?;
+    let by_id: HashMap<u32, wiki_store::InboxEntry> = all_entries
+        .into_iter()
+        .map(|e| (e.id, e))
+        .collect();
+    for &id in inbox_ids {
+        match by_id.get(&id) {
+            None => {
+                return Ok(CombinedApplyResult {
+                    outcome: "stale_inbox".to_string(),
+                    target_page_slug: target_slug.to_string(),
+                    applied_inbox_ids: Vec::new(),
+                    failed_inbox_ids: Vec::new(),
+                    audit_entry: String::new(),
+                });
+            }
+            Some(entry) => {
+                if !matches!(entry.status, wiki_store::InboxStatus::Pending) {
+                    return Ok(CombinedApplyResult {
+                        outcome: "stale_inbox".to_string(),
+                        target_page_slug: target_slug.to_string(),
+                        applied_inbox_ids: Vec::new(),
+                        failed_inbox_ids: Vec::new(),
+                        audit_entry: String::new(),
+                    });
+                }
+                if entry.source_raw_id.is_none() {
+                    return Ok(CombinedApplyResult {
+                        outcome: "stale_inbox".to_string(),
+                        target_page_slug: target_slug.to_string(),
+                        applied_inbox_ids: Vec::new(),
+                        failed_inbox_ids: Vec::new(),
+                        audit_entry: String::new(),
+                    });
+                }
+            }
+        }
+    }
+
+    // Step 3 — concurrent-edit detection: hash the current page and
+    // compare to the expected hash captured at preview time.
+    let (existing_summary, existing_body) = wiki_store::read_wiki_page(paths, target_slug)
+        .map_err(|e| MaintainerError::Store(e.to_string()))?;
+    let current_hash = sha256_hex(&existing_body);
+    if current_hash != expected_before_hash {
+        return Ok(CombinedApplyResult {
+            outcome: "concurrent_edit".to_string(),
+            target_page_slug: target_slug.to_string(),
+            applied_inbox_ids: Vec::new(),
+            failed_inbox_ids: Vec::new(),
+            audit_entry: String::new(),
+        });
+    }
+
+    // Step 4 — write the merged page, preserving category + title +
+    // summary (the wiki-frontmatter summary, not the LLM's per-change
+    // `summary` arg, which goes into the audit log).
+    wiki_store::write_wiki_page_in_category(
+        paths,
+        &existing_summary.category,
+        &existing_summary.slug,
+        &existing_summary.title,
+        &existing_summary.summary,
+        after_markdown,
+        existing_summary.source_raw_id,
+    )
+    .map_err(|e| MaintainerError::Store(e.to_string()))?;
+
+    // Step 5 — atomic-ish loop over the N inbox entries. Best-effort
+    // per W3 spec: a flip failure does not roll back the wiki write;
+    // we collect success/failure lists and report `partial_applied`.
+    // `before_markdown_snapshot` is set to the pre-write body we just
+    // read, so a future audit can still answer "what was the page
+    // before this batch".
+    let mut applied: Vec<u32> = Vec::with_capacity(inbox_ids.len());
+    let mut failed: Vec<u32> = Vec::new();
+    for &id in inbox_ids {
+        let patch = wiki_store::InboxProposalPatch {
+            status: Some(wiki_store::InboxStatus::Approved),
+            proposal_status: wiki_store::ClearableOption::Set("applied".to_string()),
+            proposed_after_markdown: wiki_store::ClearableOption::Set(after_markdown.to_string()),
+            before_markdown_snapshot: wiki_store::ClearableOption::Set(existing_body.clone()),
+            proposal_summary: wiki_store::ClearableOption::Set(summary.to_string()),
+            maintain_action: wiki_store::ClearableOption::Set("update_existing".to_string()),
+            target_page_slug: wiki_store::ClearableOption::Set(target_slug.to_string()),
+        };
+        match wiki_store::update_inbox_proposal(paths, id, patch) {
+            Ok(_) => applied.push(id),
+            Err(_) => failed.push(id),
+        }
+    }
+
+    // Step 6 — append the combined audit line. Format per W3 spec:
+    // `## [YYYY-MM-DD HH:MM] update-concept-combined | {target_slug} (N sources: inbox/{ids comma-joined})`.
+    // `append_wiki_log` wraps both the timestamp and the `## [...]`
+    // framing; we pass the composed "title" portion so the line lands
+    // with the right verb + right body.
+    let ids_joined = applied
+        .iter()
+        .map(|id| format!("inbox/{id}"))
+        .collect::<Vec<_>>()
+        .join(",");
+    let log_title = format!(
+        "{target_slug} ({n} sources: {ids_joined})",
+        n = applied.len()
+    );
+    let _ = wiki_store::append_wiki_log(paths, "update-concept-combined", &log_title);
+    let _ = wiki_store::append_changelog_entry(paths, "update-concept-combined", &log_title);
+    let _ = wiki_store::rebuild_wiki_index(paths);
+
+    let outcome = if failed.is_empty() {
+        "applied".to_string()
+    } else {
+        "partial_applied".to_string()
+    };
+
+    Ok(CombinedApplyResult {
+        outcome,
+        target_page_slug: target_slug.to_string(),
+        applied_inbox_ids: applied,
+        failed_inbox_ids: failed,
+        // Echo the composed `verb | title` line so the UI can surface
+        // it without re-reading log.md. The leading `## [...]` frame
+        // that `append_wiki_log` adds is not included — keeping the
+        // string compact for toasts.
+        audit_entry: format!("update-concept-combined | {log_title}"),
+    })
+}
+
 /// Parse a merge-step LLM response into `(after_markdown, summary)`.
 /// Tolerates code fences the same way `parse_proposal` does.
 fn parse_merge_response(raw: &str) -> Result<(String, String)> {

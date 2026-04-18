@@ -205,3 +205,44 @@ export type GeneratedInboxCandidatesResponse = {
   inbox_id: number;
 };
 
+export type GeneratedCombinedProposalRequest = {
+  inbox_ids: Array<number>;
+  target_slug: string;
+};
+
+export type GeneratedCombinedProposalSource = {
+  inbox_id: number;
+  source_raw_id: number;
+  title: string;
+};
+
+export type GeneratedCombinedProposalResponse = {
+  after_markdown: string;
+  before_hash: string;
+  before_markdown: string;
+  generated_at: number;
+  inbox_ids: Array<number>;
+  source_titles: Array<{
+    inbox_id: number;
+    source_raw_id: number;
+    title: string;
+  }>;
+  summary: string;
+  target_slug: string;
+};
+
+export type GeneratedCombinedApplyRequest = {
+  after_markdown: string;
+  expected_before_hash: string;
+  inbox_ids: Array<number>;
+  summary: string;
+  target_slug: string;
+};
+
+export type GeneratedCombinedApplyResponse = {
+  applied_inbox_ids: Array<number>;
+  audit_entry: string;
+  outcome: string;
+  target_page_slug: string;
+};
+

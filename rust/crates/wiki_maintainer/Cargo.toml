@@ -23,6 +23,12 @@ api.workspace = true
 async-trait = "0.1"
 serde = { version = "1", features = ["derive"] }
 serde_json.workspace = true
+# sha2 is W3: the combined proposal engine hashes the target page's
+# `before_markdown` for the concurrent-edit guard. Adding it here
+# rather than in desktop-server keeps the hash computation colocated
+# with the `propose_combined_update` / `apply_combined_proposal`
+# functions that own the guard semantics.
+sha2 = "0.10"
 thiserror = "2"
 tokio = { version = "1", features = ["sync"] }
 tokio-util = "0.7"

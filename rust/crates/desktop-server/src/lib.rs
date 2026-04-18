@@ -589,6 +589,26 @@ pub fn app(state: AppState) -> Router {
             "/api/wiki/inbox/{id}/proposal/cancel",
             post(cancel_proposal_handler),
         )
+        // ── W3 Combined Proposal (Maintainer Multi-Proposal Merge) ──
+        // Two new routes that fold 2..=6 inbox entries into a single
+        // wiki page in one LLM call. Contract diverges from the W2
+        // per-inbox `/proposal` path in two ways:
+        //   1. Preview is body-in / body-out (no inbox_id in the URL,
+        //      no inbox staging writes) — the diff is ephemeral and
+        //      the frontend echoes the critical pieces back on apply.
+        //   2. Apply is atomic-ish: wiki page writes first, then each
+        //      of the N inbox entries flips to Approved. Partial
+        //      success returns `outcome: "partial_applied"` with the
+        //      failing ids (see `apply_combined_proposal` in
+        //      wiki_maintainer for the atomicity rationale).
+        .route(
+            "/api/wiki/proposal/combined",
+            post(create_combined_proposal_handler),
+        )
+        .route(
+            "/api/wiki/proposal/combined/apply",
+            post(apply_combined_proposal_handler),
+        )
         // ── Q2 Target Resolver: ranked target-page candidates ──────
         // Read-only scorer that suggests up to three wiki pages the
         // user might want to pick as the `update_existing` target
@@ -3783,6 +3803,226 @@ async fn cancel_proposal_handler(
             error: Some(format!("{e}")),
         })),
     }
+}
+
+// ── W3 Combined Proposal endpoints ──────────────────────────────────
+//
+//   POST /api/wiki/proposal/combined         — preview (no staging)
+//   POST /api/wiki/proposal/combined/apply   — atomic write + N flip
+//
+// Request/response shapes are pinned here and the same struct names
+// appear verbatim in `apps/desktop-shell/src/lib/protocol.generated.ts`
+// after the codegen run. Unlike the single-source W2 path, the
+// preview body carries the full `{target_slug, inbox_ids}` pair
+// (no path-encoded id) because a combined preview has no natural
+// single-inbox anchor.
+
+/// Request body for `POST /api/wiki/proposal/combined`.
+#[derive(Debug, Deserialize)]
+struct CombinedProposalRequest {
+    target_slug: String,
+    inbox_ids: Vec<u32>,
+}
+
+/// HTTP-layer mirror of [`wiki_maintainer::CombinedProposalResponse`].
+/// We duplicate the struct rather than forward the domain type so
+/// future wire-shape evolutions (e.g. add `warnings: Vec<String>`)
+/// don't couple the crate-internal type to HTTP.
+#[derive(Debug, Serialize)]
+struct CombinedProposalResponse {
+    target_slug: String,
+    inbox_ids: Vec<u32>,
+    before_markdown: String,
+    after_markdown: String,
+    summary: String,
+    before_hash: String,
+    generated_at: i64,
+    source_titles: Vec<CombinedProposalSource>,
+}
+
+/// Per-source description that rides alongside the combined preview.
+/// Mirrors [`wiki_maintainer::CombinedProposalSource`] for the wire.
+#[derive(Debug, Serialize)]
+struct CombinedProposalSource {
+    inbox_id: u32,
+    title: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    source_raw_id: Option<u32>,
+}
+
+impl From<wiki_maintainer::CombinedProposalResponse> for CombinedProposalResponse {
+    fn from(p: wiki_maintainer::CombinedProposalResponse) -> Self {
+        Self {
+            target_slug: p.target_slug,
+            inbox_ids: p.inbox_ids,
+            before_markdown: p.before_markdown,
+            after_markdown: p.after_markdown,
+            summary: p.summary,
+            before_hash: p.before_hash,
+            generated_at: p.generated_at,
+            source_titles: p
+                .source_titles
+                .into_iter()
+                .map(|s| CombinedProposalSource {
+                    inbox_id: s.inbox_id,
+                    title: s.title,
+                    source_raw_id: s.source_raw_id,
+                })
+                .collect(),
+        }
+    }
+}
+
+/// Request body for `POST /api/wiki/proposal/combined/apply`.
+#[derive(Debug, Deserialize)]
+struct CombinedApplyRequest {
+    target_slug: String,
+    inbox_ids: Vec<u32>,
+    expected_before_hash: String,
+    after_markdown: String,
+    summary: String,
+}
+
+/// Response body for `POST /api/wiki/proposal/combined/apply`. Thin
+/// mirror of [`wiki_maintainer::CombinedApplyResult`] so future
+/// response-shape evolutions (e.g. add warning strings) don't leak
+/// into the maintainer crate.
+#[derive(Debug, Serialize)]
+struct CombinedApplyResponse {
+    outcome: String,
+    target_page_slug: String,
+    applied_inbox_ids: Vec<u32>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    failed_inbox_ids: Vec<u32>,
+    audit_entry: String,
+}
+
+impl From<wiki_maintainer::CombinedApplyResult> for CombinedApplyResponse {
+    fn from(r: wiki_maintainer::CombinedApplyResult) -> Self {
+        Self {
+            outcome: r.outcome,
+            target_page_slug: r.target_page_slug,
+            applied_inbox_ids: r.applied_inbox_ids,
+            failed_inbox_ids: r.failed_inbox_ids,
+            audit_entry: r.audit_entry,
+        }
+    }
+}
+
+/// Translate a `MaintainerError` into a `StatusCode + ErrorResponse`
+/// pair appropriate for the combined preview/apply handlers. Split
+/// out so both handlers share the same mapping.
+fn combined_error_to_api(e: wiki_maintainer::MaintainerError) -> ApiError {
+    use wiki_maintainer::MaintainerError;
+    match e {
+        MaintainerError::InvalidProposal(msg) => (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse { error: msg }),
+        ),
+        MaintainerError::RawNotAvailable(msg) => (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: format!("raw entry unavailable: {msg}"),
+            }),
+        ),
+        MaintainerError::Store(msg) => {
+            let lower = msg.to_lowercase();
+            if lower.contains("not found") {
+                (StatusCode::NOT_FOUND, Json(ErrorResponse { error: msg }))
+            } else {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse { error: msg }),
+                )
+            }
+        }
+        other => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("{other}"),
+            }),
+        ),
+    }
+}
+
+/// `POST /api/wiki/proposal/combined`
+///
+/// W3 Phase 1 — fold 2..=6 inbox entries into one diff for the target
+/// page via a single LLM call. Does NOT write anything to the inbox
+/// file; the response is ephemeral and the frontend echoes the
+/// critical pieces (`after_markdown`, `summary`, `before_hash`) back
+/// on apply.
+///
+/// Errors:
+///   * 400 if `inbox_ids.len() ∉ 2..=6`, any id isn't Pending, any
+///     entry lacks a `source_raw_id`, or a duplicate id is passed.
+///   * 404 if the target page is missing or the raw entry behind an
+///     inbox id is missing.
+///   * 500 on broker / LLM parse failures.
+async fn create_combined_proposal_handler(
+    Json(body): Json<CombinedProposalRequest>,
+) -> Result<Json<CombinedProposalResponse>, ApiError> {
+    let paths = resolve_wiki_root_for_handler()?;
+    let slug = body.target_slug.trim().to_string();
+
+    let adapter = desktop_core::wiki_maintainer_adapter::BrokerAdapter::from_global();
+    let proposal = wiki_maintainer::propose_combined_update(
+        &paths,
+        &slug,
+        &body.inbox_ids,
+        &adapter,
+    )
+    .await
+    .map_err(combined_error_to_api)?;
+
+    Ok(Json(CombinedProposalResponse::from(proposal)))
+}
+
+/// `POST /api/wiki/proposal/combined/apply`
+///
+/// W3 Phase 2 — atomic-ish apply. Writes `after_markdown` to the
+/// target page first, then flips each of the N inbox entries to
+/// Approved. Partial-flip failures do NOT roll back the wiki write;
+/// instead the response carries `outcome: "partial_applied"` with
+/// `failed_inbox_ids`.
+///
+/// `outcome` values the frontend must branch on:
+///   * `"applied"` — full success.
+///   * `"partial_applied"` — wiki write OK, at least one flip failed.
+///   * `"concurrent_edit"` — the page changed between preview and
+///     apply (detected via SHA-256 of the current body vs
+///     `expected_before_hash`); NO write happened. 200 OK, UI should
+///     re-preview.
+///   * `"stale_inbox"` — one or more inbox ids are gone or no longer
+///     Pending; NO write happened. 200 OK, UI should re-fetch.
+///
+/// Errors (4xx/5xx): validation failure, missing target page, LLM
+/// parse failure on an upstream re-read, etc.
+async fn apply_combined_proposal_handler(
+    Json(body): Json<CombinedApplyRequest>,
+) -> Result<Json<CombinedApplyResponse>, ApiError> {
+    let paths = resolve_wiki_root_for_handler()?;
+    let slug = body.target_slug.trim().to_string();
+
+    let result = wiki_maintainer::apply_combined_proposal(
+        &paths,
+        &slug,
+        &body.inbox_ids,
+        &body.expected_before_hash,
+        &body.after_markdown,
+        &body.summary,
+    )
+    .map_err(combined_error_to_api)?;
+
+    // Fire inbox notify only when we actually mutated inbox state.
+    // concurrent_edit / stale_inbox bail out before any flip runs,
+    // so avoid a spurious WS push that would trigger a needless
+    // client-side refetch.
+    if matches!(result.outcome.as_str(), "applied" | "partial_applied") {
+        fire_inbox_notify();
+    }
+
+    Ok(Json(CombinedApplyResponse::from(result)))
 }
 
 /// `GET /api/wiki/pages`

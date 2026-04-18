@@ -74,6 +74,10 @@ import { WikiPageDiffPreview } from "@/features/inbox/components/WikiPageDiffPre
 import { RecommendedActionBadge } from "@/features/inbox/components/RecommendedActionBadge";
 import { QueueGroupHeader } from "@/features/inbox/components/QueueGroupHeader";
 import { BatchActionsToolbar } from "@/features/inbox/components/BatchActionsToolbar";
+import {
+  CombinedPreviewDialog,
+  type CombinedApplyResponse,
+} from "@/features/inbox/components/CombinedPreviewDialog";
 import { TargetCandidatePicker } from "@/features/inbox/components/TargetCandidatePicker";
 import { DuplicateGuardBanner } from "@/features/inbox/components/DuplicateGuardBanner";
 import { DuplicateGuardDialog } from "@/features/inbox/components/DuplicateGuardDialog";
@@ -148,6 +152,11 @@ export function InboxPage() {
   // instead of the per-entry Workbench.
   const [batchMode, setBatchMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
+
+  // W3 sprint — CombinedPreviewDialog open state. The dialog receives
+  // the derived `mergeTargetSlug` + selected ids so it can fan out to
+  // Worker A's /combined-proposal endpoint on mount.
+  const [combinedOpen, setCombinedOpen] = useState(false);
 
   const listQuery = useQuery({
     queryKey: inboxKeys.list(),
@@ -327,6 +336,71 @@ export function InboxPage() {
     [selectedIds],
   );
 
+  // W3 — derive the shared target slug across the current selection.
+  // The "一并更新 (N)" button renders ONLY when this is non-null, so
+  // the rules here are intentionally strict:
+  //   * batchMode must be on (no accidental triggers from single mode)
+  //   * selection size ≥ 2 (single-row merges go through the Workbench)
+  //   * every selected entry has a `target_candidate.slug`
+  //   * all those slugs agree
+  // Any violation returns null → button is hidden (not disabled) per
+  // spec: the presence of the button is itself the "cohort is
+  // mergeable" affordance.
+  const mergeTargetSlug = useMemo<string | null>(() => {
+    if (!batchMode || selectedIds.size < 2) return null;
+    let agreed: string | null = null;
+    for (const id of selectedIds) {
+      const entry = intelligentEntries.find((e) => e.id === id);
+      const slug = entry?.intelligence?.target_candidate?.slug;
+      if (!slug) return null;
+      if (agreed === null) {
+        agreed = slug;
+      } else if (agreed !== slug) {
+        return null;
+      }
+    }
+    return agreed;
+  }, [batchMode, selectedIds, intelligentEntries]);
+
+  // W3 — title / raw-id / score maps for the CombinedPreviewDialog's
+  // items list. Built once per intelligence pass so the dialog can
+  // render its list synchronously before the preview round-trip
+  // returns.
+  const combinedTitles = useMemo(() => {
+    const map = new Map<number, string>();
+    for (const entry of intelligentEntries) map.set(entry.id, entry.title);
+    return map;
+  }, [intelligentEntries]);
+
+  const combinedSourceRawIds = useMemo(() => {
+    const map = new Map<number, number | null | undefined>();
+    for (const entry of intelligentEntries) {
+      map.set(entry.id, entry.source_raw_id ?? null);
+    }
+    return map;
+  }, [intelligentEntries]);
+
+  const combinedScores = useMemo(() => {
+    const map = new Map<number, number>();
+    for (const entry of intelligentEntries) {
+      map.set(entry.id, entry.intelligence.score);
+    }
+    return map;
+  }, [intelligentEntries]);
+
+  const handleCombinedApplied = useCallback(
+    (_result: CombinedApplyResponse) => {
+      // Refetch the inbox list so applied ids drop to the appropriate
+      // resolved bucket, then clear the selection + exit batch mode
+      // so the user lands back on the single-row workbench.
+      void queryClient.invalidateQueries({ queryKey: inboxKeys.list() });
+      setSelectedIds(new Set());
+      setBatchMode(false);
+      setCombinedOpen(false);
+    },
+    [queryClient],
+  );
+
   return (
     <div className="flex h-full flex-col overflow-hidden">
       {/* Page head */}
@@ -417,6 +491,8 @@ export function InboxPage() {
               selectedIds={selectedIdList}
               totalPending={listQuery.data?.pending_count ?? 0}
               onClearSelection={clearBatchSelection}
+              mergeTargetSlug={mergeTargetSlug}
+              onMergeClick={() => setCombinedOpen(true)}
               onResolved={({ succeededIds, failedIds }) => {
                 // Prune succeeded ids from the selection; failed ids
                 // stay so the user can retry. Refetch the list either
@@ -461,6 +537,26 @@ export function InboxPage() {
           )}
         </main>
       </div>
+
+      {/*
+        W3 — CombinedPreviewDialog is rendered at the page root so its
+        modal overlay floats above the split pane. The dialog itself
+        handles its own open/close animations; we only gate the mount
+        when we have both a target slug and ≥2 ids to avoid a flash of
+        "合并 0 条…" during the batch-mode exit animation.
+      */}
+      {mergeTargetSlug && combinedOpen && selectedIds.size >= 2 && (
+        <CombinedPreviewDialog
+          open={combinedOpen}
+          onOpenChange={setCombinedOpen}
+          targetSlug={mergeTargetSlug}
+          inboxIds={selectedIdList}
+          titles={combinedTitles}
+          sourceRawIds={combinedSourceRawIds}
+          scores={combinedScores}
+          onApplied={handleCombinedApplied}
+        />
+      )}
     </div>
   );
 }
@@ -473,11 +569,17 @@ function BatchModePane({
   selectedIds,
   totalPending,
   onClearSelection,
+  mergeTargetSlug,
+  onMergeClick,
   onResolved,
 }: {
   selectedIds: number[];
   totalPending: number;
   onClearSelection: () => void;
+  /** W3 — pass-through to `BatchActionsToolbar`. `null` hides the merge button. */
+  mergeTargetSlug: string | null;
+  /** W3 — fires when the user clicks "一并更新". */
+  onMergeClick: () => void;
   onResolved: (result: {
     succeededIds: number[];
     failedIds: number[];
@@ -491,6 +593,8 @@ function BatchModePane({
         totalPending={totalPending}
         onClearSelection={onClearSelection}
         onResolved={onResolved}
+        mergeTargetSlug={mergeTargetSlug}
+        onMergeClick={onMergeClick}
       />
       <div className="flex flex-1 items-center justify-center p-6 text-center">
         <div className="max-w-sm">

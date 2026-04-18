@@ -1187,6 +1187,138 @@ export async function cancelProposal(inboxId: number): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
+// W3 Combined Proposal — multi-source preview + atomic apply
+// ---------------------------------------------------------------------------
+//
+// Wire contract produced by Worker A at:
+//   * `POST /api/wiki/proposal/combined`
+//   * `POST /api/wiki/proposal/combined/apply`
+//
+// The W3 path folds 2..=6 pending inbox entries into a single wiki
+// page in one LLM call. Unlike the single-source W2 path, preview is
+// ephemeral — the server writes NO inbox staging fields. The frontend
+// echoes the critical pieces (`after_markdown`, `summary`,
+// `before_hash`) back on apply so the server can detect concurrent
+// edits without storing snapshot state.
+//
+// The TS shapes below mirror `GeneratedCombinedProposalRequest`,
+// `GeneratedCombinedProposalResponse`, `GeneratedCombinedApplyRequest`,
+// `GeneratedCombinedApplyResponse` in `protocol.generated.ts`.
+
+/** One source entry returned in the combined proposal preview. */
+export interface CombinedProposalSource {
+  inbox_id: number;
+  title: string;
+  /** Absent when the inbox entry has no upstream raw id. */
+  source_raw_id?: number | null;
+}
+
+/** Request body for `POST /api/wiki/proposal/combined`. */
+export interface CombinedProposalRequest {
+  target_slug: string;
+  /** 2..=6 inbox ids (enforced server-side with 400 on violation). */
+  inbox_ids: number[];
+}
+
+/**
+ * Response body for `POST /api/wiki/proposal/combined`. The preview
+ * is body-in / body-out; the server does NOT persist any of this
+ * state on the inbox. Frontend keeps it in local state and echoes
+ * `after_markdown` / `summary` / `before_hash` back on apply.
+ */
+export interface CombinedProposalResponse {
+  target_slug: string;
+  inbox_ids: number[];
+  before_markdown: string;
+  after_markdown: string;
+  summary: string;
+  /** Lowercase hex SHA-256 of `before_markdown`; apply sends it back. */
+  before_hash: string;
+  /** Unix milliseconds when the preview was generated. */
+  generated_at: number;
+  /** One entry per source id, in the same order as `inbox_ids`. */
+  source_titles: CombinedProposalSource[];
+}
+
+/** Request body for `POST /api/wiki/proposal/combined/apply`. */
+export interface CombinedApplyRequest {
+  target_slug: string;
+  inbox_ids: number[];
+  /** Echoed from the preview `before_hash`. Mismatch → concurrent_edit. */
+  expected_before_hash: string;
+  after_markdown: string;
+  summary: string;
+}
+
+/**
+ * Outcome marker returned by the combined apply. The UI must branch
+ * on all four:
+ *   * `"applied"`          — full success.
+ *   * `"partial_applied"`  — wiki write succeeded but at least one
+ *     inbox flip failed; see `failed_inbox_ids`.
+ *   * `"concurrent_edit"`  — page changed since preview; no write.
+ *   * `"stale_inbox"`      — inbox entries gone/non-pending; no write.
+ */
+export type CombinedApplyOutcome =
+  | "applied"
+  | "partial_applied"
+  | "concurrent_edit"
+  | "stale_inbox";
+
+/** Response body for `POST /api/wiki/proposal/combined/apply`. */
+export interface CombinedApplyResponse {
+  outcome: CombinedApplyOutcome;
+  target_page_slug: string;
+  applied_inbox_ids: number[];
+  /** Only populated when `outcome === "partial_applied"`. */
+  failed_inbox_ids?: number[];
+  /** Single-line audit summary echoed from the server log entry. */
+  audit_entry: string;
+}
+
+/**
+ * `POST /api/wiki/proposal/combined` — generate a combined diff that
+ * folds 2..=6 inbox entries into the target wiki slug in one LLM call.
+ * Does NOT touch the inbox file; the caller must echo the response
+ * fields back to {@link applyCombinedProposal} on commit.
+ *
+ * 400 on count out of range / non-pending entry / missing raw.
+ * 404 on missing target page or raw.
+ * 500 on broker / LLM parse failure.
+ */
+export async function fetchCombinedProposal(
+  request: CombinedProposalRequest,
+): Promise<CombinedProposalResponse> {
+  return _fetchJsonForMaintain<CombinedProposalResponse>(
+    "/api/wiki/proposal/combined",
+    {
+      method: "POST",
+      body: JSON.stringify(request),
+    },
+  );
+}
+
+/**
+ * `POST /api/wiki/proposal/combined/apply` — atomically write the
+ * merged markdown to the target page and flip N inbox entries to
+ * Approved. Partial-flip failures do NOT roll back the wiki write;
+ * instead the response reports `outcome: "partial_applied"` with
+ * `failed_inbox_ids`. UI should toast "已合并 X/N 来源，Y 条稍后重试"
+ * and leave the wiki update intact.
+ */
+export async function applyCombinedProposal(
+  request: CombinedApplyRequest,
+): Promise<CombinedApplyResponse> {
+  return _fetchJsonForMaintain<CombinedApplyResponse>(
+    "/api/wiki/proposal/combined/apply",
+    {
+      method: "POST",
+      body: JSON.stringify(request),
+    },
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Q2 Target Resolver — ranked target-page candidates for an inbox entry
 // ---------------------------------------------------------------------------
 //

@@ -458,6 +458,73 @@ mod tests {
                     ],
                 }),
             ),
+            // ── W3 Combined Proposal contract ─────────────────────
+            // 4 new shapes for `POST /api/wiki/proposal/combined` and
+            // `POST /api/wiki/proposal/combined/apply`. The request
+            // types are desktop-server-internal (crate-private
+            // Deserialize-only) so we hand-build samples; the two
+            // response types are crate types on wiki_maintainer so
+            // we round-trip real instances through serde.
+            (
+                "GeneratedCombinedProposalRequest",
+                serde_json::json!({
+                    "target_slug": "attention",
+                    "inbox_ids": [10, 11, 12],
+                }),
+            ),
+            (
+                "GeneratedCombinedProposalSource",
+                serde_json::to_value(wiki_maintainer::CombinedProposalSource {
+                    inbox_id: 10,
+                    title: "Transformer 论文".to_string(),
+                    source_raw_id: Some(42),
+                })
+                .unwrap(),
+            ),
+            (
+                "GeneratedCombinedProposalResponse",
+                serde_json::to_value(wiki_maintainer::CombinedProposalResponse {
+                    target_slug: "attention".to_string(),
+                    inbox_ids: vec![10, 11, 12],
+                    before_markdown: "# Attention\n\n原始正文。".to_string(),
+                    after_markdown: "# Attention\n\n合并后正文。".to_string(),
+                    summary: "合并 3 条素材，补充多头注意力细节。".to_string(),
+                    before_hash:
+                        "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+                            .to_string(),
+                    generated_at: 1_700_000_000_000_i64,
+                    source_titles: vec![wiki_maintainer::CombinedProposalSource {
+                        inbox_id: 10,
+                        title: "Transformer 论文".to_string(),
+                        source_raw_id: Some(42),
+                    }],
+                })
+                .unwrap(),
+            ),
+            (
+                "GeneratedCombinedApplyRequest",
+                serde_json::json!({
+                    "target_slug": "attention",
+                    "inbox_ids": [10, 11, 12],
+                    "expected_before_hash":
+                        "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                    "after_markdown": "# Attention\n\n合并后正文。",
+                    "summary": "合并 3 条素材，补充多头注意力细节。",
+                }),
+            ),
+            (
+                "GeneratedCombinedApplyResponse",
+                serde_json::to_value(wiki_maintainer::CombinedApplyResult {
+                    outcome: "applied".to_string(),
+                    target_page_slug: "attention".to_string(),
+                    applied_inbox_ids: vec![10, 11, 12],
+                    failed_inbox_ids: Vec::new(),
+                    audit_entry:
+                        "update-concept-combined | attention (3 sources: inbox/10,inbox/11,inbox/12)"
+                            .to_string(),
+                })
+                .unwrap(),
+            ),
         ];
 
         let file_contents = ts_file(&types);

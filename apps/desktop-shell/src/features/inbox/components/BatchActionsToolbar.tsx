@@ -23,7 +23,7 @@
  */
 
 import { useState } from "react";
-import { Loader2, XCircle, Trash2 } from "lucide-react";
+import { Loader2, XCircle, Trash2, GitMerge } from "lucide-react";
 
 import { batchResolveInboxEntries } from "@/features/ingest/persist";
 import {
@@ -54,6 +54,16 @@ export interface BatchActionsToolbarProps {
     failedIds: number[];
     totalAttempted: number;
   }) => void;
+  /**
+   * W3 — when non-null, every selected entry shares the same
+   * `target_candidate.slug` and the "一并更新 (N)" primary CTA is
+   * rendered. The parent owns the check: `null` ⇒ button hides,
+   * non-null string ⇒ button renders with `→ {slug}` suffix.
+   * Absent/undefined is treated as null (opt-in).
+   */
+  mergeTargetSlug?: string | null;
+  /** W3 — called when the user clicks "一并更新 (N)". Parent opens the `CombinedPreviewDialog`. */
+  onMergeClick?: () => void;
 }
 
 export function BatchActionsToolbar({
@@ -61,6 +71,8 @@ export function BatchActionsToolbar({
   totalPending,
   onClearSelection,
   onResolved,
+  mergeTargetSlug = null,
+  onMergeClick,
 }: BatchActionsToolbarProps) {
   const [dialogOpen, setDialogOpen] = useState(false);
   const [reason, setReason] = useState("");
@@ -178,6 +190,32 @@ export function BatchActionsToolbar({
         >
           清除选择
         </button>
+        {/*
+          W3 — "一并更新 (N)" merge CTA. Renders only when the parent
+          decides every selected entry shares the same target slug
+          AND at least 2 rows are selected. We deliberately hide
+          (not disable) when the criteria aren't met: the button's
+          very existence is the signal that the cohort is mergeable.
+        */}
+        {mergeTargetSlug != null && count >= 2 && onMergeClick != null && (
+          <button
+            type="button"
+            onClick={onMergeClick}
+            disabled={submitting}
+            className="inline-flex items-center gap-1.5 rounded-md border border-primary/40 bg-primary/10 px-3 py-1.5 font-medium text-primary transition-colors hover:bg-primary/20 disabled:opacity-40"
+            style={{ fontSize: 12 }}
+            title={`把选中的 ${count} 条任务一次性合并到 ${mergeTargetSlug}`}
+          >
+            <GitMerge className="size-3" aria-hidden />
+            一并更新 ({count})
+            <span
+              className="ml-1 font-mono text-muted-foreground/70"
+              style={{ fontSize: 10 }}
+            >
+              → {mergeTargetSlug}
+            </span>
+          </button>
+        )}
         <button
           type="button"
           onClick={() => setDialogOpen(true)}

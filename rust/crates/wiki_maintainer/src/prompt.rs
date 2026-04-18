@@ -185,6 +185,89 @@ pub fn build_merge_request(
     }
 }
 
+// ── W3: combined (multi-source) merge prompt ──────────────────────
+//
+// W3 adds a "combined" merge path that folds 2..=6 inbox raw bodies
+// into a single wiki page in one LLM call. The system prompt reuses
+// the same hard rules as the single-source merge (`MERGE_SYSTEM_PROMPT`)
+// and appends one extra clause telling the LLM it may see multiple
+// sources at once and should deduplicate across them.
+//
+// Output cap: 8000 tokens. Higher than the single-source merge
+// (4000) because a page absorbing multiple raw bodies can legitimately
+// grow larger. Still bounded so a runaway response can't blow up the
+// broker budget.
+
+/// System prompt addendum appended to [`MERGE_SYSTEM_PROMPT`] when
+/// the combined merge path runs. Split into its own constant so tests
+/// can assert the combined prompt strictly extends the single-source
+/// one without rewriting any hard rules.
+pub const COMBINED_SYSTEM_PROMPT_SUFFIX: &str =
+    "\n可处理一或多则素材。若有多条素材，请权衡融合、去重，避免内容冗余。\n";
+
+/// Output cap for the combined merge step. Higher than the
+/// single-source merge's 4000 because a multi-source merge can
+/// legitimately grow the page further.
+pub const COMBINED_MERGE_MAX_OUTPUT_TOKENS: u32 = 8000;
+
+/// Build the combined merge chat request.
+///
+/// `sources` is an already-validated slice of `(inbox_id, raw_title,
+/// raw_body)` tuples — the caller (`propose_combined_update`) is
+/// responsible for asserting `2 <= sources.len() <= 6` before calling.
+/// Each source is rendered as a numbered block in the user prompt so
+/// the LLM can refer back to specific material if needed.
+///
+/// Expected LLM response shape (unchanged from single-source merge):
+/// `{"after_markdown": "...", "summary": "..."}`.
+pub fn build_combined_merge_request(
+    target_slug: &str,
+    target_title: &str,
+    before_markdown: &str,
+    sources: &[(u32, String, String)],
+) -> MessageRequest {
+    let n = sources.len();
+    let mut user_text = String::new();
+    user_text.push_str(&format!(
+        "目标页面:\n\
+         - slug: {target_slug}\n\
+         - title: {target_title}\n\
+         \n\
+         ── 现有 Markdown 正文 ──\n\
+         {before_markdown}\n\
+         \n\
+         ── 以下是 {n} 条新素材需要合并到此页 ──\n\
+         \n",
+    ));
+    for (i, (inbox_id, raw_title, raw_body)) in sources.iter().enumerate() {
+        let idx = i + 1;
+        user_text.push_str(&format!(
+            "=== 素材 {idx}: {raw_title} (inbox #{inbox_id}) ===\n\
+             {raw_body}\n\
+             \n",
+        ));
+    }
+    user_text.push_str(&format!(
+        "请把所有 {n} 条新素材统一合并进现有正文，保持一致风格，\n\
+         返回 {{\"after_markdown\": \"...\", \"summary\": \"...\"}}。"
+    ));
+
+    let system = format!("{MERGE_SYSTEM_PROMPT}{COMBINED_SYSTEM_PROMPT_SUFFIX}");
+
+    MessageRequest {
+        model: MAINTAINER_MODEL.to_string(),
+        max_tokens: COMBINED_MERGE_MAX_OUTPUT_TOKENS,
+        system: Some(system),
+        messages: vec![InputMessage {
+            role: "user".to_string(),
+            content: vec![InputContentBlock::Text { text: user_text }],
+        }],
+        tools: None,
+        tool_choice: None,
+        stream: false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -276,5 +359,59 @@ mod tests {
         assert!(text.contains("title: 注意力机制"));
         assert!(text.contains("Original body."));
         assert!(text.contains("multi-head attention"));
+    }
+
+    // ── W3 combined prompt tests ──────────────────────────────────
+
+    #[test]
+    fn combined_system_suffix_is_extension_only() {
+        // The combined path must preserve every single-source hard
+        // rule verbatim. It only ADDS guidance for the multi-source
+        // case; it must not rewrite the base prompt.
+        assert!(COMBINED_SYSTEM_PROMPT_SUFFIX.contains("多条素材"));
+        assert!(COMBINED_SYSTEM_PROMPT_SUFFIX.contains("融合"));
+        assert!(COMBINED_SYSTEM_PROMPT_SUFFIX.contains("去重"));
+    }
+
+    #[test]
+    fn build_combined_merge_request_shape_and_body() {
+        let sources = vec![
+            (10_u32, "Transformer 论文".to_string(), "Body ten.".to_string()),
+            (11_u32, "Attention survey".to_string(), "Body eleven.".to_string()),
+            (12_u32, "Flash attention".to_string(), "Body twelve.".to_string()),
+        ];
+        let req = build_combined_merge_request(
+            "attention",
+            "注意力机制",
+            "# Attention\n\n原始正文。",
+            &sources,
+        );
+        assert_eq!(req.model, MAINTAINER_MODEL);
+        assert_eq!(req.max_tokens, COMBINED_MERGE_MAX_OUTPUT_TOKENS);
+        assert!(!req.stream);
+
+        // System prompt must contain the full MERGE_SYSTEM_PROMPT
+        // (hard rules preserved) PLUS the combined suffix.
+        let system = req.system.as_deref().expect("system prompt set");
+        assert!(system.contains("after_markdown"));
+        assert!(system.contains("不要丢失原有信息"));
+        assert!(system.contains("多条素材"));
+
+        let text = match &req.messages[0].content[0] {
+            InputContentBlock::Text { text } => text.clone(),
+            _ => panic!("expected text block"),
+        };
+        assert!(text.contains("slug: attention"));
+        assert!(text.contains("title: 注意力机制"));
+        assert!(text.contains("原始正文。"));
+        // All 3 sources rendered, each tagged with its inbox id.
+        assert!(text.contains("素材 1: Transformer 论文 (inbox #10)"));
+        assert!(text.contains("Body ten."));
+        assert!(text.contains("素材 2: Attention survey (inbox #11)"));
+        assert!(text.contains("Body eleven."));
+        assert!(text.contains("素材 3: Flash attention (inbox #12)"));
+        assert!(text.contains("Body twelve."));
+        // Final instruction carries the N.
+        assert!(text.contains("请把所有 3 条新素材"));
     }
 }

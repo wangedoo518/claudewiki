@@ -1,42 +1,15 @@
 /**
  * Inbox · CCD 权限确认 + 任务审阅
  *
- * S4 MVP implementation. The canonical §7 wireframe shows a
- * SubagentPanel-style tree of tool calls for each maintainer task,
- * with per-step approve/reject buttons. S4 lands the *data pipeline*
- * end of that vision:
+ * Left: pending-first task list. Right (W1): the Maintainer Workbench,
+ * a three-section pane — §1 Evidence, §2 Maintain, §3 Result — that
+ * replaces the flat Propose→Approve detail pane. The legacy two-step
+ * flow is preserved as a collapsible fallback inside §2.
  *
- *   1. Every raw entry that lands under ~/.clawwiki/raw/ triggers a
- *      pending `new-raw` inbox task (see S4.2 desktop-server side-
- *      channel in ingest_wiki_raw_handler).
- *   2. This page lists those tasks, lets the user approve or reject
- *      each one, and reflects the status change across the UI.
- *   3. Sidebar badge shows live pending count.
- *
- * What's NOT in S4 MVP (deferred to the sprint that wires
- * codex_broker::chat_completion):
- *   - The actual Maintainer LLM run that produces the wiki page
- *   - MaintainerTaskTree visualization of the LLM's tool calls
- *   - Diff preview of the proposed wiki/ writes
- *
- * The component is intentionally structured as a LEFT list + RIGHT
- * detail pane so that when the LLM run lands we can stuff a
- * `<MaintainerTaskTree entry={...} />` into the right pane without
- * touching the page container.
- *
- * ── F2 deep-link UX ──────────────────────────────────────────────
- * The `?task=N` query param is the single source of truth for the
- * focused entry. We drive selection through `useDeepLinkState`
- * (see @/lib/deep-link) so that:
- *   - G1 (same-page URL paste) updates the selection via reverse sync
- *   - G3 / G6 (deleted / invalid target) is surfaced visibly via a
- *     `DeepLinkNotFoundBanner` rather than silently wiping the URL
- *   - A `DeepLinkFocusChip` gives a persistent visual cue that the
- *     user is in a focused view, with both "copy link" and "clear"
- *     affordances
- * The old silent-clear useEffect is intentionally gone — users now
- * explicitly dismiss a stale deep link, which matches Explorer A/B
- * feedback that disappearing URLs were confusing.
+ * Deep-link UX: `?task=N` is the source of truth for the focused
+ * entry. Selection is driven by `useDeepLinkState`; a persistent
+ * `DeepLinkFocusChip` and `DeepLinkNotFoundBanner` handle reverse-sync
+ * paste, missing targets, and explicit dismissal.
  */
 
 import { useEffect, useMemo, useState } from "react";
@@ -65,14 +38,33 @@ import {
 import type {
   InboxEntry,
   InboxResolveAction,
+  MaintainAction,
+  MaintainOutcome,
+  MaintainResponse,
   WikiPageProposal,
 } from "@/features/ingest/types";
+import type { IngestDecision } from "@/lib/tauri";
+import { fetchRawById, maintainInboxEntry } from "@/lib/tauri";
 import { parsePositiveInt, useDeepLinkState } from "@/lib/deep-link";
 import {
   CopyDeepLinkButton,
   DeepLinkFocusChip,
   DeepLinkNotFoundBanner,
 } from "@/components/deep-link";
+import { IngestDecisionBadge } from "@/features/inbox/components/IngestDecisionBadge";
+import { URLTrackBadge } from "@/features/inbox/components/URLTrackBadge";
+import { BodyPreviewPanel } from "@/features/inbox/components/BodyPreviewPanel";
+import { MaintainActionRadio } from "@/features/inbox/components/MaintainActionRadio";
+import { MaintainerResultCard } from "@/features/inbox/components/MaintainerResultCard";
+
+// Worker C integration — the real WikiPageSearchField picker for
+// update_existing and the navigateToWikiPage handoff for the
+// MaintainerResultCard "打开 Wiki 页" CTA. Both live under
+// `features/wiki/` (Worker C's canonical home for wiki-global
+// primitives). The components degrade gracefully if props/ctx are
+// missing, so no null-sentinel is needed here.
+import { WikiPageSearchField } from "@/features/wiki/WikiPageSearchField";
+import { navigateToWikiPage } from "@/features/wiki/navigate-helpers";
 
 const inboxKeys = {
   list: () => ["wiki", "inbox", "list"] as const,
@@ -421,34 +413,39 @@ function EntryDetail({
 }) {
   const queryClient = useQueryClient();
 
-  // Proposal state is scoped to the currently-selected entry so that
-  // switching to a different entry clears the preview (a proposal for
-  // entry #3 should not leak into the view for entry #4). We key the
-  // reset effect on `entry.id`.
+  // Legacy proposal state (scoped to entry.id — reset on switch).
   const [proposal, setProposal] = useState<WikiPageProposal | null>(null);
 
-  // Quick approve/reject without writing anything (backwards compat).
+  // W1 Workbench state: §2 decision, §3 result envelope.
+  const [maintainAction, setMaintainAction] = useState<MaintainAction>("create_new");
+  const [targetPageSlug, setTargetPageSlug] = useState<string | null>(null);
+  const [rejectionReason, setRejectionReason] = useState<string>("");
+  const [maintainResult, setMaintainResult] = useState<MaintainResponse | null>(null);
+
+  // Raw detail — drives §1 Evidence (skipped when source_raw_id is null).
+  const rawQuery = useQuery({
+    queryKey: ["raw", entry.source_raw_id ?? null],
+    queryFn: () =>
+      entry.source_raw_id != null
+        ? fetchRawById(entry.source_raw_id)
+        : Promise.resolve(null),
+    enabled: entry.source_raw_id != null,
+    staleTime: 30_000,
+  });
+  const rawEntry = rawQuery.data?.entry ?? null;
+  const rawBody = rawQuery.data?.body ?? null;
+
+  // Legacy Propose → Approve flow — fallback inside §2, unchanged.
   const resolveMutation = useMutation({
     mutationFn: (action: InboxResolveAction) => resolveInboxEntry(entry.id, action),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: inboxKeys.list() });
     },
   });
-
-  // Fire the maintainer proposal: one chat_completion through the
-  // Codex broker. This does NOT mutate the inbox entry — the user
-  // still has to click "Approve & Write Wiki Page" or "Reject" next.
   const proposeMutation = useMutation({
     mutationFn: () => proposeForInboxEntry(entry.id),
-    onSuccess: (data) => {
-      setProposal(data.proposal);
-    },
+    onSuccess: (data) => setProposal(data.proposal),
   });
-
-  // Persist the proposal as a wiki page AND resolve the inbox entry
-  // as approved in one atomic-ish step (write first, then resolve;
-  // worst case a half-failure leaves the page on disk and the user
-  // can retry the approve from the UI).
   const writeMutation = useMutation({
     mutationFn: (p: WikiPageProposal) => approveInboxWithWrite(entry.id, p),
     onSuccess: () => {
@@ -456,6 +453,37 @@ function EntryDetail({
       void queryClient.invalidateQueries({ queryKey: inboxKeys.list() });
     },
   });
+
+  // W1 primary mutation: `POST /api/wiki/inbox/{id}/maintain`.
+  const maintainMutation = useMutation({
+    mutationFn: () =>
+      maintainInboxEntry(entry.id, {
+        action: maintainAction,
+        target_page_slug:
+          maintainAction === "update_existing" ? targetPageSlug ?? undefined : undefined,
+        rejection_reason:
+          maintainAction === "reject" ? rejectionReason.trim() : undefined,
+      }),
+    onSuccess: (response) => {
+      setMaintainResult(response);
+      void queryClient.invalidateQueries({ queryKey: inboxKeys.list() });
+    },
+    onError: (err) => {
+      // Normalise errors into MaintainResponse so §3 renders a `failed` card.
+      setMaintainResult({
+        outcome: "failed",
+        error: err instanceof Error ? err.message : String(err),
+      });
+    },
+  });
+
+  // Reset Workbench state on entry switch.
+  useEffect(() => {
+    setMaintainAction("create_new");
+    setTargetPageSlug(null);
+    setRejectionReason("");
+    setMaintainResult(null);
+  }, [entry.id]);
 
   const isResolved = entry.status !== "pending";
   const canMaintain =
@@ -465,7 +493,44 @@ function EntryDetail({
     proposal === null;
 
   const anyPending =
-    resolveMutation.isPending || proposeMutation.isPending || writeMutation.isPending;
+    resolveMutation.isPending ||
+    proposeMutation.isPending ||
+    writeMutation.isPending ||
+    maintainMutation.isPending;
+
+  // `执行` gate: create_new always; update_existing needs slug; reject needs ≥4 chars.
+  const canExecuteMaintain = useMemo(() => {
+    if (isResolved || anyPending) return false;
+    switch (maintainAction) {
+      case "create_new": return true;
+      case "update_existing": return (targetPageSlug?.trim().length ?? 0) > 0;
+      case "reject": return rejectionReason.trim().length >= 4;
+      default: return false;
+    }
+  }, [isResolved, anyPending, maintainAction, targetPageSlug, rejectionReason]);
+
+  // §3 outcome: prefer live mutation result, fall back to server-stamped entry fields.
+  const resolvedOutcome: MaintainOutcome | null = useMemo(() => {
+    if (maintainResult) return maintainResult.outcome;
+    if (entry.maintain_outcome) return entry.maintain_outcome;
+    if (entry.status === "approved") return "updated";
+    if (entry.status === "rejected") return "rejected";
+    return null;
+  }, [maintainResult, entry.maintain_outcome, entry.status]);
+
+  // Runtime-guard `last_ingest_decision` (typed as `unknown` for forward-compat).
+  const rawDecision: IngestDecision | null = useMemo(() => {
+    const candidate = rawEntry?.last_ingest_decision;
+    if (
+      candidate &&
+      typeof candidate === "object" &&
+      "kind" in candidate &&
+      typeof (candidate as { kind?: unknown }).kind === "string"
+    ) {
+      return candidate as IngestDecision;
+    }
+    return null;
+  }, [rawEntry]);
 
   return (
     <div className="flex flex-1 flex-col overflow-hidden">
@@ -528,145 +593,383 @@ function EntryDetail({
         </div>
       </div>
 
-      <div className="flex-1 overflow-auto px-6 py-5">
-        <h3 className="mb-2 uppercase tracking-widest text-muted-foreground/60" style={{ fontSize: 11 }}>
-          描述
-        </h3>
-        <p className="whitespace-pre-wrap text-foreground/90" style={{ fontSize: 14, lineHeight: 1.6 }}>
-          {entry.description
-            .replace(/^Raw entry/, "素材")
-            .replace("was ingested from WeChat user", "由微信用户")
-            .replace("Proposed action: summarise into a concept page.", "转发入库。建议操作：总结为概念知识页面。")
-          }
-        </p>
+      <div className="flex-1 overflow-auto px-6 py-5 space-y-6">
+        {/* ── Description (unchanged, still the first thing users see) */}
+        <div>
+          <h3 className="mb-2 uppercase tracking-widest text-muted-foreground/60" style={{ fontSize: 11 }}>
+            描述
+          </h3>
+          <p className="whitespace-pre-wrap text-foreground/90" style={{ fontSize: 14, lineHeight: 1.6 }}>
+            {entry.description
+              .replace(/^Raw entry/, "素材")
+              .replace("was ingested from WeChat user", "由微信用户")
+              .replace("Proposed action: summarise into a concept page.", "转发入库。建议操作：总结为概念知识页面。")
+            }
+          </p>
+        </div>
 
-        {/* ── Maintainer proposal preview ───────────────────────── */}
-        {proposal ? (
-          <>
-            <h3 className="mb-2 mt-6 uppercase tracking-widest text-muted-foreground/60" style={{ fontSize: 11 }}>
-              生成的知识页面
-            </h3>
-            <ProposalPreview proposal={proposal} />
-          </>
-        ) : canMaintain ? (
-          <>
-            <h3 className="mb-2 mt-6 uppercase tracking-widest text-muted-foreground/60" style={{ fontSize: 11 }}>
-              维护器
-            </h3>
-            <div className="rounded-md border border-border/40 px-4 py-5">
-              <div className="mb-2 text-foreground/90" style={{ fontSize: 14, lineHeight: 1.6 }}>
-                让维护 AI 将这条素材总结为概念知识页面。
-              </div>
-              <div className="mb-3 text-muted-foreground/50" style={{ fontSize: 11 }}>
-                调用一次 AI 总结（≤200 词）。在你批准之前不会写入磁盘。
-              </div>
-              <button
-                type="button"
-                onClick={() => proposeMutation.mutate()}
-                disabled={anyPending}
-                className="flex items-center gap-1.5 rounded-md bg-primary px-4 py-1.5 text-body-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"
-              >
-                {proposeMutation.isPending ? (
-                  <Loader2 className="size-3 animate-spin" />
-                ) : (
-                  <Sparkles className="size-3" />
-                )}
-                开始维护
-              </button>
-            </div>
-          </>
-        ) : (
-          <>
-            <h3 className="mb-2 mt-6 uppercase tracking-widest text-muted-foreground/60" style={{ fontSize: 11 }}>
-              维护任务树
-            </h3>
-            <div className="rounded-md border border-border/40 px-4 py-5 text-center">
-              <div className="mb-1 text-muted-foreground/60" style={{ fontSize: 13 }}>
-                任务树可视化即将上线。
-              </div>
-              <div className="text-muted-foreground/40" style={{ fontSize: 11 }}>
-                目前支持按条目级别批准或拒绝。
-              </div>
-            </div>
-          </>
-        )}
+        {/* ══ Section 1 · Evidence ══════════════════════════════════ */}
+        <WorkbenchSection
+          number={1}
+          title="证据"
+          english="Evidence"
+          hint="素材的抓取来源、规范化 URL、正文预览 — 以及（若存在）AI 预生成草稿。"
+        >
+          <EvidenceSection
+            entry={entry}
+            rawBody={rawBody}
+            rawFilename={rawEntry?.filename ?? null}
+            rawIngestedAt={rawEntry?.ingested_at ?? null}
+            rawDecision={rawDecision}
+            canonicalUrl={rawEntry?.canonical_url ?? null}
+            originalUrl={rawEntry?.original_url ?? null}
+            sourceUrl={rawEntry?.source_url ?? null}
+            isLoading={rawQuery.isLoading}
+          />
+        </WorkbenchSection>
 
-        {/* ── Error strip: surfaces propose/write/resolve errors ── */}
-        {(proposeMutation.error || writeMutation.error || resolveMutation.error) && (
-          <div
-            className="mt-4 rounded-md border px-3 py-2 text-caption"
-            style={{
-              borderColor:
-                "color-mix(in srgb, var(--color-error) 30%, transparent)",
-              backgroundColor:
-                "color-mix(in srgb, var(--color-error) 5%, transparent)",
-              color: "var(--color-error)",
-            }}
-          >
-            {proposeMutation.error && (
-              <div>生成失败：{String(proposeMutation.error)}</div>
-            )}
-            {writeMutation.error && (
-              <div>写入失败：{String(writeMutation.error)}</div>
-            )}
-            {resolveMutation.error && (
-              <div>处理失败：{String(resolveMutation.error)}</div>
-            )}
-          </div>
-        )}
-      </div>
-
-      <div className="shrink-0 border-t border-border/50 px-6 py-3">
-        {isResolved ? (
-          <div className="flex items-center justify-between gap-3">
-            <div className="text-caption text-muted-foreground">
-              该任务{translateStatus(entry.status)}。
-            </div>
-          </div>
-        ) : (
-          <div className="flex items-center justify-end gap-2">
-            <button
-              type="button"
-              onClick={() => resolveMutation.mutate("reject")}
-              disabled={anyPending}
-              className="flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-body-sm font-medium text-muted-foreground transition-colors hover:border-destructive hover:bg-destructive/10 hover:text-destructive disabled:opacity-50"
+        {/* ══ Section 2 · Maintain ══════════════════════════════════ */}
+        <WorkbenchSection
+          number={2}
+          title="决策"
+          english="Maintain"
+          hint="选择维护动作：新建 / 合并 / 拒绝。legacy propose→approve 保留在下方作为备用流程。"
+        >
+          {isResolved ? (
+            <div
+              className="rounded-md border border-border/40 bg-muted/10 px-4 py-3 text-muted-foreground/80"
+              style={{ fontSize: 12 }}
             >
-              <XCircle className="size-3" />
-              拒绝
-            </button>
-            {proposal ? (
-              <button
-                type="button"
-                onClick={() => writeMutation.mutate(proposal)}
+              任务{translateStatus(entry.status)} — 决策区已锁定。结果见下方 §3。
+            </div>
+          ) : (
+            <div className="space-y-4">
+              <MaintainActionRadio
+                value={maintainAction}
+                onValueChange={setMaintainAction}
+                targetPageSlug={targetPageSlug}
+                rejectionReason={rejectionReason}
+                onRejectionReasonChange={setRejectionReason}
                 disabled={anyPending}
-                className="flex items-center gap-1.5 rounded-md bg-primary px-4 py-1.5 text-body-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"
-              >
-                {writeMutation.isPending ? (
-                  <Loader2 className="size-3 animate-spin" />
-                ) : (
-                  <Save className="size-3" />
-                )}
-                批准并写入知识页面
-              </button>
-            ) : (
-              <button
-                type="button"
-                onClick={() => resolveMutation.mutate("approve")}
-                disabled={anyPending}
-                className="flex items-center gap-1.5 rounded-md bg-primary px-4 py-1.5 text-body-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"
-              >
-                {resolveMutation.isPending ? (
-                  <Loader2 className="size-3 animate-spin" />
-                ) : (
-                  <CheckCircle2 className="size-3" />
-                )}
-                批准
-              </button>
-            )}
-          </div>
+                wikiPageSearchSlot={
+                  // Worker C's WikiPageSearchField. Coerce null → undefined
+                  // because Worker A's state carries `string | null` but
+                  // Worker C's `value` prop is `string | undefined` (both
+                  // mean "unselected" — just different nullish dialects).
+                  <WikiPageSearchField
+                    value={targetPageSlug ?? undefined}
+                    onSelect={(slug) => setTargetPageSlug(slug)}
+                  />
+                }
+              />
+
+              <div className="flex items-center justify-end gap-2 border-t border-border/30 pt-3">
+                <button
+                  type="button"
+                  onClick={() => maintainMutation.mutate()}
+                  disabled={!canExecuteMaintain}
+                  className="flex items-center gap-1.5 rounded-md bg-primary px-4 py-1.5 font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"
+                  style={{ fontSize: 13 }}
+                >
+                  {maintainMutation.isPending ? (
+                    <Loader2 className="size-3 animate-spin" />
+                  ) : (
+                    <Sparkles className="size-3" />
+                  )}
+                  执行
+                </button>
+              </div>
+
+              {/* ── Legacy Propose / Approve fallback ───────────── */}
+              <LegacyMaintainFallback
+                canMaintain={canMaintain}
+                anyPending={anyPending}
+                proposal={proposal}
+                onPropose={() => proposeMutation.mutate()}
+                onReject={() => resolveMutation.mutate("reject")}
+                onApprove={() => resolveMutation.mutate("approve")}
+                onWrite={(p) => writeMutation.mutate(p)}
+                proposeLoading={proposeMutation.isPending}
+                rejectLoading={resolveMutation.isPending}
+                approveLoading={resolveMutation.isPending}
+                writeLoading={writeMutation.isPending}
+              />
+            </div>
+          )}
+
+          {/* Error strip — surfaces both the new maintain error and
+              any legacy-flow error so users never miss feedback. */}
+          {(proposeMutation.error ||
+            writeMutation.error ||
+            resolveMutation.error ||
+            maintainMutation.error) && (
+            <div
+              className="mt-3 rounded-md border px-3 py-2 text-caption"
+              style={{
+                borderColor:
+                  "color-mix(in srgb, var(--color-error) 30%, transparent)",
+                backgroundColor:
+                  "color-mix(in srgb, var(--color-error) 5%, transparent)",
+                color: "var(--color-error)",
+              }}
+            >
+              {maintainMutation.error && (
+                <div>维护失败：{String(maintainMutation.error)}</div>
+              )}
+              {proposeMutation.error && (
+                <div>生成失败：{String(proposeMutation.error)}</div>
+              )}
+              {writeMutation.error && (
+                <div>写入失败：{String(writeMutation.error)}</div>
+              )}
+              {resolveMutation.error && (
+                <div>处理失败：{String(resolveMutation.error)}</div>
+              )}
+            </div>
+          )}
+        </WorkbenchSection>
+
+        {/* ══ Section 3 · Result ══════════════════════════════════ */}
+        {resolvedOutcome && (
+          <WorkbenchSection
+            number={3}
+            title="结果"
+            english="Result"
+            hint="执行结果 — 成功时可直接打开 Wiki 页；失败可重试；拒绝附原因。"
+          >
+            <MaintainerResultCard
+              outcome={resolvedOutcome}
+              targetPageSlug={
+                maintainResult?.target_page_slug ?? entry.target_page_slug ?? null
+              }
+              rejectionReason={
+                maintainResult?.rejection_reason ?? entry.rejection_reason ?? null
+              }
+              errorMessage={maintainResult?.error ?? entry.maintain_error ?? null}
+              onRetry={() => {
+                setMaintainResult(null);
+                maintainMutation.reset();
+              }}
+              onOpenWikiPage={(slug) =>
+                navigateToWikiPage(slug, entry.proposed_title ?? slug, "maintain-result")
+              }
+            />
+          </WorkbenchSection>
         )}
       </div>
     </div>
+  );
+}
+
+/* ─── Workbench section shell ──────────────────────────────────── */
+
+/**
+ * Shared card wrapper for the three Workbench sections. Numbered
+ * badge + bilingual title + hint line + bordered body.
+ */
+function WorkbenchSection({
+  number,
+  title,
+  english,
+  hint,
+  children,
+}: {
+  number: number;
+  title: string;
+  english: string;
+  hint: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <section>
+      <header className="mb-2 flex items-baseline gap-2">
+        <span
+          className="flex size-5 shrink-0 items-center justify-center rounded-full border border-primary/40 bg-primary/10 font-mono text-primary"
+          style={{ fontSize: 10 }}
+        >
+          {number}
+        </span>
+        <h3 className="text-foreground" style={{ fontSize: 13, fontWeight: 500 }}>{title}</h3>
+        <span className="font-mono uppercase tracking-widest text-muted-foreground/60" style={{ fontSize: 10 }}>{english}</span>
+      </header>
+      <p className="mb-2 text-muted-foreground/70" style={{ fontSize: 11, lineHeight: 1.5 }}>{hint}</p>
+      <div className="rounded-md border border-border/30 bg-background/50 px-4 py-3">{children}</div>
+    </section>
+  );
+}
+
+/* ─── Evidence section ─────────────────────────────────────────── */
+
+/**
+ * Section 1 of the Workbench — three stacked sub-cards: source card
+ * (decision + URL track + raw deep link), body preview, and an
+ * optional Propose draft card (only when `entry.proposed_*` is set).
+ */
+function EvidenceSection({
+  entry,
+  rawBody,
+  rawFilename,
+  rawIngestedAt,
+  rawDecision,
+  canonicalUrl,
+  originalUrl,
+  sourceUrl,
+  isLoading,
+}: {
+  entry: InboxEntry;
+  rawBody: string | null;
+  rawFilename: string | null;
+  rawIngestedAt: string | null;
+  rawDecision: IngestDecision | null;
+  canonicalUrl: string | null;
+  originalUrl: string | null;
+  sourceUrl: string | null;
+  isLoading: boolean;
+}) {
+  const hasProposedDraft = Boolean(
+    entry.proposed_title?.length ||
+      entry.proposed_summary?.length ||
+      entry.proposed_content_markdown?.length,
+  );
+  const headerCls =
+    "font-mono uppercase tracking-widest text-muted-foreground/60";
+  return (
+    <div className="space-y-3">
+      {/* 1. Source card — decision + URL + raw deep link */}
+      <div className="rounded-md border border-border/40 bg-muted/5 px-3 py-2 space-y-2">
+        <div className={`flex items-center gap-2 ${headerCls}`} style={{ fontSize: 10 }}>
+          <span>来源 / Source</span>
+          {entry.source_raw_id != null && rawFilename && (
+            <span className="text-muted-foreground/40">{rawFilename}</span>
+          )}
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <IngestDecisionBadge decision={rawDecision} />
+          {rawIngestedAt && (
+            <span className="font-mono text-muted-foreground/60" style={{ fontSize: 11 }}>
+              {rawIngestedAt}
+            </span>
+          )}
+        </div>
+        <URLTrackBadge canonicalUrl={canonicalUrl} originalUrl={originalUrl} sourceUrl={sourceUrl} />
+        {entry.source_raw_id != null && (
+          <Link
+            to={`/raw?entry=${entry.source_raw_id}`}
+            className="inline-flex items-center gap-1 text-primary hover:underline"
+            style={{ fontSize: 11 }}
+          >
+            <FileText className="size-3" />
+            在 Raw Library 打开 raw #{String(entry.source_raw_id).padStart(5, "0")}
+            <ArrowRight className="size-3" />
+          </Link>
+        )}
+      </div>
+
+      {/* 2. Body preview */}
+      <div>
+        <div className={`mb-1 ${headerCls}`} style={{ fontSize: 10 }}>正文预览 / Body</div>
+        {isLoading ? (
+          <div className="flex items-center gap-2 rounded-md border border-border/40 px-3 py-4 text-muted-foreground/60" style={{ fontSize: 11 }}>
+            <Loader2 className="size-3 animate-spin" />
+            加载 raw 正文中…
+          </div>
+        ) : (
+          <BodyPreviewPanel body={rawBody ?? ""} heading={rawFilename ?? undefined} />
+        )}
+      </div>
+
+      {/* 3. Propose draft (only when proposed_* fields are present) */}
+      {hasProposedDraft && (
+        <div>
+          <div className={`mb-1 ${headerCls}`} style={{ fontSize: 10 }}>Propose 预览 / Draft</div>
+          <div className="rounded-md border border-border/40 bg-muted/5 px-3 py-2">
+            {entry.proposed_wiki_slug && (
+              <div className="mb-1 font-mono text-muted-foreground/60" style={{ fontSize: 10 }}>
+                {entry.proposed_wiki_slug}
+              </div>
+            )}
+            {entry.proposed_title && (
+              <div className="text-foreground" style={{ fontSize: 14, fontWeight: 500 }}>{entry.proposed_title}</div>
+            )}
+            {entry.proposed_summary && (
+              <div className="mt-1 text-muted-foreground/80" style={{ fontSize: 12 }}>{entry.proposed_summary}</div>
+            )}
+            {entry.proposed_content_markdown && (
+              <div className="mt-2">
+                <BodyPreviewPanel body={entry.proposed_content_markdown} collapsedLines={6} />
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ─── Legacy maintain fallback ─────────────────────────────────── */
+
+/** Collapsible pre-W1 propose/approve/reject flow — kept inside §2 as a fallback. */
+function LegacyMaintainFallback({
+  canMaintain, anyPending, proposal,
+  onPropose, onReject, onApprove, onWrite,
+  proposeLoading, rejectLoading, approveLoading, writeLoading,
+}: {
+  canMaintain: boolean;
+  anyPending: boolean;
+  proposal: WikiPageProposal | null;
+  onPropose: () => void;
+  onReject: () => void;
+  onApprove: () => void;
+  onWrite: (p: WikiPageProposal) => void;
+  proposeLoading: boolean;
+  rejectLoading: boolean;
+  approveLoading: boolean;
+  writeLoading: boolean;
+}) {
+  const btnBase = "flex items-center gap-1 rounded-md px-2 py-1 transition-colors disabled:opacity-50";
+  const outlineCls = `${btnBase} border border-border/50 text-muted-foreground hover:border-border hover:text-foreground`;
+  const primaryCls = `${btnBase} bg-primary/90 text-primary-foreground hover:bg-primary`;
+  return (
+    <details className="rounded-md border border-dashed border-border/40 px-3 py-2">
+      <summary className="cursor-pointer select-none text-muted-foreground hover:text-foreground" style={{ fontSize: 11 }}>
+        备用流程：Propose → Approve（legacy）
+      </summary>
+      <div className="mt-2 space-y-2">
+        {proposal ? (
+          <div className="space-y-2">
+            <h4 className="uppercase tracking-widest text-muted-foreground/60" style={{ fontSize: 10 }}>生成的知识页面</h4>
+            <ProposalPreview proposal={proposal} />
+          </div>
+        ) : (
+          <div className="text-muted-foreground/70" style={{ fontSize: 12 }}>
+            调用一次 AI 总结（≤200 词）。在你批准之前不会写入磁盘。
+          </div>
+        )}
+        <div className="flex items-center justify-end gap-2" style={{ fontSize: 11 }}>
+          {canMaintain && !proposal && (
+            <button type="button" onClick={onPropose} disabled={anyPending} className={outlineCls}>
+              {proposeLoading ? <Loader2 className="size-3 animate-spin" /> : <Sparkles className="size-3" />}
+              开始维护（旧）
+            </button>
+          )}
+          <button type="button" onClick={onReject} disabled={anyPending} className={`${btnBase} border border-border/50 text-muted-foreground hover:border-destructive hover:text-destructive`}>
+            <XCircle className="size-3" />
+            拒绝
+          </button>
+          {proposal ? (
+            <button type="button" onClick={() => onWrite(proposal)} disabled={anyPending} className={primaryCls}>
+              {writeLoading ? <Loader2 className="size-3 animate-spin" /> : <Save className="size-3" />}
+              批准并写入
+            </button>
+          ) : (
+            <button type="button" onClick={onApprove} disabled={anyPending} className={primaryCls}>
+              {approveLoading || rejectLoading ? <Loader2 className="size-3 animate-spin" /> : <CheckCircle2 className="size-3" />}
+              批准
+            </button>
+          )}
+        </div>
+      </div>
+    </details>
   );
 }
 

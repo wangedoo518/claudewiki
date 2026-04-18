@@ -25,6 +25,11 @@ export type GeneratedSessionSummary = {
 
 export type GeneratedSessionDetail = {
   created_at: number;
+  enrich_status: {
+    kind: string;
+    raw_id: number;
+    title: string;
+  };
   environment_label: string;
   flagged: boolean;
   id: string;
@@ -50,4 +55,21 @@ export type GeneratedSessionDetail = {
 export type GeneratedLifecycleStatus = string;
 
 export type GeneratedTurnState = string;
+
+export type GeneratedEnrichStatusSuccess = {
+  kind: string;
+  raw_id: number;
+  title: string;
+};
+
+export type GeneratedEnrichStatusRejected = {
+  kind: string;
+  reason: string;
+};
+
+export type GeneratedEnrichStatusPrereq = {
+  dep: string;
+  hint: string;
+  kind: string;
+};
 

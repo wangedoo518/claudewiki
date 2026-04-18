@@ -522,154 +522,118 @@ fn ingest_wechat_text_to_wiki(
     from_user_id: &str,
     user_text: &str,
 ) {
-    // URL auto-detect: if the entire message (trimmed) looks like an
-    // HTTP(S) URL, fetch the page and store the extracted markdown
-    // instead of the bare URL text. This is the primary path for the
-    // canonical §2 user story: user copies an mp.weixin.qq.com link
-    // and pastes it to ClawBot. The extractor (feat H) handles the
-    // HTML → clean markdown conversion including WeChat-specific
-    // selectors.
+    // URL auto-detect: if the trimmed message contains an HTTP(S)
+    // URL, funnel it through the M2 `url_ingest::ingest_url`
+    // orchestrator so the fetch + quality check + raw write + inbox
+    // queue all happen in one centralised place. The orchestrator
+    // picks Playwright vs generic fetch by host (auto mode: any
+    // `weixin.qq.com` → Playwright, else generic HTTP) — matching the
+    // original routing logic below. The text fallback option preserves
+    // the pre-M2 behaviour where a failed fetch still writes the
+    // user's raw text as `wechat-text` so no message is lost.
+    //
+    // Plain-text messages (no URL) bypass the orchestrator entirely —
+    // orchestrator is scoped to URL ingest, and the text write is a
+    // single straight-line `write_raw_entry` + `append_new_raw_task`.
     let trimmed = user_text.trim();
-    // Always use extract_first_url which properly truncates at non-URL chars.
-    // This handles both "https://...入库" (URL + trailing Chinese) and
-    // "看看这个 https://..." (text + embedded URL).
     let extracted_url = extract_first_url(trimmed);
 
-    let (source_tag, slug_seed, body, source_url) = if let Some(url) = extracted_url {
-        // B4 (2026-04-17): WeChat URLs must go through the Playwright path
-        // (`wechat_fetch::fetch_wechat_article`) rather than the generic
-        // HTTP fetch. Reason: `mp.weixin.qq.com` / `weixin.qq.com` are
-        // aggressively anti-bot and a raw HTTP GET almost always lands on
-        // an "环境异常 / 完成验证后即可继续访问" interstitial. When the
-        // validator missed that page (pre-LR anti-bot markers), it wrote
-        // a junk `wechat-url` raw + inbox task; the user then had to
-        // manually trigger `/api/desktop/wechat-fetch` to get the real
-        // article, producing a SECOND raw + inbox entry for the same
-        // URL. Routing WeChat URLs through Playwright here collapses both
-        // calls to a single high-quality `wechat-article` raw + inbox,
-        // matching the /api/desktop/wechat-fetch handler's behaviour so
-        // the user never has any reason to double-trigger.
-        //
-        // Non-WeChat URLs keep the existing `wiki_ingest::url::fetch_and_body`
-        // generic path — those sites don't have the anti-bot storyline
-        // and generic fetch works fine for them. Their source tag also
-        // stays `"wechat-url"` for historical compatibility with the
-        // ilink ingest context.
-        let is_wechat = url.contains("weixin.qq.com");
-        eprintln!(
-            "[wechat agent] detected URL in message, fetching: {url} (wechat={is_wechat})"
-        );
-        // Use tokio runtime to run the async fetch synchronously
-        // (we're already inside spawn_blocking).
+    if let Some(url) = extracted_url {
+        eprintln!("[wechat agent] detected URL in message, funneling through url_ingest: {url}");
+        let origin_tag = format!("WeChat iLink · {}", short_openid(from_user_id));
+        let slug_seed = format!("WeChat · {}", short_openid(from_user_id));
+        let fallback_body = user_text.to_string();
+
+        // We're inside `spawn_blocking`; the Tokio runtime handle is
+        // still reachable. `block_on` the async orchestrator on a
+        // dedicated thread so we don't risk re-entering the current
+        // worker's reactor (matches the pre-M2 pattern).
         let rt = tokio::runtime::Handle::try_current();
-        match rt {
+        let outcome = match rt {
             Ok(handle) => {
-                // Both fetchers return `Result<IngestResult, IngestError>`
-                // so the thread closure's return type is identical in
-                // either branch.
-                let fetched = std::thread::spawn(move || {
-                    if is_wechat {
-                        handle.block_on(wiki_ingest::wechat_fetch::fetch_wechat_article(&url))
-                    } else {
-                        handle.block_on(wiki_ingest::url::fetch_and_body(&url))
-                    }
+                let url_clone = url.clone();
+                let origin_clone = origin_tag.clone();
+                let slug_clone = slug_seed.clone();
+                let fallback_clone = fallback_body.clone();
+                let joined = std::thread::spawn(move || {
+                    handle.block_on(crate::url_ingest::ingest_url(
+                        crate::url_ingest::IngestRequest {
+                            url: &url_clone,
+                            origin_tag: origin_clone,
+                            prefer_playwright: None,
+                            fetch_timeout: std::time::Duration::from_secs(60),
+                            allow_text_fallback: Some(crate::url_ingest::TextFallback {
+                                slug_seed: slug_clone,
+                                fallback_body: fallback_clone,
+                            }),
+                            force: false,
+                        },
+                    ))
                 })
                 .join();
-                match fetched {
-                    Ok(Ok(result)) => {
-                        eprintln!(
-                            "[wechat agent] URL fetched OK: title={:?} body_len={}",
-                            result.title,
-                            result.body.len()
-                        );
-                        // Pre-validate before write to get a clear log line
-                        // and a clean fallback to storing the raw text.
-                        // `write_raw_entry` will also re-validate (belt +
-                        // suspenders) but we'd prefer never to reach it
-                        // with a known-bad body.
-                        match wiki_ingest::validate_fetched_content(&result.body) {
-                            Ok(()) => {
-                                // For WeChat URLs the Playwright adapter
-                                // returns source = "wechat-article" — use
-                                // it directly. For non-WeChat URLs keep
-                                // the historical "wechat-url" tag (the
-                                // ilink context implies the URL arrived
-                                // via a WeChat account forwarding it).
-                                let source_tag = if is_wechat {
-                                    result.source.clone()
-                                } else {
-                                    "wechat-url".to_string()
-                                };
-                                (
-                                    source_tag,
-                                    result.title,
-                                    result.body,
-                                    result.source_url,
-                                )
-                            }
-                            Err(reason) => {
-                                eprintln!(
-                                    "[wechat agent] URL body rejected by validator: {reason} — storing raw text instead"
-                                );
-                                (
-                                    "wechat-text".to_string(),
-                                    format!("WeChat · {}", short_openid(from_user_id)),
-                                    user_text.to_string(),
-                                    None,
-                                )
-                            }
-                        }
-                    }
-                    Ok(Err(fetch_err)) => {
-                        eprintln!(
-                            "[wechat agent] URL fetch failed: {fetch_err}, storing raw text"
-                        );
-                        // Fallback: store the original text with the URL
-                        (
-                            "wechat-text".to_string(),
-                            format!("WeChat · {}", short_openid(from_user_id)),
-                            user_text.to_string(),
-                            None,
-                        )
-                    }
+                match joined {
+                    Ok(o) => Some(o),
                     Err(_panic) => {
-                        eprintln!("[wechat agent] URL fetch thread panicked, storing raw text");
-                        (
-                            "wechat-text".to_string(),
-                            format!("WeChat · {}", short_openid(from_user_id)),
-                            user_text.to_string(),
-                            None,
-                        )
+                        eprintln!("[wechat agent] url_ingest block_on thread panicked");
+                        None
                     }
                 }
             }
             Err(_) => {
-                eprintln!("[wechat agent] no tokio runtime for URL fetch, storing raw text");
-                (
-                    "wechat-text".to_string(),
-                    format!("WeChat · {}", short_openid(from_user_id)),
-                    user_text.to_string(),
-                    None,
-                )
+                eprintln!("[wechat agent] no tokio runtime for URL ingest");
+                None
+            }
+        };
+
+        match outcome {
+            Some(o) => {
+                eprintln!("[wechat agent] url_ingest outcome: {}", o.as_display());
+                // `ingest_url` already wrote the raw + queued the
+                // inbox task for Ingested / IngestedInboxSuppressed /
+                // FallbackToText, so there is nothing further for us
+                // to do. Quality/fetch failures with no fallback
+                // configured never reach here (we always pass a
+                // fallback), so the non-persisted branches are
+                // defensive logging only.
+                if !o.is_persisted() {
+                    eprintln!(
+                        "[wechat agent] url_ingest did not persist — chat reply path continues"
+                    );
+                }
+            }
+            None => {
+                // Runtime unavailable / thread panic. Fall back to the
+                // plain-text write path below so we still capture the
+                // conversation rather than silently dropping it.
+                write_plain_text_raw(paths, from_user_id, user_text);
             }
         }
-    } else {
-        // Plain text message — store as-is.
-        (
-            "wechat-text".to_string(),
-            format!("WeChat · {}", short_openid(from_user_id)),
-            user_text.to_string(),
-            None,
-        )
-    };
+        return;
+    }
 
-    let frontmatter =
-        wiki_store::RawFrontmatter::for_paste(&source_tag, source_url);
+    // Plain text message — store as-is (no URL so orchestrator doesn't apply).
+    write_plain_text_raw(paths, from_user_id, user_text);
+}
+
+/// Plain-text fallback: no URL detected (or the orchestrator's host
+/// runtime was unavailable), so we write the raw text directly.
+/// Mirrors the pre-M2 behaviour for the no-URL branch. Keeping this
+/// outside the orchestrator is intentional — `url_ingest` is scoped
+/// to URL ingests and should not acquire responsibilities for
+/// plain-text paths.
+fn write_plain_text_raw(
+    paths: &wiki_store::WikiPaths,
+    from_user_id: &str,
+    user_text: &str,
+) {
+    let source_tag = "wechat-text";
+    let slug_seed = format!("WeChat · {}", short_openid(from_user_id));
+    let frontmatter = wiki_store::RawFrontmatter::for_paste(source_tag, None);
     let entry = match wiki_store::write_raw_entry(
         paths,
-        &source_tag,
+        source_tag,
         &slug_seed,
-        &body,
+        user_text,
         &frontmatter,
     ) {
         Ok(entry) => entry,

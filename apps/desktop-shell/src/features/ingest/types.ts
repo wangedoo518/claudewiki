@@ -29,6 +29,24 @@ export interface RawEntry {
   /** ISO-8601 datetime from the frontmatter. */
   ingested_at: string;
   byte_size: number;
+
+  // ── W1 Maintainer Workbench additions (all optional) ─────────────
+  //
+  // Populated by M3/M4 URL ingest dedupe/refresh layers. Older
+  // backends may not include these; the Workbench Evidence section
+  // degrades gracefully when they're absent.
+
+  /** Canonical URL after normalisation (utm strip / trailing slash). */
+  canonical_url?: string | null;
+  /** URL as originally submitted by the user (pre-canonicalisation). */
+  original_url?: string | null;
+  /** Hex-encoded SHA-256 of the fetched body; stable across re-fetches. */
+  content_hash?: string | null;
+  /**
+   * The most recent `IngestDecision` that produced (or reused) this raw.
+   * Shape is a serde-tagged union — see `IngestDecision` in `lib/tauri.ts`.
+   */
+  last_ingest_decision?: unknown;
 }
 
 export interface IngestRawRequest {
@@ -57,6 +75,27 @@ export interface RawDetailResponse {
 export type InboxKind = "new-raw" | "conflict" | "stale" | "deprecate";
 export type InboxStatus = "pending" | "approved" | "rejected";
 
+/**
+ * W1 Maintainer Workbench action vocabulary. Mirrors the `action`
+ * field on `POST /api/wiki/inbox/{id}/maintain` (Worker B).
+ *
+ * - `create_new`: generate a fresh wiki page from the raw (legacy
+ *   "propose + approve-with-write" flow; still the default).
+ * - `update_existing`: append/merge into an existing page — requires
+ *   `target_page_slug`.
+ * - `reject`: discard the inbox task with a reason — requires
+ *   `rejection_reason`.
+ */
+export type MaintainAction = "create_new" | "update_existing" | "reject";
+
+/**
+ * Outcome returned by the `maintain` endpoint. `created` / `updated`
+ * carry a `target_page_slug` so the UI can deep-link the result;
+ * `rejected` echoes the `rejection_reason`; `failed` surfaces
+ * `error` for user-visible troubleshooting.
+ */
+export type MaintainOutcome = "created" | "updated" | "rejected" | "failed";
+
 export interface InboxEntry {
   id: number;
   kind: InboxKind;
@@ -66,6 +105,56 @@ export interface InboxEntry {
   source_raw_id?: number | null;
   created_at: string;
   resolved_at?: string | null;
+
+  // ── W1 Maintainer Workbench additions (all optional) ───────────
+  //
+  // These fields are populated by the maintain endpoint (Worker B)
+  // and surfaced in the Workbench Result section. Older backends
+  // that haven't shipped `/maintain` leave them undefined.
+
+  /** Kebab slug the server "proposed" from the raw (pre-commit). */
+  proposed_wiki_slug?: string | null;
+  /** LLM-generated title for the proposal (pre-commit). */
+  proposed_title?: string | null;
+  /** One-line LLM summary for the proposal (pre-commit). */
+  proposed_summary?: string | null;
+  /** Full markdown body for the proposal (pre-commit). */
+  proposed_content_markdown?: string | null;
+
+  /** Which action the user chose in the workbench (see `MaintainAction`). */
+  maintain_action?: MaintainAction | null;
+  /** Outcome returned by the `maintain` endpoint. */
+  maintain_outcome?: MaintainOutcome | null;
+  /** For `created`/`updated` outcomes — slug of the wiki page that was written. */
+  target_page_slug?: string | null;
+  /** For `rejected` outcome — user-provided reason. */
+  rejection_reason?: string | null;
+  /** For `failed` outcome — user-visible error message. */
+  maintain_error?: string | null;
+}
+
+/**
+ * Request body for `POST /api/wiki/inbox/{id}/maintain`. Aligned with
+ * Worker B's contract.
+ */
+export interface MaintainRequest {
+  action: MaintainAction;
+  /** Required when `action === "update_existing"`. */
+  target_page_slug?: string;
+  /** Required when `action === "reject"`. Minimum 4 chars enforced client-side. */
+  rejection_reason?: string;
+}
+
+/**
+ * Response envelope for `POST /api/wiki/inbox/{id}/maintain`. Only
+ * `outcome` is always present; the other fields are populated
+ * conditionally per the rules in `MaintainOutcome`.
+ */
+export interface MaintainResponse {
+  outcome: MaintainOutcome;
+  target_page_slug?: string | null;
+  rejection_reason?: string | null;
+  error?: string | null;
 }
 
 export interface InboxListResponse {

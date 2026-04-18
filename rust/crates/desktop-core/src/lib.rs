@@ -53,6 +53,17 @@ pub mod protocol_codegen;
 pub mod providers_config;
 pub mod secure_storage;
 pub mod system_prompt;
+// M2 runtime prerequisite classifier. Turns raw stderr / IngestError
+// strings into a `MissingPrerequisite` enum with Chinese user-facing
+// hints, used by `url_ingest` to structure `PrerequisiteMissing` and
+// by the desktop-server env-check endpoints to stay consistent.
+pub mod prerequisites;
+// M2 URL ingest orchestrator. Centralises the previously-duplicated
+// "fetch URL → validate → write raw → queue inbox" pipeline that used
+// to live in three copies inside `maybe_enrich_url` and clones in
+// `wechat_fetch_handler` + `wechat_ilink::ingest_wechat_text_to_wiki`.
+// See `url_ingest/mod.rs` for the entry point + `IngestOutcome` enum.
+pub mod url_ingest;
 pub mod wechat_ilink;
 pub mod wechat_kefu;
 // ClawWiki S4: adapter bridging codex_broker::CodexBroker to
@@ -272,6 +283,51 @@ pub struct DesktopSessionDetail {
     #[serde(default = "default_flagged")]
     pub flagged: bool,
     pub session: DesktopSessionData,
+    /// M2 side-channel: carries the outcome of the URL-enrichment
+    /// pipeline (`url_ingest::ingest_url`) for the message that
+    /// triggered this detail. Only populated by `append_user_message`
+    /// in the success/failure/prerequisite paths; every other code
+    /// site that builds a detail (idle refresh, rename, fork, …)
+    /// leaves this `None`. Frontend consumers treat absence as
+    /// "no URL was processed".
+    ///
+    /// Kept optional with `serde(default)` so older snapshots
+    /// persisted to disk still deserialize cleanly.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enrich_status: Option<EnrichStatus>,
+}
+
+/// Side-channel status reported by `DesktopState::append_user_message`
+/// when the user's message contained a URL. Surfaced to the frontend
+/// via the returned `DesktopSessionDetail` so the UI can flag failed /
+/// rejected enrichments without having to poll another endpoint.
+///
+/// See `crates/desktop-core/src/url_ingest/mod.rs` for the underlying
+/// outcome classification.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case", tag = "kind")]
+pub enum EnrichStatus {
+    /// URL fetched + written to raw. Frontend can show a "saved to
+    /// Raw Library" confirmation if desired.
+    Success { title: String, raw_id: u32 },
+    /// M3: canonical URL matched an existing raw entry; we skipped
+    /// the fetch and reused the prior landing. `reason` carries the
+    /// dedupe decision tag (pending / approved / rejected / silent)
+    /// so the UI can render an inline "已在素材库 #NNNNN" chip rather
+    /// than a full "saved" banner.
+    Reused {
+        title: String,
+        raw_id: u32,
+        reason: String,
+    },
+    /// URL fetched but the body failed quality validation (anti-bot
+    /// page, empty, image-only). Nothing persisted.
+    RejectedQuality { reason: String },
+    /// Network / adapter failure. Nothing persisted.
+    FetchFailed { reason: String },
+    /// Host-level dependency missing (e.g. Playwright not installed).
+    /// The `hint` is safe to display verbatim as an install CTA.
+    PrerequisiteMissing { dep: String, hint: String },
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -970,6 +1026,21 @@ impl DesktopSessionEvent {
             Self::TextDelta { .. } => "text_delta",
         }
     }
+}
+
+/// Plan for a deferred background URL ingest.
+///
+/// `maybe_enrich_url` returns this when a non-WeChat URL's simple HTTP
+/// fetch did not produce a raw entry and the Playwright adapter should
+/// run asynchronously. `append_user_message` owns the actual spawn so
+/// it can clone the session event sender and broadcast a late-arriving
+/// `Snapshot` with the `enrich_status` once the bg ingest finishes —
+/// letting `useAskSSE` reconcile to the new status without an extra
+/// poll.
+#[derive(Debug, Clone)]
+struct BgIngestPlan {
+    url: String,
+    origin_tag: String,
 }
 
 #[derive(Debug, Clone)]
@@ -2944,127 +3015,331 @@ impl DesktopState {
         &s[..end]
     }
 
+    /// M4: render the `EnrichStatus::Reused::reason` field with a stable
+    /// tag prefix (`pending:` / `approved:` / `rejected:` / `silent:` /
+    /// `content_duplicate:`) so the frontend can branch on decision
+    /// kind without having to decode the full `IngestDecision` JSON.
+    /// Non-reuse decisions fall back to the raw `reason()` string —
+    /// `RefreshedContent` is handled separately (through `Ingested +
+    /// Reused` mapping in the caller).
+    fn enrich_reuse_reason(decision: &crate::url_ingest::IngestDecision) -> String {
+        use crate::url_ingest::IngestDecision;
+        match decision {
+            IngestDecision::ReusedWithPendingInbox { reason } => {
+                format!("pending:{reason}")
+            }
+            IngestDecision::ReusedApproved { reason } => format!("approved:{reason}"),
+            IngestDecision::ReusedAfterReject { reason } => {
+                format!("rejected:{reason}")
+            }
+            IngestDecision::ReusedSilent { reason } => format!("silent:{reason}"),
+            IngestDecision::ContentDuplicate {
+                matching_url,
+                matching_raw_id,
+            } => {
+                if matching_url.is_empty() {
+                    format!("content_duplicate:match={matching_raw_id:05}")
+                } else {
+                    format!("content_duplicate:src={matching_url}")
+                }
+            }
+            other => other.reason(),
+        }
+    }
+
     /// If the message contains a URL, try to fetch its content and
     /// return an enriched message with the article text prepended.
-    async fn maybe_enrich_url(message: String) -> String {
+    ///
+    /// Returns `(enriched_or_original_message, EnrichStatus option, BgIngestPlan option)`:
+    ///   * No URL detected → (original, None, None).
+    ///   * Success → (enriched prompt with article body, Some(Success), None).
+    ///   * Playwright quality-reject for a WeChat URL → (system-notice
+    ///     prompt telling the LLM to ask the user to paste content
+    ///     manually, Some(RejectedQuality), None). Preserves the
+    ///     original Ask-layer contract: the LLM must not hallucinate
+    ///     content when the fetch failed.
+    ///   * Non-WeChat URL where simple fetch didn't persist → (original,
+    ///     None, Some(BgIngestPlan)). The caller is responsible for
+    ///     spawning a background Playwright pass; when that pass
+    ///     completes, the caller should rebuild a session detail and
+    ///     broadcast a `Snapshot` so the UI's SSE subscription can
+    ///     reconcile to the late outcome.
+    ///   * All other failure paths → (original, Some(status), None) so
+    ///     the UI can surface an inline notice without distorting what
+    ///     the LLM sees.
+    ///
+    /// M2: the three previously-duplicated fetch + write + inbox blocks
+    /// (simple / synchronous Playwright / background Playwright) now
+    /// funnel through `url_ingest::ingest_url`. Adapter selection still
+    /// follows the original behaviour: simple fetch first, then
+    /// Playwright for WeChat sync, or background Playwright for other
+    /// URLs that the simple fetch couldn't satisfy.
+    ///
+    /// M2.1: the background Playwright branch no longer `spawn`s inside
+    /// this helper — it returns the plan so `append_user_message` can
+    /// spawn with access to the `DesktopState` + session event sender
+    /// and broadcast a `Snapshot` once the outcome lands.
+    async fn maybe_enrich_url(
+        message: String,
+    ) -> (String, Option<EnrichStatus>, Option<BgIngestPlan>) {
         // Quick check: does the message contain a URL?
         let url = match message.split_whitespace()
             .find(|w| w.starts_with("http://") || w.starts_with("https://"))
         {
             Some(u) => u.trim_end_matches(|c: char| !c.is_ascii() || matches!(c, '.' | ',' | ')' | ']')).to_string(),
-            None => return message,
+            None => return (message, None, None),
         };
 
         eprintln!("[enrich_url] detected: {url}");
 
-        // Try simple HTTP fetch first (fast, 5s timeout to avoid blocking)
-        let fetch_result = tokio::time::timeout(
-            std::time::Duration::from_secs(5),
-            wiki_ingest::url::fetch_and_body(&url),
-        ).await;
-        if let Ok(Ok(result)) = fetch_result {
-            // v2 bugfix: use unified quality check from wiki_ingest.
-            let quality = wiki_ingest::validate_fetched_content(&result.body);
-            if quality.is_ok() {
-                eprintln!(
-                    "[enrich_url] simple fetch OK: {} chars, returning enriched",
-                    result.body.len()
-                );
-                // Ingest to raw
-                if let Ok(paths) = (|| -> std::result::Result<wiki_store::WikiPaths, Box<dyn std::error::Error>> {
-            let root = wiki_store::default_root();
-            wiki_store::init_wiki(&root)?;
-            Ok(wiki_store::WikiPaths::resolve(&root))
-        })() {
-                    let fm = wiki_store::RawFrontmatter::for_paste(&result.source, result.source_url.clone());
-                    if let Ok(entry) = wiki_store::write_raw_entry(&paths, &result.source, &result.title, &result.body, &fm) {
-                        let _ = wiki_store::append_new_raw_task(&paths, &entry, "url-fetch");
-                        eprintln!("[enrich_url] ingested as raw #{}", entry.id);
-                    }
-                }
-                return format!(
-                    "请基于以下文章内容回答我的问题。\n\n\
-                     标题：{}\n\n{}\n\n---\n用户原始消息：{}",
-                    result.title, Self::safe_truncate(&result.body, 6000), message
-                );
-            } else if let Err(reason) = quality {
-                eprintln!("[enrich_url] simple fetch rejected by quality check: {reason}");
-            }
+        // ── Simple HTTP fetch first (fast, 5s timeout) ────────────
+        let simple_outcome = crate::url_ingest::ingest_url(crate::url_ingest::IngestRequest {
+            url: &url,
+            origin_tag: "url-fetch".into(),
+            prefer_playwright: Some(false),
+            fetch_timeout: std::time::Duration::from_secs(5),
+            allow_text_fallback: None,
+            force: false,
+        })
+        .await;
+        eprintln!("[enrich_url] simple fetch outcome: {}", simple_outcome.as_display());
+
+        if let crate::url_ingest::IngestOutcome::Ingested {
+            ref entry,
+            ref title,
+            ref body,
+            ref decision,
+            ..
+        } = simple_outcome
+        {
+            let enriched = format!(
+                "请基于以下文章内容回答我的问题。\n\n\
+                 标题：{}\n\n{}\n\n---\n用户原始消息：{}",
+                title,
+                Self::safe_truncate(body, 6000),
+                message
+            );
+            // M4: when the ingest wrote a new raw because content
+            // drifted on an existing URL (RefreshedContent), surface
+            // that through EnrichStatus::Reused with a `refreshed:`
+            // reason prefix so the UI can render "内容已更新" rather
+            // than a fresh "saved" banner.
+            let status = match decision {
+                crate::url_ingest::IngestDecision::RefreshedContent {
+                    previous_raw_id,
+                    ..
+                } => EnrichStatus::Reused {
+                    title: title.clone(),
+                    raw_id: entry.id,
+                    reason: format!("refreshed:prev={previous_raw_id}"),
+                },
+                _ => EnrichStatus::Success {
+                    title: title.clone(),
+                    raw_id: entry.id,
+                },
+            };
+            return (enriched, Some(status), None);
         }
 
-        // For WeChat URLs: wait for Playwright synchronously (user expects content)
-        // For other URLs: dispatch to background (not worth blocking)
-        let is_wechat = url.contains("weixin.qq.com");
-        eprintln!("[enrich_url] simple fetch failed, trying Playwright (sync={is_wechat})");
-
-        if is_wechat {
-            // Synchronous Playwright fetch with 45s timeout for WeChat
-            let pw_result = tokio::time::timeout(
-                std::time::Duration::from_secs(45),
-                wiki_ingest::wechat_fetch::fetch_wechat_article(&url),
-            ).await;
-            if let Ok(Ok(result)) = pw_result {
-                // v2 bugfix: quality check for Playwright path too.
-                match wiki_ingest::validate_fetched_content(&result.body) {
-                    Ok(()) => {
-                        eprintln!(
-                            "[enrich_url] Playwright OK: {} chars, returning enriched",
-                            result.body.len()
-                        );
-                        if let Ok(paths) = (|| -> std::result::Result<wiki_store::WikiPaths, Box<dyn std::error::Error>> {
-                            let root = wiki_store::default_root();
-                            wiki_store::init_wiki(&root)?;
-                            Ok(wiki_store::WikiPaths::resolve(&root))
-                        })() {
-                            let fm = wiki_store::RawFrontmatter::for_paste(&result.source, result.source_url.clone());
-                            if let Ok(entry) = wiki_store::write_raw_entry(&paths, &result.source, &result.title, &result.body, &fm) {
-                                let _ = wiki_store::append_new_raw_task(&paths, &entry, "playwright-fetch");
-                                eprintln!("[enrich_url] ingested as raw #{}", entry.id);
-                            }
-                        }
-                        return format!(
+        // M3: canonical URL dedupe short-circuit. If the simple fetch
+        // returned `ReusedExisting`, the dedupe layer found a prior
+        // raw landing for this canonical URL and skipped the network.
+        // We still want to enrich the LLM prompt with the existing
+        // body, AND surface a `Reused` status to the UI so the user
+        // knows why no "saved" banner fired.
+        if let crate::url_ingest::IngestOutcome::ReusedExisting {
+            ref entry,
+            ref decision,
+            ..
+        } = simple_outcome
+        {
+            // Load the prior raw body so the LLM context stays
+            // identical to a fresh ingest — otherwise the dedupe
+            // path silently regresses the conversation quality.
+            let (enriched, title_for_status) =
+                match crate::url_ingest::load_reused_body(entry.id) {
+                    Some((reused_title, reused_body)) => (
+                        format!(
                             "请基于以下文章内容回答我的问题。\n\n\
                              标题：{}\n\n{}\n\n---\n用户原始消息：{}",
-                            result.title, Self::safe_truncate(&result.body, 6000), message
-                        );
-                    }
-                    Err(reason) => {
-                        eprintln!("[enrich_url] Playwright rejected by quality check: {reason}");
-                        // Tell the LLM to inform the user — don't pretend we got content.
-                        return format!(
-                            "[系统通知] 链接抓取失败（{}）。请告知用户手动复制内容粘贴，\
-                             或指明是否需要基于 URL 本身回答。\n\n用户原始消息：{}",
-                            reason, message
-                        );
-                    }
-                }
-            }
-            eprintln!("[enrich_url] Playwright failed or timed out for WeChat URL");
-        } else {
-            // Non-WeChat: background async (don't block)
-            let bg_url = url.clone();
-            tokio::spawn(async move {
-                if let Ok(result) = wiki_ingest::wechat_fetch::fetch_wechat_article(&bg_url).await {
-                    if wiki_ingest::validate_fetched_content(&result.body).is_ok() {
-                        if let Ok(paths) = (|| -> std::result::Result<wiki_store::WikiPaths, Box<dyn std::error::Error>> {
-                            let root = wiki_store::default_root();
-                            wiki_store::init_wiki(&root)?;
-                            Ok(wiki_store::WikiPaths::resolve(&root))
-                        })() {
-                            let fm = wiki_store::RawFrontmatter::for_paste(&result.source, result.source_url.clone());
-                            if let Ok(entry) = wiki_store::write_raw_entry(&paths, &result.source, &result.title, &result.body, &fm) {
-                                let _ = wiki_store::append_new_raw_task(&paths, &entry, "playwright-fetch");
-                                eprintln!("[enrich_url:bg] ingested as raw #{}", entry.id);
-                            }
-                        }
-                    } else {
-                        eprintln!("[enrich_url:bg] background fetch rejected by quality check");
-                    }
-                }
-            });
+                            reused_title,
+                            Self::safe_truncate(&reused_body, 6000),
+                            message
+                        ),
+                        reused_title,
+                    ),
+                    None => (message.clone(), entry.slug.clone()),
+                };
+            return (
+                enriched,
+                Some(EnrichStatus::Reused {
+                    title: title_for_status,
+                    raw_id: entry.id,
+                    reason: Self::enrich_reuse_reason(decision),
+                }),
+                None,
+            );
         }
 
-        message
+        // ── Playwright fallback: sync for WeChat, background otherwise ─
+        let is_wechat = url.contains("weixin.qq.com");
+        eprintln!(
+            "[enrich_url] simple fetch did not produce ingest, trying Playwright (sync={is_wechat})"
+        );
+
+        if is_wechat {
+            let pw_outcome = crate::url_ingest::ingest_url(crate::url_ingest::IngestRequest {
+                url: &url,
+                origin_tag: "playwright-fetch".into(),
+                prefer_playwright: Some(true),
+                fetch_timeout: std::time::Duration::from_secs(45),
+                allow_text_fallback: None,
+                force: false,
+            })
+            .await;
+            eprintln!("[enrich_url] playwright outcome: {}", pw_outcome.as_display());
+
+            match pw_outcome {
+                crate::url_ingest::IngestOutcome::Ingested {
+                    entry,
+                    title,
+                    body,
+                    decision,
+                    ..
+                } => {
+                    let enriched = format!(
+                        "请基于以下文章内容回答我的问题。\n\n\
+                         标题：{}\n\n{}\n\n---\n用户原始消息：{}",
+                        title,
+                        Self::safe_truncate(&body, 6000),
+                        message
+                    );
+                    // M4 parity with the simple-fetch arm — mark
+                    // RefreshedContent as a Reused (with a
+                    // `refreshed:` reason prefix) even though a new
+                    // raw was written.
+                    let status = match decision {
+                        crate::url_ingest::IngestDecision::RefreshedContent {
+                            previous_raw_id,
+                            ..
+                        } => EnrichStatus::Reused {
+                            title,
+                            raw_id: entry.id,
+                            reason: format!("refreshed:prev={previous_raw_id}"),
+                        },
+                        _ => EnrichStatus::Success {
+                            title,
+                            raw_id: entry.id,
+                        },
+                    };
+                    return (enriched, Some(status), None);
+                }
+                crate::url_ingest::IngestOutcome::ReusedExisting {
+                    entry,
+                    decision,
+                    ..
+                } => {
+                    // Same pattern as the simple-fetch dedupe arm —
+                    // load the prior body so the LLM still has
+                    // context, but tag the status as Reused so the
+                    // UI shows "已在素材库 #NNNNN" instead of a fresh
+                    // "saved" banner.
+                    let (enriched, title_for_status) =
+                        match crate::url_ingest::load_reused_body(entry.id) {
+                            Some((reused_title, reused_body)) => (
+                                format!(
+                                    "请基于以下文章内容回答我的问题。\n\n\
+                                     标题：{}\n\n{}\n\n---\n用户原始消息：{}",
+                                    reused_title,
+                                    Self::safe_truncate(&reused_body, 6000),
+                                    message
+                                ),
+                                reused_title,
+                            ),
+                            None => (message.clone(), entry.slug.clone()),
+                        };
+                    return (
+                        enriched,
+                        Some(EnrichStatus::Reused {
+                            title: title_for_status,
+                            raw_id: entry.id,
+                            reason: Self::enrich_reuse_reason(&decision),
+                        }),
+                        None,
+                    );
+                }
+                crate::url_ingest::IngestOutcome::RejectedQuality { reason } => {
+                    // Preserve the Ask contract: tell the LLM
+                    // explicitly that the fetch failed so it doesn't
+                    // hallucinate content — identical to pre-M2 text.
+                    let enriched = format!(
+                        "[系统通知] 链接抓取失败（{}）。请告知用户手动复制内容粘贴，\
+                         或指明是否需要基于 URL 本身回答。\n\n用户原始消息：{}",
+                        reason, message
+                    );
+                    return (
+                        enriched,
+                        Some(EnrichStatus::RejectedQuality { reason }),
+                        None,
+                    );
+                }
+                crate::url_ingest::IngestOutcome::PrerequisiteMissing { dep, hint } => {
+                    return (
+                        message,
+                        Some(EnrichStatus::PrerequisiteMissing { dep, hint }),
+                        None,
+                    );
+                }
+                crate::url_ingest::IngestOutcome::FetchFailed { error } => {
+                    return (
+                        message,
+                        Some(EnrichStatus::FetchFailed {
+                            reason: format!("{error}"),
+                        }),
+                        None,
+                    );
+                }
+                crate::url_ingest::IngestOutcome::InvalidUrl { reason } => {
+                    return (
+                        message,
+                        Some(EnrichStatus::FetchFailed { reason }),
+                        None,
+                    );
+                }
+                // `IngestedInboxSuppressed` and `FallbackToText` can't
+                // happen on this path (no fallback requested, and a
+                // fresh raw id can't collide with an existing inbox
+                // pending entry). Treat defensively as success-ish.
+                crate::url_ingest::IngestOutcome::IngestedInboxSuppressed { entry, .. } => {
+                    return (
+                        message,
+                        Some(EnrichStatus::Success {
+                            title: String::new(),
+                            raw_id: entry.id,
+                        }),
+                        None,
+                    );
+                }
+                crate::url_ingest::IngestOutcome::FallbackToText { .. } => {
+                    return (message, None, None);
+                }
+            }
+        }
+
+        // Non-WeChat URL where simple fetch didn't land a raw entry:
+        // hand back a plan so `append_user_message` can spawn the
+        // background Playwright pass with access to the session event
+        // sender. The bg task will broadcast a `Snapshot` with the
+        // late-arriving `enrich_status`, letting the Ask SSE client
+        // reconcile once the raw lands — see M2.1 (Worker A Task A-1).
+        let plan = BgIngestPlan {
+            url: url.clone(),
+            origin_tag: "playwright-fetch".to_string(),
+        };
+
+        // Mirror the pre-M2 contract: return ORIGINAL message on every
+        // path that doesn't have sync Playwright content.
+        (message, None, Some(plan))
     }
 
     pub async fn append_user_message(
@@ -3077,12 +3352,13 @@ impl DesktopState {
         // Enriched content is injected as a temporary system message for
         // the current turn only — it does NOT persist in the session,
         // preventing context pollution and LLM hallucination.
-        let enriched = Self::maybe_enrich_url(message.clone()).await;
+        let (enriched, enrich_status, bg_plan) =
+            Self::maybe_enrich_url(message.clone()).await;
         let has_enrichment = enriched != message;
         let user_message = ConversationMessage::user_text(message.clone());
         let session_id = session_id.to_string();
 
-        let (detail, sender, session, previous_message_count, project_path) = {
+        let (mut detail, sender, session, previous_message_count, project_path) = {
             let mut store = self.store.write().await;
             let record = store
                 .sessions
@@ -3125,10 +3401,120 @@ impl DesktopState {
             )
         };
 
+        // M2 side-channel: stamp the enrich outcome onto the detail
+        // before it goes on the wire. Frontend keys on this field to
+        // render inline success / failure banners. Cleared by
+        // subsequent refresh calls since every other `detail()`
+        // builder defaults `enrich_status` back to `None`.
+        detail.enrich_status = enrich_status;
+
         self.persist().await;
         let _ = sender.send(DesktopSessionEvent::Snapshot {
             session: detail.clone(),
         });
+
+        // ── M2.1: background Playwright ingest + late Snapshot broadcast ──
+        // When `maybe_enrich_url` returns a plan, the simple fetch
+        // could not persist the URL and a background Playwright pass
+        // was requested. We spawn it here (not inside `maybe_enrich_url`)
+        // so we have access to the session event sender + the
+        // `DesktopState` store: once the bg outcome lands we rebuild
+        // the detail with the new `enrich_status` and broadcast a
+        // `Snapshot`. `useAskSSE` keys on the snapshot's
+        // `enrich_status` so the UI reconciles to the late result
+        // without an extra poll.
+        if let Some(plan) = bg_plan {
+            let state_clone = self.clone();
+            let sender_clone = sender.clone();
+            let session_id_clone = session_id.clone();
+            tokio::spawn(async move {
+                let outcome =
+                    crate::url_ingest::ingest_url(crate::url_ingest::IngestRequest {
+                        url: &plan.url,
+                        origin_tag: plan.origin_tag.clone(),
+                        prefer_playwright: Some(true),
+                        fetch_timeout: std::time::Duration::from_secs(60),
+                        allow_text_fallback: None,
+                        force: false,
+                    })
+                    .await;
+                eprintln!("[enrich_url:bg] {}", outcome.as_display());
+
+                // Map the orchestrator outcome onto the side-channel
+                // `EnrichStatus` the UI renders. We only broadcast
+                // a snapshot when the outcome is informative;
+                // `InvalidUrl` / `FallbackToText` should not happen on
+                // this path (the URL was already validated + no
+                // fallback requested) so we skip them defensively.
+                let late_status: Option<EnrichStatus> = match outcome {
+                    crate::url_ingest::IngestOutcome::Ingested {
+                        entry,
+                        title,
+                        decision:
+                            crate::url_ingest::IngestDecision::RefreshedContent {
+                                previous_raw_id,
+                                ..
+                            },
+                        ..
+                    } => Some(EnrichStatus::Reused {
+                        title,
+                        raw_id: entry.id,
+                        reason: format!("refreshed:prev={previous_raw_id}"),
+                    }),
+                    crate::url_ingest::IngestOutcome::Ingested {
+                        entry, title, ..
+                    } => Some(EnrichStatus::Success {
+                        title,
+                        raw_id: entry.id,
+                    }),
+                    crate::url_ingest::IngestOutcome::IngestedInboxSuppressed {
+                        entry, ..
+                    } => Some(EnrichStatus::Success {
+                        title: entry.slug.clone(),
+                        raw_id: entry.id,
+                    }),
+                    crate::url_ingest::IngestOutcome::ReusedExisting {
+                        entry, decision, ..
+                    } => Some(EnrichStatus::Reused {
+                        title: entry.slug.clone(),
+                        raw_id: entry.id,
+                        reason: Self::enrich_reuse_reason(&decision),
+                    }),
+                    crate::url_ingest::IngestOutcome::RejectedQuality { reason } => {
+                        Some(EnrichStatus::RejectedQuality { reason })
+                    }
+                    crate::url_ingest::IngestOutcome::FetchFailed { error } => {
+                        Some(EnrichStatus::FetchFailed {
+                            reason: error.to_string(),
+                        })
+                    }
+                    crate::url_ingest::IngestOutcome::PrerequisiteMissing {
+                        dep,
+                        hint,
+                    } => Some(EnrichStatus::PrerequisiteMissing { dep, hint }),
+                    crate::url_ingest::IngestOutcome::InvalidUrl { .. }
+                    | crate::url_ingest::IngestOutcome::FallbackToText { .. } => None,
+                };
+
+                let Some(late_status) = late_status else {
+                    return;
+                };
+
+                // Rebuild the detail from the current record and
+                // stamp on the late `enrich_status`. We do not
+                // mutate the record (only transient side-channel
+                // data) so a `read()` lock is sufficient.
+                let store = state_clone.store.read().await;
+                let Some(record) = store.sessions.get(&session_id_clone) else {
+                    return;
+                };
+                let mut late_detail = record.detail();
+                late_detail.enrich_status = Some(late_status);
+                let _ = sender_clone.send(DesktopSessionEvent::Snapshot {
+                    session: late_detail,
+                });
+            });
+        }
 
         // ── Spawn agentic loop ───────────────────────────────────
         let cancel_token = CancellationToken::new();
@@ -3878,6 +4264,10 @@ impl DesktopSessionRecord {
             lifecycle_status: self.metadata.lifecycle_status,
             flagged: self.metadata.flagged,
             session: DesktopSessionData::from(&self.session),
+            // `enrich_status` is a per-turn side-channel (see
+            // `append_user_message`); the default builder leaves it
+            // `None` and only that function populates it.
+            enrich_status: None,
         }
     }
 

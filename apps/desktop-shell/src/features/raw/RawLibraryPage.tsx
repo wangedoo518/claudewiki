@@ -28,7 +28,7 @@ import {
 } from "lucide-react";
 import { listRawEntries, getRawEntry } from "@/features/ingest/persist";
 import { ingestText } from "@/features/ingest/adapters/text";
-import { ingestUrl } from "@/features/ingest/adapters/url";
+import { ingestUrl, type IngestUrlResult } from "@/features/ingest/adapters/url";
 import { fetchJson } from "@/lib/desktop/transport";
 import type { RawEntry } from "@/features/ingest/types";
 import { Input } from "@/components/ui/input";
@@ -435,23 +435,65 @@ function AddPanel({ onIngested }: AddPanelProps) {
       ? "border-primary bg-primary/10 text-primary"
       : "border-border text-muted-foreground hover:bg-accent");
 
-  const ingestMutation = useMutation({
+  const ingestMutation = useMutation<IngestUrlResult, Error, void>({
     mutationFn: async () => {
       if (mode === "text") {
         if (!body.trim()) throw new Error("内容不能为空");
-        return ingestText({ title, body });
+        // `ingestText` still returns a bare RawEntry (text ingest has no
+        // URL-level dedupe layer yet). Wrap it into the envelope shape
+        // so downstream handlers only branch on `decision?.kind`.
+        const entry = await ingestText({ title, body });
+        return { raw_entry: entry, decision: null };
       }
       if (!url.trim()) throw new Error("链接不能为空");
       return ingestUrl({ url, title });
     },
-    onSuccess: (entry) => {
+    onSuccess: (data) => {
       void queryClient.invalidateQueries({ queryKey: rawKeys.list() });
       setTitle("");
       setBody("");
       setUrl("");
       setErrorMessage(null);
-      setSuccessMessage(null);
-      onIngested(entry);
+
+      // M4: banner text reflects what the dedupe orchestrator actually
+      // did. Falls through to "created_new" wording when either the
+      // server didn't emit a decision (legacy backend) or this was a
+      // text-ingest (which has no URL dedupe yet).
+      const rawId = String(data.raw_entry.id).padStart(5, "0");
+      const decision = data.decision;
+      let message: string;
+      if (!decision) {
+        message = `✓ 已入库:${data.raw_entry.slug} (raw #${rawId})`;
+      } else {
+        switch (decision.kind) {
+          case "reused_with_pending_inbox":
+          case "reused_approved":
+          case "reused_silent":
+            message = `✓ 已复用此前入库的素材 raw #${rawId}(${data.raw_entry.slug})`;
+            break;
+          case "reused_after_reject":
+            message = `✓ 已复用 raw #${rawId}(此前被拒;若需重抓请用 force)`;
+            break;
+          case "refreshed_content": {
+            const prevId = String(decision.previous_raw_id).padStart(5, "0");
+            message = `⟳ 内容已更新,新建 raw #${rawId}(原版本 raw #${prevId} 保留)`;
+            break;
+          }
+          case "content_duplicate":
+            message = `✓ 相同内容已存在于 raw #${rawId}(来自另一 URL)`;
+            break;
+          case "explicit_reingest":
+            message = `✓ 已强制重抓,新 raw #${rawId}`;
+            break;
+          case "created_new":
+          default:
+            message = `✓ 已入库:${data.raw_entry.slug} (raw #${rawId})`;
+            break;
+        }
+      }
+      setSuccessMessage(message);
+
+      onIngested(data.raw_entry);
     },
     onError: (err) => {
       setErrorMessage(err instanceof Error ? err.message : String(err));

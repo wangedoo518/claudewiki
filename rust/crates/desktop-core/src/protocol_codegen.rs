@@ -99,8 +99,8 @@ pub fn ts_file(types: &[(&str, Value)]) -> String {
 mod tests {
     use super::*;
     use crate::{
-        DesktopLifecycleStatus, DesktopSessionBucket, DesktopSessionDetail,
-        DesktopSessionData, DesktopSessionSummary, DesktopTurnState,
+        DesktopLifecycleStatus, DesktopSessionBucket, DesktopSessionData,
+        DesktopSessionDetail, DesktopSessionSummary, DesktopTurnState, EnrichStatus,
     };
 
     fn sample_summary() -> DesktopSessionSummary {
@@ -144,6 +144,16 @@ mod tests {
                 compaction: None,
                 fork: None,
             },
+            // M2: side-channel populated only by `append_user_message`.
+            // Codegen fixture uses `Some(Success)` so the generated TS
+            // sample serialises the field and the frontend can see its
+            // shape. `#[serde(skip_serializing_if = "Option::is_none")]`
+            // still prunes it at runtime when the orchestrator returns
+            // no side-channel outcome.
+            enrich_status: Some(EnrichStatus::Success {
+                title: "Example Article".to_string(),
+                raw_id: 42,
+            }),
         }
     }
 
@@ -202,6 +212,34 @@ mod tests {
                 "GeneratedTurnState",
                 serde_json::to_value(DesktopTurnState::Running).unwrap(),
             ),
+            // M2: enumerate EnrichStatus variants so the generated TS
+            // covers all four discriminated shapes. Each variant is
+            // emitted as its own `export type` so the frontend can
+            // hand-build a union if it needs narrower type guards than
+            // the `kind: string` in `GeneratedSessionDetail.enrich_status`.
+            (
+                "GeneratedEnrichStatusSuccess",
+                serde_json::to_value(EnrichStatus::Success {
+                    title: "Example Article".to_string(),
+                    raw_id: 42,
+                })
+                .unwrap(),
+            ),
+            (
+                "GeneratedEnrichStatusRejected",
+                serde_json::to_value(EnrichStatus::RejectedQuality {
+                    reason: "anti-bot page".to_string(),
+                })
+                .unwrap(),
+            ),
+            (
+                "GeneratedEnrichStatusPrereq",
+                serde_json::to_value(EnrichStatus::PrerequisiteMissing {
+                    dep: "playwright".to_string(),
+                    hint: "Install Playwright".to_string(),
+                })
+                .unwrap(),
+            ),
         ];
 
         let file_contents = ts_file(&types);
@@ -242,5 +280,56 @@ mod tests {
             assert!(ts.starts_with("{"));
             assert!(ts.contains("id: string;"));
         }
+    }
+
+    /// Worker B guard: `EnrichStatus` must serialise with
+    /// `#[serde(tag = "kind", rename_all = "snake_case")]`, so the
+    /// frontend can switch on `status.kind === "success"`. If someone
+    /// ever flips this to PascalCase or drops the tag the generated TS
+    /// union + every consumer in `apps/desktop-shell` will silently
+    /// mismatch the wire format — pin it down here.
+    #[test]
+    fn enrich_status_serialises_as_snake_case_with_kind_tag() {
+        let success = serde_json::to_value(EnrichStatus::Success {
+            title: "T".into(),
+            raw_id: 1,
+        })
+        .unwrap();
+        assert_eq!(success["kind"], "success");
+        assert_eq!(success["title"], "T");
+        assert_eq!(success["raw_id"], 1);
+
+        let rejected = serde_json::to_value(EnrichStatus::RejectedQuality {
+            reason: "r".into(),
+        })
+        .unwrap();
+        assert_eq!(rejected["kind"], "rejected_quality");
+
+        let prereq = serde_json::to_value(EnrichStatus::PrerequisiteMissing {
+            dep: "d".into(),
+            hint: "h".into(),
+        })
+        .unwrap();
+        assert_eq!(prereq["kind"], "prerequisite_missing");
+
+        let fetch_failed = serde_json::to_value(EnrichStatus::FetchFailed {
+            reason: "f".into(),
+        })
+        .unwrap();
+        assert_eq!(fetch_failed["kind"], "fetch_failed");
+    }
+
+    /// Codegen fixture sanity: the `sample_detail()` JSON now carries
+    /// an `enrich_status` object (not `null`) so the regenerated TS
+    /// surfaces the side-channel shape. Guards against future code
+    /// that resets the fixture back to `None`.
+    #[test]
+    fn sample_detail_emits_enrich_status_object() {
+        let json = serde_json::to_value(sample_detail()).unwrap();
+        let status = json
+            .get("enrich_status")
+            .expect("enrich_status field present");
+        assert!(status.is_object(), "enrich_status should be an object");
+        assert_eq!(status["kind"], "success");
     }
 }

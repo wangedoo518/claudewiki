@@ -470,7 +470,17 @@ impl KefuDesktopHandler {
         let _ = client.send_text(userid, open_kfid, &reply).await;
     }
 
-    /// URL → wiki_ingest → write_raw → absorb → 冲突检查 → 回复
+    /// URL → url_ingest orchestrator → absorb → 冲突检查 → 回复
+    ///
+    /// M2.1: the in-line `fetch_and_body` + `validate_fetched_content`
+    /// + `write_raw_entry` + `append_new_raw_task` sequence has moved
+    /// into `crate::url_ingest::ingest_url`. The kefu-specific side
+    /// effects (absorb trigger + Chinese WeChat replies + delayed
+    /// conflict check) still live here — the orchestrator does not
+    /// speak WeChat. We pass `prefer_playwright: None` so the
+    /// orchestrator auto-selects Playwright for `weixin.qq.com` hosts
+    /// and the generic HTTP fetch for everything else (M2 capability
+    /// enhancement over the v2 hand-roll, which was generic-only).
     async fn handle_url_ingest(
         &self,
         client: &KefuClient,
@@ -488,88 +498,186 @@ impl KefuDesktopHandler {
             }
         };
 
-        // Step 1: Fetch URL content.
-        let ingest_result = match wiki_ingest::url::fetch_and_body(url).await {
-            Ok(r) => r,
-            Err(e) => {
-                eprintln!("[kefu handler] URL fetch failed: {e}");
-                // v2 bugfix: do NOT ingest the "Failed to fetch: {url}" stub —
-                // that's how we got garbage raw entries polluting Inbox.
-                // Just reply to the user; no raw entry created.
+        let short_userid = &userid[..8.min(userid.len())];
+        let origin = format!("WeChat kefu · {short_userid}");
+
+        let outcome = crate::url_ingest::ingest_url(crate::url_ingest::IngestRequest {
+            url,
+            origin_tag: origin.clone(),
+            // `None` lets the orchestrator route weixin.qq.com URLs
+            // through Playwright automatically — a capability
+            // enhancement over the v2 hand-roll, which used only the
+            // generic HTTP fetch. Machines without Playwright will
+            // surface `PrerequisiteMissing` which we relay verbatim
+            // so the sender can install the dep instead of silently
+            // failing.
+            prefer_playwright: None,
+            fetch_timeout: std::time::Duration::from_secs(60),
+            // kefu has never supported a text-fallback path —
+            // `allow_text_fallback: None` keeps the original v2
+            // contract of "fetch fails → tell user to copy/paste".
+            allow_text_fallback: None,
+            // M3: kefu never requests force re-ingest — if the same
+            // URL is forwarded twice, the canonical dedupe path will
+            // surface `ReusedExisting` and the handler replies with
+            // a "已入库" message pointing at the prior raw id.
+            force: false,
+        })
+        .await;
+
+        match outcome {
+            crate::url_ingest::IngestOutcome::Ingested {
+                entry: raw_entry,
+                title,
+                ..
+            } => {
+                let display_title = if title.is_empty() {
+                    url.to_string()
+                } else {
+                    title
+                };
+
+                // Step 3: Trigger absorb (kefu-only side effect).
+                let absorb_reply = trigger_absorb_internal(raw_entry.id).await;
+
+                // Step 4: Reply confirmation.
+                let reply =
+                    format!("✓ 已入库「{display_title}」{absorb_reply}");
+                let _ = client.send_text(userid, open_kfid, &reply).await;
+                eprintln!(
+                    "[kefu handler] URL ingested: {} → raw #{}",
+                    url, raw_entry.id
+                );
+
+                // Step 5: Delayed conflict check (方案 A — 04-wechat-kefu.md §5.6).
+                let paths_c = paths.clone();
+                let client_uid = userid.to_string();
+                let client_kfid = open_kfid.to_string();
+                let client_clone = client.clone();
+                tokio::spawn(async move {
+                    check_and_notify_conflicts(
+                        &paths_c,
+                        &client_clone,
+                        &client_uid,
+                        &client_kfid,
+                    )
+                    .await;
+                });
+            }
+            crate::url_ingest::IngestOutcome::IngestedInboxSuppressed {
+                entry: raw_entry,
+                ..
+            } => {
+                // M1 inbox dedupe hit — a prior NewRaw for this raw is
+                // still pending. Treat as success; fall back to the
+                // slug since this variant carries no title.
+                let display_title = raw_entry.slug.clone();
+                let absorb_reply = trigger_absorb_internal(raw_entry.id).await;
+                let reply =
+                    format!("✓ 已入库「{display_title}」{absorb_reply}");
+                let _ = client.send_text(userid, open_kfid, &reply).await;
+                eprintln!(
+                    "[kefu handler] URL ingested (dedupe): {} → raw #{}",
+                    url, raw_entry.id
+                );
+
+                let paths_c = paths.clone();
+                let client_uid = userid.to_string();
+                let client_kfid = open_kfid.to_string();
+                let client_clone = client.clone();
+                tokio::spawn(async move {
+                    check_and_notify_conflicts(
+                        &paths_c,
+                        &client_clone,
+                        &client_uid,
+                        &client_kfid,
+                    )
+                    .await;
+                });
+            }
+            crate::url_ingest::IngestOutcome::ReusedExisting {
+                entry: raw_entry,
+                decision,
+                ..
+            } => {
+                // M3: canonical-URL dedupe hit — the same article has
+                // already landed (possibly via a different share link
+                // with tracking params). Reply pointing the user at
+                // the existing raw, skip absorb (it already ran or is
+                // queued for the prior ingest).
+                let display_title = raw_entry.slug.clone();
+                let reply = format!(
+                    "✓ 链接已在素材库 #{:05}「{display_title}」（{}）",
+                    raw_entry.id,
+                    decision.tag()
+                );
+                let _ = client.send_text(userid, open_kfid, &reply).await;
+                eprintln!(
+                    "[kefu handler] URL reused (canonical dedupe): {} → raw #{} [{}]",
+                    url,
+                    raw_entry.id,
+                    decision.tag()
+                );
+            }
+            crate::url_ingest::IngestOutcome::RejectedQuality { reason } => {
+                eprintln!("[kefu handler] URL content rejected: {reason}");
                 let _ = client
                     .send_text(
                         userid,
                         open_kfid,
-                        &format!("❌ 无法获取链接内容: {e}\n请手动复制内容发送"),
+                        &format!(
+                            "❌ 链接抓取失败（{reason}）\n请手动复制内容发送"
+                        ),
                     )
                     .await;
-                return;
             }
-        };
-
-        // Step 1.5 (v2 bugfix): Reject low-quality / anti-bot content.
-        if let Err(reason) = wiki_ingest::validate_fetched_content(&ingest_result.body) {
-            eprintln!("[kefu handler] URL content rejected: {reason}");
-            let _ = client
-                .send_text(
-                    userid,
-                    open_kfid,
-                    &format!("❌ 链接抓取失败（{reason}）\n请手动复制内容发送"),
-                )
-                .await;
-            return;
-        }
-
-        // Step 2: Write to raw/.
-        let title = if ingest_result.title.is_empty() {
-            url.to_string()
-        } else {
-            ingest_result.title.clone()
-        };
-        let fm = wiki_store::RawFrontmatter::for_paste("url", Some(url.to_string()));
-        let raw_entry = match wiki_store::write_raw_entry(
-            &paths,
-            "url",
-            &wiki_store::slugify(&title),
-            &ingest_result.body,
-            &fm,
-        ) {
-            Ok(e) => e,
-            Err(e) => {
+            crate::url_ingest::IngestOutcome::FetchFailed { error } => {
+                eprintln!("[kefu handler] URL fetch failed: {error}");
                 let _ = client
-                    .send_text(userid, open_kfid, &format!("❌ 入库失败: {e}"))
+                    .send_text(
+                        userid,
+                        open_kfid,
+                        &format!(
+                            "❌ 无法获取链接内容: {error}\n请手动复制内容发送"
+                        ),
+                    )
                     .await;
-                return;
             }
-        };
-
-        // Step 2.5: Append Inbox `NewRaw` task so the maintainer surfaces
-        // this entry in the review queue. Without this, kefu URL ingests
-        // land in raw/ but the Inbox never lights up — users think their
-        // link was silently dropped. Non-fatal: an Inbox append failure
-        // must NOT block the ingest / absorb path.
-        let short_userid = &userid[..8.min(userid.len())];
-        let origin = format!("WeChat kefu · {short_userid}");
-        if let Err(err) = wiki_store::append_new_raw_task(&paths, &raw_entry, &origin) {
-            eprintln!("[kefu handler] URL inbox append failed: {err}");
+            crate::url_ingest::IngestOutcome::PrerequisiteMissing {
+                dep,
+                hint,
+            } => {
+                eprintln!(
+                    "[kefu handler] URL ingest prerequisite missing: {dep} — {hint}"
+                );
+                let _ = client
+                    .send_text(
+                        userid,
+                        open_kfid,
+                        &format!("❌ 缺少依赖 {dep}\n{hint}"),
+                    )
+                    .await;
+            }
+            crate::url_ingest::IngestOutcome::InvalidUrl { reason } => {
+                eprintln!("[kefu handler] URL invalid: {reason}");
+                let _ = client
+                    .send_text(
+                        userid,
+                        open_kfid,
+                        &format!("❌ URL 无效: {reason}"),
+                    )
+                    .await;
+            }
+            crate::url_ingest::IngestOutcome::FallbackToText { .. } => {
+                // `allow_text_fallback: None` above guarantees this
+                // arm is unreachable; defensively log + bail instead
+                // of panicking so a future orchestrator change can't
+                // crash the callback loop.
+                eprintln!(
+                    "[kefu handler] unreachable: FallbackToText with allow_text_fallback=None"
+                );
+            }
         }
-
-        // Step 3: Trigger absorb.
-        let absorb_reply = trigger_absorb_internal(raw_entry.id).await;
-
-        // Step 4: Reply confirmation.
-        let reply = format!("✓ 已入库「{title}」{absorb_reply}");
-        let _ = client.send_text(userid, open_kfid, &reply).await;
-        eprintln!("[kefu handler] URL ingested: {} → raw #{}", url, raw_entry.id);
-
-        // Step 5: Delayed conflict check (方案 A — 04-wechat-kefu.md §5.6).
-        let paths_c = paths.clone();
-        let client_uid = userid.to_string();
-        let client_kfid = open_kfid.to_string();
-        let client_clone = client.clone();
-        tokio::spawn(async move {
-            check_and_notify_conflicts(&paths_c, &client_clone, &client_uid, &client_kfid).await;
-        });
     }
 
     /// 纯文本 → write_raw → absorb → 冲突检查 → 回复
@@ -1010,6 +1118,8 @@ mod tests {
                 source_url: Some("https://example.com".into()),
                 ingested_at: "2026-04-14T10:00:00Z".into(),
                 byte_size: 1234,
+                content_hash: None,
+                original_url: None,
             },
             wiki_store::RawEntry {
                 id: 2,
@@ -1020,6 +1130,8 @@ mod tests {
                 source_url: None,
                 ingested_at: "2026-04-14T11:00:00Z".into(),
                 byte_size: 567,
+                content_hash: None,
+                original_url: None,
             },
         ];
         let recent: Vec<_> = entries.iter().rev().take(10).collect();

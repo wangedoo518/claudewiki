@@ -450,6 +450,22 @@ pub fn app(state: AppState) -> Router {
         .route("/api/desktop/markitdown/convert", post(markitdown_convert_handler))
         // ── WeChat article fetch (Playwright) ──
         .route("/api/desktop/wechat-fetch", post(wechat_fetch_handler))
+        .route("/api/desktop/wechat-fetch/check", get(wechat_fetch_check_handler))
+        // ── URL ingest observability (M3) ──
+        // Exposes the in-memory ring buffer of recent
+        // `desktop_core::url_ingest::ingest_url` decisions so operators
+        // can inspect "why was this reused / suppressed / rejected".
+        .route("/api/desktop/url-ingest/recent", get(recent_ingest_handler))
+        // ── Environment Doctor: host-level prerequisite probes ──
+        // Uniform `{available, ...}` shape so the frontend Environment
+        // Doctor panel can render every row with the same component.
+        // Chromium probe reuses `wechat_fetch::check_environment` —
+        // Playwright's import also exercises Chromium via its bundled
+        // driver, so a green `available` here implies Chromium is
+        // reachable.
+        .route("/api/desktop/node/check", get(node_check_handler))
+        .route("/api/desktop/opencli/check", get(opencli_check_handler))
+        .route("/api/desktop/chromium/check", get(chromium_check_handler))
         // ── Auto-install Python dependencies ──
         .route("/api/desktop/python-deps/install", post(install_python_deps_handler))
         // ── Storage migration ──
@@ -522,6 +538,15 @@ pub fn app(state: AppState) -> Router {
         .route(
             "/api/wiki/inbox/{id}/approve-with-write",
             post(approve_wiki_inbox_with_write_handler),
+        )
+        // ── W1 Maintainer Workbench: three-choice maintain endpoint ─
+        // Replaces the implicit "approve" with an explicit user
+        // decision (create_new / update_existing / reject). See
+        // `inbox_maintain_handler` for request/response shapes and
+        // parameter validation.
+        .route(
+            "/api/wiki/inbox/{id}/maintain",
+            post(inbox_maintain_handler),
         )
         // ── ClawWiki S4 wiki concept pages (read) ──────────────────
         // Pure read routes for the Wiki tab and the InboxPage diff
@@ -2069,12 +2094,22 @@ struct IngestRawRequest {
     source: String,
     /// Free-form title used to derive the slug. May contain any
     /// characters; `wiki_store::slugify` sanitizes it.
+    #[serde(default)]
     title: String,
     /// Markdown body. Written to disk verbatim under the frontmatter.
+    #[serde(default)]
     body: String,
     /// Optional source URL. When present, recorded in the frontmatter.
     #[serde(default)]
     source_url: Option<String>,
+    /// M4: when `true` and `source == "url"` (fast-path branch), bypass
+    /// the orchestrator's canonical-URL dedupe and always run a fresh
+    /// fetch+write. Surfaces through the orchestrator's
+    /// `IngestDecision::ExplicitReingest` variant so the frontend can
+    /// render a "re-ingest of #NNNNN" banner. No effect on the legacy
+    /// paste/body branch. Defaults to `false`.
+    #[serde(default)]
+    force: Option<bool>,
 }
 
 fn resolve_wiki_root_for_handler() -> Result<wiki_store::WikiPaths, ApiError> {
@@ -2116,60 +2151,152 @@ async fn ingest_wiki_raw_handler(
         ));
     }
 
-    // B.2: when `source == "url"` AND the caller supplied a
-    // `source_url`, upgrade the request by actually fetching the URL
-    // through `wiki_ingest::url::fetch_and_body`. This replaces the
-    // S1 placeholder body (a fixed `<{url}>` stub) with real content
-    // pulled from the upstream server — text/html gets wrapped in a
-    // code fence, text/plain and text/markdown land verbatim,
-    // opaque MIMEs get a stub with byte count + content-type.
+    // ── M4 Worker B: URL fast-path routed through unified orchestrator ─
     //
-    // The S1 behavior is preserved as a fallback when the caller
-    // explicitly passes a non-empty `body` — this gives CLI tests
-    // and integration test fixtures a way to avoid the live network
-    // round-trip.
-    let (effective_title, effective_body, effective_source_url) =
-        if body.source == "url" && body.body.is_empty() {
-            let url = body.source_url.as_deref().unwrap_or("").trim().to_string();
-            if url.is_empty() {
-                return Err((
-                    StatusCode::BAD_REQUEST,
-                    Json(ErrorResponse {
-                        error: "url source requires either `body` or `source_url`".to_string(),
-                    }),
-                ));
+    // When `source == "url"` and no body is supplied, defer to
+    // `desktop_core::url_ingest::ingest_url`. This replaces the old
+    // one-shot `wiki_ingest::url::fetch_and_body` + manual
+    // `write_raw_entry` + `append_new_raw_task` sequence with the
+    // orchestrator that every other URL ingest site already uses
+    // (Ask enrich, WeChat iLink, wechat-fetch). Benefits:
+    //
+    //   * Canonical-URL dedupe: repeated paste of the same URL short-
+    //     circuits to the existing raw (`ReusedExisting`).
+    //   * M4 content-hash dedupe: even on a fresh URL, identical body
+    //     hits `ContentDuplicate` (surfaced via `decision.kind`).
+    //   * `force=true` supports the Raw Library "re-ingest" button.
+    //   * Playwright auto-selection for `weixin.qq.com` hosts.
+    //
+    // The non-URL / body-supplied branch below preserves the S1
+    // semantics verbatim so paste / wechat-text / file ingest keep
+    // writing directly via `wiki_store` without a fetch round-trip.
+    if body.source == "url" && body.body.is_empty() {
+        let url = body
+            .source_url
+            .clone()
+            .unwrap_or_else(|| body.title.clone())
+            .trim()
+            .to_string();
+        if url.is_empty() {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: "url source requires either `body`, `source_url`, or a non-empty title"
+                        .to_string(),
+                }),
+            ));
+        }
+
+        let outcome = desktop_core::url_ingest::ingest_url(
+            desktop_core::url_ingest::IngestRequest {
+                url: &url,
+                origin_tag: "raw-library-url".to_string(),
+                prefer_playwright: None, // orchestrator auto-routes weixin.qq.com to Playwright
+                fetch_timeout: std::time::Duration::from_secs(30),
+                allow_text_fallback: None,
+                force: body.force.unwrap_or(false),
+            },
+        )
+        .await;
+        eprintln!("[raw-library-url] outcome: {}", outcome.as_display());
+
+        return match outcome {
+            desktop_core::url_ingest::IngestOutcome::Ingested {
+                entry,
+                inbox,
+                decision,
+                ..
+            } => {
+                // Orchestrator wrote raw + inbox; broadcast the WS
+                // notification so the Inbox page repaints immediately.
+                // `fire_inbox_notify` is a best-effort broadcast — a
+                // double-fire would be silently coalesced on the client,
+                // so we err on the side of notifying even if a future
+                // orchestrator version calls it itself.
+                fire_inbox_notify();
+                Ok(Json(serde_json::json!({
+                    "raw_entry": raw_entry_to_json(&entry),
+                    "inbox_entry": inbox,
+                    "decision": decision,
+                    "content_hash": serde_json::to_value(&entry).ok()
+                        .and_then(|v| v.get("content_hash").cloned()),
+                })))
             }
-            match wiki_ingest::url::fetch_and_body(&url).await {
-                Ok(result) => {
-                    let title = if body.title.trim().is_empty() {
-                        result.title
-                    } else {
-                        body.title.clone()
-                    };
-                    (title, result.body, result.source_url)
-                }
-                Err(err) => {
-                    return Err((
-                        StatusCode::BAD_GATEWAY,
-                        Json(ErrorResponse {
-                            error: format!("url fetch failed: {err}"),
-                        }),
-                    ));
-                }
+            desktop_core::url_ingest::IngestOutcome::ReusedExisting {
+                entry,
+                existing_inbox,
+                decision,
+            } => Ok(Json(serde_json::json!({
+                "raw_entry": raw_entry_to_json(&entry),
+                "inbox_entry": existing_inbox,
+                "decision": decision,
+                "dedupe": true,
+                "content_hash": serde_json::to_value(&entry).ok()
+                    .and_then(|v| v.get("content_hash").cloned()),
+            }))),
+            desktop_core::url_ingest::IngestOutcome::IngestedInboxSuppressed {
+                entry,
+                existing_inbox,
+            } => {
+                fire_inbox_notify();
+                Ok(Json(serde_json::json!({
+                    "raw_entry": raw_entry_to_json(&entry),
+                    "inbox_entry": existing_inbox,
+                    "decision": { "kind": "inbox_suppressed" },
+                    "content_hash": serde_json::to_value(&entry).ok()
+                        .and_then(|v| v.get("content_hash").cloned()),
+                })))
             }
-        } else {
-            // Non-url sources still require a body. The url fast-path
-            // above is the ONLY case where body may legitimately be empty.
-            if body.body.is_empty() {
-                return Err((
-                    StatusCode::BAD_REQUEST,
-                    Json(ErrorResponse {
-                        error: "body must not be empty".to_string(),
-                    }),
-                ));
+            desktop_core::url_ingest::IngestOutcome::FallbackToText {
+                entry,
+                inbox,
+                reason,
+            } => {
+                fire_inbox_notify();
+                Ok(Json(serde_json::json!({
+                    "raw_entry": raw_entry_to_json(&entry),
+                    "inbox_entry": inbox,
+                    "decision": { "kind": "fallback_to_text", "reason": reason },
+                })))
             }
-            (body.title.clone(), body.body.clone(), body.source_url.clone())
+            desktop_core::url_ingest::IngestOutcome::RejectedQuality { reason } => Err((
+                StatusCode::UNPROCESSABLE_ENTITY,
+                Json(ErrorResponse { error: reason }),
+            )),
+            desktop_core::url_ingest::IngestOutcome::FetchFailed { error } => Err((
+                StatusCode::BAD_GATEWAY,
+                Json(ErrorResponse { error: error.to_string() }),
+            )),
+            desktop_core::url_ingest::IngestOutcome::PrerequisiteMissing { dep, hint } => Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: format!("缺少依赖 {dep}: {hint}"),
+                }),
+            )),
+            desktop_core::url_ingest::IngestOutcome::InvalidUrl { reason } => Err((
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse { error: reason }),
+            )),
         };
+    }
+
+    // ── Legacy branch: body-supplied ingest (paste / wechat-text / file) ─
+    //
+    // Non-url sources still require a body. The url fast-path above is
+    // the ONLY case where body may legitimately be empty. This branch
+    // preserves the S1 write semantics untouched so paste / CLI tests
+    // / integration fixtures continue to work without a network call.
+    if body.body.is_empty() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "body must not be empty".to_string(),
+            }),
+        ));
+    }
+    let effective_title = body.title.clone();
+    let effective_body = body.body.clone();
+    let effective_source_url = body.source_url.clone();
 
     let paths = resolve_wiki_root_for_handler()?;
     let frontmatter =
@@ -2535,6 +2662,13 @@ async fn resolve_wiki_inbox_handler(
 }
 
 fn raw_entry_to_json(entry: &wiki_store::RawEntry) -> serde_json::Value {
+    // M4 observability: surface canonical/original URL pair + content
+    // hash on the wire so the Inbox Workbench Evidence section can
+    // render URLTrackBadge / IngestDecisionBadge without a second API
+    // call. `canonical_url` is the same string as `source_url` (M4's
+    // convention: source_url in frontmatter is always canonical) but
+    // surfacing it under a named field makes the frontend contract
+    // explicit and self-documenting.
     serde_json::json!({
         "id": entry.id,
         "filename": entry.filename,
@@ -2542,8 +2676,11 @@ fn raw_entry_to_json(entry: &wiki_store::RawEntry) -> serde_json::Value {
         "slug": entry.slug,
         "date": entry.date,
         "source_url": entry.source_url,
+        "canonical_url": entry.source_url,
+        "original_url": entry.original_url,
         "ingested_at": entry.ingested_at,
         "byte_size": entry.byte_size,
+        "content_hash": entry.content_hash,
     })
 }
 
@@ -2821,6 +2958,177 @@ async fn approve_wiki_inbox_with_write_handler(
         "slug": p.slug,
         "inbox_entry": inbox_entry_json,
     })))
+}
+
+// ── W1 Maintainer Workbench: POST /api/wiki/inbox/{id}/maintain ─────
+//
+// Flat request body (aligned with the TS `MaintainRequest` shape):
+//   { action: "create_new" | "update_existing" | "reject",
+//     target_page_slug?: string,
+//     rejection_reason?: string }
+//
+// Flat response (aligned with TS `MaintainResponse`):
+//   { outcome: "created" | "updated" | "rejected" | "failed",
+//     target_page_slug?: string,
+//     rejection_reason?: string,
+//     error?: string }
+//
+// Validation: `update_existing` requires a non-empty `target_page_slug`;
+// `reject` requires `rejection_reason` with length ≥ 4. Both failures
+// return 400. Anything unexpected (LLM error, disk I/O) becomes 200
+// with `outcome: "failed"` — the frontend renders that as an inline
+// error banner instead of a retry-the-request flow, because the inbox
+// entry has already received whatever partial state the backend could
+// commit.
+
+#[derive(Debug, Deserialize)]
+struct InboxMaintainRequest {
+    /// `"create_new"` | `"update_existing"` | `"reject"`. Kept as a
+    /// free string here so an unknown action returns a friendly 400
+    /// instead of a serde parse error.
+    action: String,
+    /// Required when `action == "update_existing"`.
+    #[serde(default)]
+    target_page_slug: Option<String>,
+    /// Required when `action == "reject"`; min 4 chars.
+    #[serde(default)]
+    rejection_reason: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct InboxMaintainResponse {
+    /// `"created"` | `"updated"` | `"rejected"` | `"failed"`.
+    outcome: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    target_page_slug: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    rejection_reason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
+}
+
+/// `POST /api/wiki/inbox/{id}/maintain` — run a three-choice
+/// maintainer action end-to-end.
+///
+/// The handler translates the flat frontend contract into the
+/// tagged `wiki_maintainer::MaintainAction` enum, calls
+/// `execute_maintain`, and flattens the resulting `MaintainOutcome`
+/// back onto `InboxMaintainResponse`. The frontend's `maintainInboxEntry`
+/// wrapper (in `apps/desktop-shell/src/lib/tauri.ts`) shapes the
+/// request body; the frontend's `InboxEntry` rendering reads the
+/// augmented fields (`maintain_action`, `target_page_slug`, etc.)
+/// that `execute_maintain` wrote to disk.
+async fn inbox_maintain_handler(
+    Path(id): Path<u32>,
+    Json(body): Json<InboxMaintainRequest>,
+) -> Result<Json<InboxMaintainResponse>, ApiError> {
+    let paths = resolve_wiki_root_for_handler()?;
+
+    // Step 1: translate the flat action into the tagged enum, with
+    // strict validation of the per-variant required fields.
+    let action = match body.action.as_str() {
+        "create_new" => wiki_maintainer::MaintainAction::CreateNew,
+        "update_existing" => {
+            let slug = body
+                .target_page_slug
+                .as_ref()
+                .map(|s| s.trim().to_string())
+                .unwrap_or_default();
+            if slug.is_empty() {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    Json(ErrorResponse {
+                        error: "action=update_existing requires a non-empty target_page_slug"
+                            .to_string(),
+                    }),
+                ));
+            }
+            wiki_maintainer::MaintainAction::UpdateExisting {
+                target_page_slug: slug,
+            }
+        }
+        "reject" => {
+            let reason = body
+                .rejection_reason
+                .as_ref()
+                .map(|s| s.trim().to_string())
+                .unwrap_or_default();
+            if reason.chars().count() < 4 {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    Json(ErrorResponse {
+                        error: "action=reject requires rejection_reason of at least 4 chars"
+                            .to_string(),
+                    }),
+                ));
+            }
+            wiki_maintainer::MaintainAction::Reject { reason }
+        }
+        other => {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: format!(
+                        "unknown maintain action `{other}` (expected create_new | update_existing | reject)"
+                    ),
+                }),
+            ));
+        }
+    };
+
+    // Step 2: fetch a broker adapter (only create_new consumes it, but
+    // the enum dispatcher needs an instance in all cases).
+    let adapter = desktop_core::wiki_maintainer_adapter::BrokerAdapter::from_global();
+
+    // Step 3: run the action. On error, flatten into a `Failed` outcome
+    // rather than bubbling a 5xx — the frontend uses `error` as an
+    // inline warning in the Workbench result pane.
+    let outcome_result =
+        wiki_maintainer::execute_maintain(&paths, id, action, &adapter).await;
+
+    let response = match outcome_result {
+        Ok(wiki_maintainer::MaintainOutcome::Created { target_page_slug }) => {
+            fire_inbox_notify();
+            InboxMaintainResponse {
+                outcome: "created".to_string(),
+                target_page_slug: Some(target_page_slug),
+                rejection_reason: None,
+                error: None,
+            }
+        }
+        Ok(wiki_maintainer::MaintainOutcome::Updated { target_page_slug }) => {
+            fire_inbox_notify();
+            InboxMaintainResponse {
+                outcome: "updated".to_string(),
+                target_page_slug: Some(target_page_slug),
+                rejection_reason: None,
+                error: None,
+            }
+        }
+        Ok(wiki_maintainer::MaintainOutcome::Rejected { reason }) => {
+            fire_inbox_notify();
+            InboxMaintainResponse {
+                outcome: "rejected".to_string(),
+                target_page_slug: None,
+                rejection_reason: Some(reason),
+                error: None,
+            }
+        }
+        Ok(wiki_maintainer::MaintainOutcome::Failed { error }) => InboxMaintainResponse {
+            outcome: "failed".to_string(),
+            target_page_slug: None,
+            rejection_reason: None,
+            error: Some(error),
+        },
+        Err(e) => InboxMaintainResponse {
+            outcome: "failed".to_string(),
+            target_page_slug: None,
+            rejection_reason: None,
+            error: Some(format!("{e}")),
+        },
+    };
+
+    Ok(Json(response))
 }
 
 /// `GET /api/wiki/pages`
@@ -4023,12 +4331,27 @@ struct WechatFetchRequest {
     url: String,
     #[serde(default = "default_true")]
     ingest: bool,
+    /// M3: when `true`, bypass canonical-URL dedupe and write a
+    /// fresh raw entry even if the URL was ingested before. Used by
+    /// the Raw Library's "re-ingest" button and future admin tools.
+    /// Defaults to `false` so the common fetch path keeps its M3
+    /// dedupe behavior.
+    #[serde(default)]
+    force: bool,
 }
 fn default_true() -> bool { true }
 
 /// `POST /api/desktop/wechat-fetch`
 ///
 /// Fetch a WeChat article using Playwright and optionally ingest it.
+///
+/// M2: core logic now funnels through
+/// `desktop_core::url_ingest::ingest_url` when `ingest=true`, so the
+/// write + inbox queue + dedupe all match the shared orchestrator
+/// semantics. When `ingest=false` we preserve the old "fetch, validate,
+/// return markdown" contract by calling the Playwright adapter
+/// directly — the orchestrator intentionally doesn't have a "fetch
+/// only" mode because every other caller always wants to persist.
 async fn wechat_fetch_handler(
     Json(body): Json<WechatFetchRequest>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
@@ -4040,55 +4363,421 @@ async fn wechat_fetch_handler(
         ));
     }
 
-    let result = wiki_ingest::wechat_fetch::fetch_wechat_article(url)
-        .await
-        .map_err(|e| {
-            (
-                StatusCode::BAD_REQUEST,
-                Json(ErrorResponse { error: format!("{e}") }),
-            )
-        })?;
+    // `ingest=false` path: one-shot preview, no persistence. Kept
+    // outside the orchestrator because orchestrator always writes.
+    if !body.ingest {
+        let result = wiki_ingest::wechat_fetch::fetch_wechat_article(url)
+            .await
+            .map_err(|e| {
+                (
+                    StatusCode::BAD_REQUEST,
+                    Json(ErrorResponse { error: format!("{e}") }),
+                )
+            })?;
 
-    // v2 bugfix: quality check — don't ingest anti-bot pages / empty / image-only.
-    if let Err(reason) = wiki_ingest::validate_fetched_content(&result.body) {
-        eprintln!("[wechat-fetch] rejected by quality check: {reason}");
+        if let Err(reason) = wiki_ingest::validate_fetched_content(&result.body) {
+            eprintln!("[wechat-fetch] rejected by quality check: {reason}");
+            return Ok(Json(serde_json::json!({
+                "ok": false,
+                "error": reason,
+                "title": result.title,
+            })));
+        }
+
         return Ok(Json(serde_json::json!({
-            "ok": false,
-            "error": reason,
+            "ok": true,
             "title": result.title,
+            "markdown": result.body,
+            "source": result.source,
+            "raw_id": serde_json::Value::Null,
         })));
     }
 
-    let raw_id = if body.ingest {
-        let paths = resolve_wiki_root_for_handler()?;
-        let frontmatter = wiki_store::RawFrontmatter::for_paste(
-            &result.source,
-            result.source_url.clone(),
-        );
-        match wiki_store::write_raw_entry(
-            &paths, &result.source, &result.title, &result.body, &frontmatter,
-        ) {
-            Ok(entry) => {
-                // Also append inbox task
-                let _ = wiki_store::append_new_raw_task(&paths, &entry, "wechat-fetch");
-                Some(entry.id)
-            }
-            Err(e) => {
-                eprintln!("[wechat-fetch] ingest failed: {e}");
-                None
-            }
+    // `ingest=true` (default) → funnel through the orchestrator so
+    // the write + inbox + dedupe + prerequisite detection all behave
+    // identically to every other URL ingest site.
+    let outcome = desktop_core::url_ingest::ingest_url(desktop_core::url_ingest::IngestRequest {
+        url,
+        origin_tag: "wechat-fetch".into(),
+        prefer_playwright: Some(true),
+        fetch_timeout: std::time::Duration::from_secs(60),
+        allow_text_fallback: None,
+        force: body.force,
+    })
+    .await;
+    eprintln!("[wechat-fetch] outcome: {}", outcome.as_display());
+
+    match outcome {
+        desktop_core::url_ingest::IngestOutcome::Ingested {
+            entry,
+            title,
+            body,
+            decision,
+            ..
+        } => Ok(Json(serde_json::json!({
+            "ok": true,
+            "title": title,
+            "markdown": body,
+            "source": entry.source,
+            "raw_id": entry.id,
+            "decision": decision.tag(),
+        }))),
+        desktop_core::url_ingest::IngestOutcome::IngestedInboxSuppressed {
+            entry,
+            existing_inbox,
+        } => Ok(Json(serde_json::json!({
+            "ok": true,
+            "title": String::new(),
+            "markdown": String::new(),
+            "source": entry.source,
+            "raw_id": entry.id,
+            "inbox_id": existing_inbox.id,
+            "dedupe": true,
+        }))),
+        desktop_core::url_ingest::IngestOutcome::ReusedExisting {
+            entry,
+            decision,
+            existing_inbox,
+        } => Ok(Json(serde_json::json!({
+            "ok": true,
+            "title": entry.slug,
+            "markdown": String::new(),
+            "source": entry.source,
+            "raw_id": entry.id,
+            "inbox_id": existing_inbox.as_ref().map(|i| i.id),
+            "dedupe": true,
+            "decision": decision.tag(),
+            "reason": decision.reason(),
+        }))),
+        desktop_core::url_ingest::IngestOutcome::RejectedQuality { reason } => {
+            Ok(Json(serde_json::json!({
+                "ok": false,
+                "error": reason,
+            })))
         }
-    } else {
-        None
+        desktop_core::url_ingest::IngestOutcome::PrerequisiteMissing { dep, hint } => {
+            Ok(Json(serde_json::json!({
+                "ok": false,
+                "error": hint,
+                "missing_prerequisite": dep,
+            })))
+        }
+        desktop_core::url_ingest::IngestOutcome::FetchFailed { error } => Err((
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse { error: format!("{error}") }),
+        )),
+        desktop_core::url_ingest::IngestOutcome::InvalidUrl { reason } => Err((
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse { error: reason }),
+        )),
+        desktop_core::url_ingest::IngestOutcome::FallbackToText { .. } => {
+            // `wechat-fetch` never opts into text fallback, so this
+            // variant should be unreachable. Treat as a 500 since it
+            // indicates a logic error in the orchestrator or this
+            // handler.
+            Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "unexpected FallbackToText without fallback request".to_string(),
+                }),
+            ))
+        }
+    }
+}
+
+/// `GET /api/desktop/wechat-fetch/check`
+///
+/// Report whether the Playwright-based WeChat fetcher is available
+/// on this machine. Mirrors `markitdown_check_handler` so the
+/// Environment Doctor panel can render a uniform status row for
+/// either sidecar. Delegates to
+/// `wiki_ingest::wechat_fetch::check_environment`, which already
+/// knows how to distinguish "Python missing" from "Playwright not
+/// installed".
+async fn wechat_fetch_check_handler() -> Json<serde_json::Value> {
+    match wiki_ingest::wechat_fetch::check_environment().await {
+        Ok(message) => Json(serde_json::json!({
+            "available": true,
+            "message": message,
+        })),
+        Err(error) => Json(serde_json::json!({
+            "available": false,
+            "error": error,
+        })),
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// URL ingest observability (M3 Worker B)
+// ═══════════════════════════════════════════════════════════════
+//
+// Backed by `desktop_core::url_ingest::recent`, an in-memory ring
+// buffer populated by the orchestrator after every terminal outcome.
+// Read-only endpoint — the buffer clears on restart by design (it is
+// diagnostics, not persistence).
+
+#[derive(Deserialize)]
+struct RecentIngestQuery {
+    /// Cap on rows returned (newest-first). Defaults to the buffer
+    /// capacity when omitted.
+    #[serde(default)]
+    limit: Option<usize>,
+    /// Optional substring filter against `entry_point`. Matches via
+    /// `str::contains` so `ep=ilink` catches `"ilink"`, `"wechat-ilink"`,
+    /// etc.
+    #[serde(default)]
+    entry_point: Option<String>,
+    /// Only return decisions at or after this epoch-millis timestamp.
+    #[serde(default)]
+    since_ms: Option<u64>,
+    /// M4: filter by `decision.kind` (the serde tag of
+    /// `IngestDecision`, e.g. `"created_new"`, `"reused_with_pending_inbox"`,
+    /// `"explicit_reingest"`, `"content_duplicate"`, `"refreshed_content"`).
+    /// When a decision row has no structured decision payload
+    /// (e.g. `fetch_failed`, `invalid_url`), this also matches
+    /// `outcome_kind` as a fallback so the diagnostics panel can
+    /// filter terminal errors the same way.
+    #[serde(default)]
+    decision_kind: Option<String>,
+}
+
+/// `GET /api/desktop/url-ingest/recent`
+///
+/// Newest-first snapshot of recent URL ingest decisions. Supports
+/// `?limit=N`, `?entry_point=substr`, `?since_ms=epoch_ms`, and
+/// (M4) `?decision_kind=kind` for filtering. Response shape:
+///
+/// ```json
+/// {
+///   "decisions": [ RecentIngestEntry, ... ],
+///   "total":     <filtered count>,
+///   "capacity":  <ring buffer capacity>,
+///   "stats": {
+///     "by_kind":        { "<decision-kind-or-outcome>": <count>, ... },
+///     "by_entry_point": { "<entry-point>": <count>, ... }
+///   }
+/// }
+/// ```
+///
+/// The `stats` object is computed against the *filtered* set so the
+/// frontend can render decision-distribution histograms without a
+/// second round-trip. Counts aggregate on `decision.kind` when present
+/// and fall back to `outcome_kind` (e.g. `"fetch_failed"`) otherwise —
+/// the same rule used by the `decision_kind` filter so a chart click
+/// round-trips cleanly into a drill-down query.
+async fn recent_ingest_handler(
+    Query(params): Query<RecentIngestQuery>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    // Take a snapshot first, then filter — the mutex is released before
+    // any string comparison runs, so concurrent `push`es from the
+    // orchestrator never block on a slow query.
+    let snap = desktop_core::url_ingest::recent::snapshot(params.limit);
+
+    let filtered: Vec<_> = snap
+        .into_iter()
+        .filter(|e| {
+            if let Some(ep) = &params.entry_point {
+                if !e.entry_point.contains(ep) {
+                    return false;
+                }
+            }
+            if let Some(since) = params.since_ms {
+                if e.timestamp_ms < since {
+                    return false;
+                }
+            }
+            if let Some(dk) = &params.decision_kind {
+                // Match against `decision.kind` first (structured payload),
+                // fall back to `outcome_kind` so failure variants without
+                // a decision (fetch_failed, invalid_url, etc.) remain
+                // filterable by the same query parameter.
+                let from_decision = e
+                    .decision
+                    .as_ref()
+                    .and_then(|v| v.get("kind"))
+                    .and_then(|k| k.as_str())
+                    .map(|k| k == dk.as_str())
+                    .unwrap_or(false);
+                let from_outcome = e.outcome_kind == *dk;
+                if !(from_decision || from_outcome) {
+                    return false;
+                }
+            }
+            true
+        })
+        .collect();
+
+    // M4: aggregate stats by decision.kind (with outcome_kind fallback)
+    // and by entry_point. BTreeMap keeps the JSON key order stable so
+    // the frontend chart doesn't flicker between requests with identical
+    // data.
+    let mut stats_by_kind: std::collections::BTreeMap<String, usize> =
+        std::collections::BTreeMap::new();
+    let mut stats_by_entry: std::collections::BTreeMap<String, usize> =
+        std::collections::BTreeMap::new();
+    for e in &filtered {
+        let kind_key = e
+            .decision
+            .as_ref()
+            .and_then(|v| v.get("kind"))
+            .and_then(|k| k.as_str())
+            .unwrap_or(e.outcome_kind.as_str())
+            .to_string();
+        *stats_by_kind.entry(kind_key).or_insert(0) += 1;
+        *stats_by_entry
+            .entry(e.entry_point.clone())
+            .or_insert(0) += 1;
+    }
+
+    let total = filtered.len();
+    Ok(Json(serde_json::json!({
+        "decisions": filtered,
+        "total": total,
+        "capacity": desktop_core::url_ingest::recent::RECENT_LOG_CAPACITY,
+        "stats": {
+            "by_kind": stats_by_kind,
+            "by_entry_point": stats_by_entry,
+        },
+    })))
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Environment Doctor prerequisite probes (M2.1 Worker A Task A-3)
+// ═══════════════════════════════════════════════════════════════
+//
+// These endpoints mirror `markitdown_check_handler` /
+// `wechat_fetch_check_handler` so the frontend doctor panel can
+// render every row with the uniform `{available, message?, error?}`
+// shape. Each probe blocks on a tiny subprocess spawn via
+// `spawn_blocking` (the underlying `deployer::check_prerequisites`
+// uses sync `std::process::Command`) so we don't stall the tokio
+// reactor.
+
+/// `GET /api/desktop/node/check`
+///
+/// Report whether Node.js + `npx` are available. Delegates to
+/// `wechat_kefu::deployer::WranglerDeployer::check_prerequisites`,
+/// the same probe the one-scan pipeline runs before attempting to
+/// deploy the Cloudflare Worker relay. Treats "either missing" as
+/// unavailable so the frontend shows a single install CTA.
+async fn node_check_handler() -> Json<serde_json::Value> {
+    // `check_prerequisites` is a sync function that shells out twice;
+    // hand it to a blocking pool so tokio keeps spinning.
+    let status = tokio::task::spawn_blocking(
+        desktop_core::wechat_kefu::deployer::WranglerDeployer::check_prerequisites,
+    )
+    .await;
+
+    let status = match status {
+        Ok(s) => s,
+        Err(e) => {
+            return Json(serde_json::json!({
+                "available": false,
+                "error": format!("node check join failed: {e}"),
+            }));
+        }
     };
 
-    Ok(Json(serde_json::json!({
-        "ok": true,
-        "title": result.title,
-        "markdown": result.body,
-        "source": result.source,
-        "raw_id": raw_id,
-    })))
+    if status.node_ok && status.npx_ok {
+        Json(serde_json::json!({
+            "available": true,
+            "message": status
+                .node_version
+                .unwrap_or_else(|| "node available".to_string()),
+        }))
+    } else if !status.node_ok {
+        Json(serde_json::json!({
+            "available": false,
+            "error": "Node.js not found. Install from https://nodejs.org or via your package manager.",
+        }))
+    } else {
+        Json(serde_json::json!({
+            "available": false,
+            "error": "npx not found. Reinstall Node.js to ensure npx is on PATH.",
+        }))
+    }
+}
+
+/// `GET /api/desktop/opencli/check`
+///
+/// Report whether OpenCLI (`@jackwener/opencli`) is reachable either
+/// as a global binary or via `npx --yes @jackwener/opencli`. Mirrors
+/// the version probe in `KefuPipeline::resolve_opencli_command`
+/// (inlined here so this endpoint can call it without constructing a
+/// full pipeline instance + cancellation token).
+async fn opencli_check_handler() -> Json<serde_json::Value> {
+    let result = tokio::task::spawn_blocking(|| -> Result<String, String> {
+        // Try global `opencli` first; if it's on PATH we prefer it
+        // because `npx --yes` can spend a few seconds resolving.
+        let direct = std::process::Command::new("opencli")
+            .arg("--version")
+            .output();
+        if let Ok(output) = direct {
+            if output.status.success() {
+                let version = String::from_utf8_lossy(&output.stdout)
+                    .trim()
+                    .to_string();
+                return Ok(format!("opencli (global) {version}"));
+            }
+        }
+
+        let npx = std::process::Command::new("npx")
+            .args(["--yes", "@jackwener/opencli", "--version"])
+            .output();
+        match npx {
+            Ok(output) if output.status.success() => {
+                let version = String::from_utf8_lossy(&output.stdout)
+                    .trim()
+                    .to_string();
+                Ok(format!("opencli (npx) {version}"))
+            }
+            Ok(output) => Err(format!(
+                "opencli probe failed via npx: {}",
+                String::from_utf8_lossy(&output.stderr).trim(),
+            )),
+            Err(e) => Err(format!(
+                "opencli not reachable. Install it globally (`npm i -g @jackwener/opencli`) or ensure `npx` is on PATH: {e}"
+            )),
+        }
+    })
+    .await;
+
+    match result {
+        Ok(Ok(message)) => Json(serde_json::json!({
+            "available": true,
+            "message": message,
+        })),
+        Ok(Err(error)) => Json(serde_json::json!({
+            "available": false,
+            "error": error,
+        })),
+        Err(e) => Json(serde_json::json!({
+            "available": false,
+            "error": format!("opencli check join failed: {e}"),
+        })),
+    }
+}
+
+/// `GET /api/desktop/chromium/check`
+///
+/// Report whether Playwright + its bundled Chromium driver are
+/// importable. A green result here implies Chromium is reachable —
+/// Playwright's sync import exercises the browser binary path
+/// internally. Reuses `wiki_ingest::wechat_fetch::check_environment`
+/// instead of rolling a second Python probe; the surface keeps the
+/// same `{available, message? | error?}` shape every other doctor
+/// row uses.
+async fn chromium_check_handler() -> Json<serde_json::Value> {
+    match wiki_ingest::wechat_fetch::check_environment().await {
+        Ok(message) => Json(serde_json::json!({
+            "available": true,
+            "message": format!("Chromium reachable via Playwright: {message}"),
+        })),
+        Err(error) => Json(serde_json::json!({
+            "available": false,
+            "error": error,
+        })),
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════

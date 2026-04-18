@@ -46,11 +46,25 @@ import {
   forwardPermissionDecision,
   type ContentBlock,
   type DesktopSessionDetail,
+  type EnrichStatus,
   type RuntimeConversationMessage,
 } from "@/lib/tauri";
 import { compactSession } from "./api/client";
 import type { ConversationMessage } from "@/features/common/message-types";
 import { MOCK_DEMO_MESSAGES } from "./mockDemoMessages";
+import { formatIngestError } from "@/lib/ingest/format-error";
+
+/** Pull the optional `enrich_status` off a session detail. Returns
+ * `undefined` when the session object isn't loaded yet, `null` when
+ * the backend explicitly reports "no enrichment for this turn", and
+ * an `EnrichStatus` otherwise. The canonical type now lives in
+ * `@/lib/tauri` — see the wire-format comment there. */
+function readEnrichStatus(
+  detail: DesktopSessionDetail | null,
+): EnrichStatus | null | undefined {
+  if (!detail) return undefined;
+  return detail.enrich_status ?? null;
+}
 
 /** Detect URLs in text and return the first one. */
 function extractUrl(text: string): string | null {
@@ -196,18 +210,153 @@ export function AskWorkbench({
     [clearPendingPermission, pendingPermission, session?.id]
   );
 
-  const addSystemMessage = useCallback((text: string) => {
-    setLocalMessages((prev) => [
-      ...prev,
-      {
-        id: `system-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-        role: "system" as const,
-        type: "text" as const,
-        content: text,
-        timestamp: Date.now(),
-      },
-    ]);
-  }, []);
+  const addSystemMessage = useCallback(
+    (text: string, idOverride?: string) => {
+      const id =
+        idOverride ?? `system-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+      setLocalMessages((prev) => [
+        ...prev,
+        {
+          id,
+          role: "system" as const,
+          type: "text" as const,
+          content: text,
+          timestamp: Date.now(),
+        },
+      ]);
+      return id;
+    },
+    [],
+  );
+
+  /** Update an existing local message by id, or drop it entirely when
+   * `nextContent === null`. Used by the URL-enrich upgrade path so the
+   * optimistic "⏳ 正在抓取..." hint can be promoted/downgraded/cleared
+   * once the backend resolves. */
+  const updateLocalMessage = useCallback(
+    (id: string, nextContent: string | null) => {
+      setLocalMessages((prev) => {
+        if (nextContent === null) {
+          return prev.filter((m) => m.id !== id);
+        }
+        return prev.map((m) =>
+          m.id === id ? { ...m, content: nextContent } : m,
+        );
+      });
+    },
+    [],
+  );
+
+  /** Tracks the id of the pending "⏳ 正在抓取..." optimistic message so
+   * the next enrich_status snapshot from the backend can replace it in
+   * place. `null` means "no pending enrich on screen". */
+  const pendingEnrichIdRef = useRef<string | null>(null);
+
+  /** Last `enrich_status` we reconciled against, so we don't re-apply
+   * the same status on every poll tick. The status shape is tiny so
+   * JSON.stringify is fine for equality. */
+  const lastEnrichKeyRef = useRef<string | null>(null);
+
+  // When the session detail emits a new enrich_status, reconcile it
+  // against the pending optimistic message. Supports (kind = wire value):
+  //  - success             → "✓ 已抓取：<title> (raw #<id>)"
+  //  - rejected_quality    → "⚠ 抓取失败（<reason>）。链接仍在，您可手动重试或继续发送。"
+  //  - fetch_failed        → "⚠ 抓取失败（<reason>）"
+  //  - prerequisite_missing → "⚠ 环境缺依赖（<dep>）：<hint>"
+  //  - none                → drop the optimistic message (nothing to fetch)
+  //  - null                → backend reports: no URL worth enriching, drop hint
+  //  - undefined           → session not loaded yet; leave pending msg untouched
+  const enrichStatus = readEnrichStatus(session);
+  useEffect(() => {
+    const pendingId = pendingEnrichIdRef.current;
+    if (!pendingId) return;
+
+    // Undefined means the backend hasn't shipped enrich_status yet.
+    // Leave the optimistic message in place for legacy behaviour.
+    if (enrichStatus === undefined) return;
+
+    // Key includes discriminant + payload so the effect runs once per
+    // distinct status (and not on every 1-s session poll tick).
+    const key = JSON.stringify(enrichStatus ?? null);
+    if (lastEnrichKeyRef.current === key) return;
+    lastEnrichKeyRef.current = key;
+
+    if (enrichStatus === null) {
+      // Backend reports: no URL worth enriching. Drop the hint.
+      updateLocalMessage(pendingId, null);
+      pendingEnrichIdRef.current = null;
+      return;
+    }
+
+    switch (enrichStatus.kind) {
+      case "none":
+        updateLocalMessage(pendingId, null);
+        break;
+      case "success":
+        updateLocalMessage(
+          pendingId,
+          `✓ 已抓取：${enrichStatus.title} (raw #${enrichStatus.raw_id})`,
+        );
+        break;
+      case "reused": {
+        // M3 dedupe path: the URL-ingest orchestrator recognised a
+        // prior raw for the same canonical URL and handed the existing
+        // entry back rather than re-fetching.
+        //
+        // M4: the `reason` field is now a short prefix-tagged string
+        // (e.g. "pending:...", "refreshed:prev=42", "content_duplicate:src=..."),
+        // which lets us surface the *why* of each reuse path. We branch on
+        // the prefix to render a precise hint; anything unrecognised falls
+        // back to the pre-M4 wording so we stay compatible with older
+        // backends that still emit untagged reasons.
+        const idStr = String(enrichStatus.raw_id).padStart(5, "0");
+        const reason = enrichStatus.reason ?? "";
+        let message: string;
+        if (reason.startsWith("refreshed:prev=")) {
+          const prev = reason.substring("refreshed:prev=".length);
+          message = `⟳ 内容已更新,新建 raw #${idStr}(原 raw #${prev} 保留)`;
+        } else if (reason.startsWith("content_duplicate:src=")) {
+          message = `✓ 相同内容已存在于 raw #${idStr}(来自不同 URL)`;
+        } else if (reason.startsWith("pending:")) {
+          message = `✓ 已复用 raw #${idStr},inbox 中已有待处理任务`;
+        } else if (reason.startsWith("approved:")) {
+          message = `✓ 已复用 raw #${idStr}(此前已审批入库)`;
+        } else if (reason.startsWith("rejected:")) {
+          message = `✓ 已复用 raw #${idStr}(此前被拒;如需重抓请使用 force)`;
+        } else if (reason.startsWith("silent:")) {
+          message = `✓ 已复用 raw #${idStr}(${enrichStatus.title})`;
+        } else {
+          // Pre-M4 / untagged reason — fall back to the original wording.
+          message = `✓ 已复用此前入库的素材 raw #${idStr}(${enrichStatus.title})`;
+        }
+        updateLocalMessage(pendingId, message);
+        break;
+      }
+      case "rejected_quality":
+        updateLocalMessage(
+          pendingId,
+          `⚠ 抓取失败（${formatIngestError(enrichStatus.reason)}）。链接仍在，您可手动重试或继续发送。`,
+        );
+        break;
+      case "fetch_failed":
+        updateLocalMessage(
+          pendingId,
+          `⚠ 抓取失败（${formatIngestError(enrichStatus.reason)}）`,
+        );
+        break;
+      case "prerequisite_missing":
+        updateLocalMessage(
+          pendingId,
+          `⚠ 环境缺依赖（${enrichStatus.dep}）：${enrichStatus.hint}`,
+        );
+        break;
+    }
+
+    // The hint has been upgraded/downgraded into its final text; any
+    // further enrich_status snapshot (e.g. a later turn) should find a
+    // fresh optimistic id, so clear the ref.
+    pendingEnrichIdRef.current = null;
+  }, [enrichStatus, updateLocalMessage]);
 
   // Slash command handlers
   const handleClear = useCallback(() => {
@@ -254,14 +403,30 @@ export function AskWorkbench({
     // Previously this function called `/api/desktop/wechat-fetch` directly
     // and inlined the enriched content into the user message, which both
     // polluted session history AND raced with the backend's own enrichment.
+    //
+    // M2 upgrade: the optimistic "⏳ 正在抓取..." hint is given a
+    // stable id we can later promote/demote via `pendingEnrichIdRef`
+    // once the backend reports `enrich_status` in the next session
+    // detail snapshot. When `enrich_status` never arrives (Worker A
+    // backend still in flight), the hint stays as-is — no regression.
     const url = extractUrl(message);
     if (url) {
+      const pendingId = `system-url-enrich-${Date.now()}-${Math.random()
+        .toString(36)
+        .slice(2, 6)}`;
       const isWeChat = url.includes("mp.weixin.qq.com") || url.includes("weixin.qq.com");
       if (isWeChat) {
-        addSystemMessage("⏳ 正在抓取微信文章（Playwright，最长 45 秒）...");
+        addSystemMessage("⏳ 正在抓取微信文章（Playwright，最长 45 秒）...", pendingId);
       } else {
-        addSystemMessage(`⏳ 正在抓取 ${url.slice(0, 60)}${url.length > 60 ? "…" : ""}`);
+        addSystemMessage(
+          `⏳ 正在抓取 ${url.slice(0, 60)}${url.length > 60 ? "…" : ""}`,
+          pendingId,
+        );
       }
+      pendingEnrichIdRef.current = pendingId;
+      // Reset the reconciler key so the next enrich_status snapshot
+      // is treated as fresh even if it happens to match a prior one.
+      lastEnrichKeyRef.current = null;
       // Fall through to backend. maybe_enrich_url will handle fetch/ingest
       // and inject content into the turn's system prompt.
     }

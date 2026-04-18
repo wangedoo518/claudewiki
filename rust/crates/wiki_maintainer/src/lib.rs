@@ -280,6 +280,379 @@ pub fn concept_page_path(paths: &wiki_store::WikiPaths, slug: &str) -> PathBuf {
 }
 
 // ─────────────────────────────────────────────────────────────────────
+// W1 Maintainer Workbench: three-choice maintain decision workflow
+// ─────────────────────────────────────────────────────────────────────
+//
+// Replaces the W0 "black-box approve" flow with a structured decision:
+// the human picks exactly one of CreateNew / UpdateExisting / Reject.
+// The backend executes the chosen action end-to-end and returns an
+// outcome the frontend can render in the Workbench Result pane.
+//
+// Design notes:
+//
+//   * `CreateNew` reuses `propose_for_raw_entry` + `write_wiki_page` —
+//     same path the legacy `approve-with-write` handler used, but
+//     orchestrated server-side so the frontend never has to re-send
+//     a proposal body.
+//
+//   * `UpdateExisting` does NOT call the LLM in this first version.
+//     It loads the target page, appends the raw entry body under a
+//     dated heading (`## 更新 [YYYY-MM-DD]`), and writes back. A
+//     future version will call an LLM-driven merge — see TODO below.
+//
+//   * `Reject` is filesystem-only: it writes the reason into the
+//     inbox entry, flips status to Rejected, and appends a human-
+//     readable audit line to `wiki/log.md`. No broker needed.
+//
+//   * The top-level `execute_maintain` is async (not the sync `fn`
+//     the initial spec sketched) because `CreateNew` needs a broker.
+//     The extra arg is added here — a sync-only signature would have
+//     forced the HTTP handler to dispatch on the enum itself, which
+//     would defeat the "one entry point" intent. The frontend contract
+//     (flat `action` / `target_page_slug` / `rejection_reason` fields)
+//     is unaffected.
+
+/// Which maintainer action the user picked in the Workbench.
+///
+/// Wire format: `#[serde(tag = "kind", rename_all = "snake_case")]`
+/// so the JSON looks like `{"kind":"create_new"}` /
+/// `{"kind":"update_existing","target_page_slug":"..."}` /
+/// `{"kind":"reject","reason":"..."}`. The HTTP handler in
+/// `desktop-server` translates from the flat frontend contract
+/// (`action` / `target_page_slug` / `rejection_reason`) into this
+/// tagged enum before calling `execute_maintain`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum MaintainAction {
+    /// Generate a fresh wiki page from the inbox's raw entry.
+    /// Legacy propose → approve-with-write path, now server-driven.
+    CreateNew,
+    /// Append the raw body into an existing wiki page. The merge
+    /// strategy is pure append in v1; an LLM-driven merge is TODO.
+    UpdateExisting { target_page_slug: String },
+    /// Discard the inbox task with a user-provided reason. Does not
+    /// touch the wiki — only audit-logs the decision.
+    Reject { reason: String },
+}
+
+/// Outcome returned by [`execute_maintain`], mirroring the shape
+/// surfaced to the frontend via the `/api/wiki/inbox/{id}/maintain`
+/// response.
+///
+/// Wire format: same `tag = "kind"` / `snake_case` convention as
+/// `MaintainAction`. The desktop-server handler flattens this into
+/// the TS `MaintainResponse` (`outcome` + optional siblings).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum MaintainOutcome {
+    /// A brand-new page was written at `target_page_slug`.
+    Created { target_page_slug: String },
+    /// An existing page at `target_page_slug` was updated in place.
+    Updated { target_page_slug: String },
+    /// The inbox task was rejected with `reason`; wiki untouched.
+    Rejected { reason: String },
+    /// Something went wrong — `error` is a user-visible string.
+    Failed { error: String },
+}
+
+/// Execute a maintain decision end-to-end.
+///
+/// Dispatches on the `MaintainAction` variant, performs the filesystem
+/// side effects (wiki write, inbox status update, log append), and
+/// returns a `MaintainOutcome`. A single entry point for the HTTP
+/// handler so all three paths converge on the same "update the
+/// `InboxEntry` with maintain bookkeeping fields" behavior.
+///
+/// Behavior summary by variant:
+///
+/// | Variant | LLM? | Wiki write | Inbox fields written |
+/// |---------|------|------------|----------------------|
+/// | `CreateNew` | yes (via `propose_for_raw_entry`) | new page | `maintain_action`, `target_page_slug`, `proposed_wiki_slug`, status=Approved |
+/// | `UpdateExisting` | no (append v1) | existing page | `maintain_action`, `target_page_slug`, status=Approved |
+/// | `Reject` | no | none | `maintain_action`, `rejection_reason`, status=Rejected + `wiki/log.md` line |
+///
+/// Errors surface as `Err` rather than `Ok(MaintainOutcome::Failed)`
+/// for propagation clarity — the HTTP handler maps them onto the
+/// `Failed` variant before returning to the frontend.
+pub async fn execute_maintain(
+    paths: &wiki_store::WikiPaths,
+    inbox_id: u32,
+    action: MaintainAction,
+    broker: &(impl BrokerSender + ?Sized),
+) -> Result<MaintainOutcome> {
+    match action {
+        MaintainAction::CreateNew => create_new(paths, inbox_id, broker).await,
+        MaintainAction::UpdateExisting { target_page_slug } => {
+            update_existing(paths, inbox_id, &target_page_slug)
+        }
+        MaintainAction::Reject { reason } => reject(paths, inbox_id, &reason),
+    }
+}
+
+/// Path A — create a brand-new wiki page from the inbox's raw entry.
+///
+/// Pipeline:
+///   1. Resolve `source_raw_id` from the inbox entry.
+///   2. Call `propose_for_raw_entry` to get a `WikiPageProposal`.
+///   3. `wiki_store::write_wiki_page` to persist the concept page.
+///   4. Side-effects: append to `wiki/log.md`, rebuild index,
+///      notify affected pages.
+///   5. Patch the `InboxEntry` with `maintain_action="create_new"`,
+///      `proposed_wiki_slug`, `target_page_slug`, status=Approved.
+///
+/// Mirrors the legacy `/api/wiki/inbox/{id}/approve-with-write`
+/// handler, minus the "frontend re-sends the proposal body" step.
+pub async fn create_new(
+    paths: &wiki_store::WikiPaths,
+    inbox_id: u32,
+    broker: &(impl BrokerSender + ?Sized),
+) -> Result<MaintainOutcome> {
+    // Step 1: locate the inbox entry + its raw_id.
+    let entries = wiki_store::list_inbox_entries(paths)
+        .map_err(|e| MaintainerError::Store(e.to_string()))?;
+    let entry = entries
+        .iter()
+        .find(|e| e.id == inbox_id)
+        .ok_or_else(|| {
+            MaintainerError::RawNotAvailable(format!("inbox entry not found: {inbox_id}"))
+        })?;
+    let raw_id = entry.source_raw_id.ok_or_else(|| {
+        MaintainerError::InvalidProposal(format!(
+            "inbox entry {inbox_id} has no source_raw_id"
+        ))
+    })?;
+
+    // Step 2: LLM proposal.
+    let proposal = propose_for_raw_entry(paths, raw_id, broker).await?;
+
+    // Step 3: write concept page.
+    wiki_store::write_wiki_page(
+        paths,
+        &proposal.slug,
+        &proposal.title,
+        &proposal.summary,
+        &proposal.body,
+        Some(proposal.source_raw_id),
+    )
+    .map_err(|e| MaintainerError::Store(e.to_string()))?;
+
+    // Step 4: side-effects (all soft-fail — the page is already on disk).
+    let log_title = if proposal.title.is_empty() {
+        proposal.slug.clone()
+    } else {
+        proposal.title.clone()
+    };
+    let _ = wiki_store::append_wiki_log(paths, "write-concept", &log_title);
+    let _ = wiki_store::append_changelog_entry(paths, "write-concept", &log_title);
+    let _ = wiki_store::rebuild_wiki_index(paths);
+    let _ = wiki_store::notify_affected_pages(paths, &proposal.slug, &proposal.title);
+
+    // Step 5: mark inbox entry approved + stamp maintain fields.
+    patch_inbox_after_maintain(
+        paths,
+        inbox_id,
+        InboxMaintainPatch {
+            status: wiki_store::InboxStatus::Approved,
+            maintain_action: Some("create_new"),
+            proposed_wiki_slug: Some(proposal.slug.clone()),
+            target_page_slug: Some(proposal.slug.clone()),
+            rejection_reason: None,
+        },
+    )?;
+
+    Ok(MaintainOutcome::Created {
+        target_page_slug: proposal.slug,
+    })
+}
+
+/// Path B — append the inbox's raw body into an existing wiki page.
+///
+/// v1 strategy: pure append. The raw body is appended under a
+/// dated heading (`## 更新 [YYYY-MM-DD]`) so the provenance is
+/// obvious in the page's edit history. This is intentionally
+/// simpler than a semantic merge — it keeps the caller on a
+/// deterministic, fast, LLM-free path while the UX stabilizes.
+///
+/// TODO(W2+): swap the append for an LLM-driven merge call that
+/// reconciles the two bodies semantically (e.g. "add the raw
+/// content under the appropriate section, dedupe, preserve voice").
+/// The merge entry point will need a `BrokerSender` so the function
+/// signature will grow an `&broker` param at that point.
+pub fn update_existing(
+    paths: &wiki_store::WikiPaths,
+    inbox_id: u32,
+    target_page_slug: &str,
+) -> Result<MaintainOutcome> {
+    // Step 1: read the inbox entry (for source_raw_id) + raw body.
+    let entries = wiki_store::list_inbox_entries(paths)
+        .map_err(|e| MaintainerError::Store(e.to_string()))?;
+    let entry = entries
+        .iter()
+        .find(|e| e.id == inbox_id)
+        .ok_or_else(|| {
+            MaintainerError::RawNotAvailable(format!("inbox entry not found: {inbox_id}"))
+        })?;
+    let raw_id = entry.source_raw_id.ok_or_else(|| {
+        MaintainerError::InvalidProposal(format!(
+            "inbox entry {inbox_id} has no source_raw_id"
+        ))
+    })?;
+
+    let (_raw_entry, raw_body) = wiki_store::read_raw_entry(paths, raw_id)
+        .map_err(|e| MaintainerError::RawNotAvailable(e.to_string()))?;
+
+    // Step 2: load the target page (summary + body). Error propagates
+    // if the slug doesn't exist — it's a user-controlled input and the
+    // handler will surface the 404 equivalent.
+    let (summary, existing_body) = wiki_store::read_wiki_page(paths, target_page_slug)
+        .map_err(|e| MaintainerError::Store(format!(
+            "target page `{target_page_slug}` not found: {e}"
+        )))?;
+
+    // Step 3: append strategy — dated heading + raw body under it.
+    // The date is ISO `YYYY-MM-DD` per the existing log format.
+    let today = {
+        let iso = wiki_store::now_iso8601();
+        iso.split('T').next().unwrap_or(&iso).to_string()
+    };
+    let mut merged = existing_body.trim_end_matches('\n').to_string();
+    merged.push_str("\n\n## 更新 [");
+    merged.push_str(&today);
+    merged.push_str("]\n\n");
+    merged.push_str(raw_body.trim_end_matches('\n'));
+    merged.push('\n');
+
+    // Step 4: write back. Preserve existing title/summary — only body changes.
+    wiki_store::write_wiki_page_in_category(
+        paths,
+        &summary.category,
+        &summary.slug,
+        &summary.title,
+        &summary.summary,
+        &merged,
+        summary.source_raw_id,
+    )
+    .map_err(|e| MaintainerError::Store(e.to_string()))?;
+
+    // Step 5: side-effects. log + rebuild index mirror `create_new`.
+    let log_title = if summary.title.is_empty() {
+        summary.slug.clone()
+    } else {
+        summary.title.clone()
+    };
+    let _ = wiki_store::append_wiki_log(paths, "update-concept", &log_title);
+    let _ = wiki_store::append_changelog_entry(paths, "update-concept", &log_title);
+    let _ = wiki_store::rebuild_wiki_index(paths);
+
+    // Step 6: mark inbox approved + stamp maintain fields.
+    patch_inbox_after_maintain(
+        paths,
+        inbox_id,
+        InboxMaintainPatch {
+            status: wiki_store::InboxStatus::Approved,
+            maintain_action: Some("update_existing"),
+            proposed_wiki_slug: None,
+            target_page_slug: Some(target_page_slug.to_string()),
+            rejection_reason: None,
+        },
+    )?;
+
+    Ok(MaintainOutcome::Updated {
+        target_page_slug: target_page_slug.to_string(),
+    })
+}
+
+/// Path C — reject the inbox task with a human-visible reason.
+///
+/// No wiki mutation. Writes:
+///   * the reason into `InboxEntry.rejection_reason`
+///   * `maintain_action="reject"`
+///   * status = Rejected
+///   * one audit line into `wiki/log.md`
+///
+/// Log format (canonical §8 Triggers): a single `- [YYYY-MM-DD HH:MM]
+/// reject-inbox | inbox/{id} — reason: {reason}` entry. Reusing
+/// `append_wiki_log` keeps the file shape consistent with
+/// `write-concept` / `update-concept` lines; the verb string is
+/// `reject-inbox` so a grep can separate the three paths.
+pub fn reject(
+    paths: &wiki_store::WikiPaths,
+    inbox_id: u32,
+    reason: &str,
+) -> Result<MaintainOutcome> {
+    // Step 1: ensure the inbox entry exists so we fail fast if the
+    // id is stale, rather than appending a log entry for a ghost.
+    let entries = wiki_store::list_inbox_entries(paths)
+        .map_err(|e| MaintainerError::Store(e.to_string()))?;
+    if !entries.iter().any(|e| e.id == inbox_id) {
+        return Err(MaintainerError::RawNotAvailable(format!(
+            "inbox entry not found: {inbox_id}"
+        )));
+    }
+
+    // Step 2: stamp maintain fields on the inbox entry + flip status.
+    patch_inbox_after_maintain(
+        paths,
+        inbox_id,
+        InboxMaintainPatch {
+            status: wiki_store::InboxStatus::Rejected,
+            maintain_action: Some("reject"),
+            proposed_wiki_slug: None,
+            target_page_slug: None,
+            rejection_reason: Some(reason.to_string()),
+        },
+    )?;
+
+    // Step 3: append a reject line to wiki/log.md. The `reject-inbox`
+    // verb + `inbox/{id} — reason: {reason}` title gives us a clean
+    // greppable audit trail (see canonical §8).
+    let title = format!("inbox/{inbox_id} — reason: {reason}");
+    let _ = wiki_store::append_wiki_log(paths, "reject-inbox", &title);
+
+    Ok(MaintainOutcome::Rejected {
+        reason: reason.to_string(),
+    })
+}
+
+/// Private helper: atomically patch an inbox entry's W1 maintain
+/// bookkeeping fields + status + `resolved_at`. Used by all three
+/// maintain paths so the field write set stays consistent.
+struct InboxMaintainPatch {
+    status: wiki_store::InboxStatus,
+    maintain_action: Option<&'static str>,
+    proposed_wiki_slug: Option<String>,
+    target_page_slug: Option<String>,
+    rejection_reason: Option<String>,
+}
+
+/// Apply an `InboxMaintainPatch` to the given entry by reading the
+/// current inbox list, mutating in place, and re-saving.
+///
+/// Separate from `wiki_store::resolve_inbox_entry` because that
+/// helper only flips status — the W1 fields (`maintain_action`,
+/// `target_page_slug`, `rejection_reason`) aren't part of its contract.
+/// Rather than overload the existing function, we go through the
+/// raw load/save pair here so the maintainer crate owns the maintain
+/// fields end-to-end.
+fn patch_inbox_after_maintain(
+    paths: &wiki_store::WikiPaths,
+    inbox_id: u32,
+    patch: InboxMaintainPatch,
+) -> Result<()> {
+    wiki_store::update_inbox_maintain(
+        paths,
+        inbox_id,
+        patch.status,
+        patch.maintain_action.map(str::to_string),
+        patch.proposed_wiki_slug,
+        patch.target_page_slug,
+        patch.rejection_reason,
+    )
+    .map(|_| ())
+    .map_err(|e| MaintainerError::Store(e.to_string()))
+}
+
+// ─────────────────────────────────────────────────────────────────────
 // v2: absorb_batch types + function  (technical-design.md §4.2.2–4.2.3)
 // ─────────────────────────────────────────────────────────────────────
 
@@ -1423,5 +1796,174 @@ mod tests {
         let raws = wiki_store::list_raw_entries(&paths).unwrap();
         let query_raws: Vec<_> = raws.iter().filter(|r| r.source == "query").collect();
         assert!(query_raws.is_empty(), "short answer should NOT crystallize");
+    }
+
+    // ── W1 Maintainer Workbench: execute_maintain tests ───────────
+
+    /// Helper: seed a raw entry + its NewRaw inbox task.
+    /// Returns `(inbox_id, raw_id)`.
+    fn seed_raw_with_inbox(paths: &wiki_store::WikiPaths, body: &str) -> (u32, u32) {
+        let raw_id = seed_raw(paths, body);
+        let (raw_entry, _body) = wiki_store::read_raw_entry(paths, raw_id).unwrap();
+        let inbox_entry =
+            wiki_store::append_new_raw_task(paths, &raw_entry, "test-seed").unwrap();
+        (inbox_entry.id, raw_id)
+    }
+
+    #[tokio::test]
+    async fn execute_maintain_create_new_writes_page_and_patches_inbox() {
+        let tmp = tempdir().unwrap();
+        wiki_store::init_wiki(tmp.path()).unwrap();
+        let paths = wiki_store::WikiPaths::resolve(tmp.path());
+        let (inbox_id, raw_id) = seed_raw_with_inbox(&paths, "Transformer architecture notes.");
+
+        let canned = make_proposal_json("transformer", "Transformer", raw_id);
+        let broker = MockBrokerSender { canned };
+
+        let outcome = execute_maintain(&paths, inbox_id, MaintainAction::CreateNew, &broker)
+            .await
+            .unwrap();
+
+        match outcome {
+            MaintainOutcome::Created { target_page_slug } => {
+                assert_eq!(target_page_slug, "transformer");
+            }
+            other => panic!("expected Created, got {other:?}"),
+        }
+
+        // Wiki page written.
+        assert!(wiki_store::read_wiki_page(&paths, "transformer").is_ok());
+
+        // Inbox patched.
+        let entries = wiki_store::list_inbox_entries(&paths).unwrap();
+        let entry = entries.iter().find(|e| e.id == inbox_id).unwrap();
+        assert_eq!(entry.status, wiki_store::InboxStatus::Approved);
+        assert_eq!(entry.maintain_action.as_deref(), Some("create_new"));
+        assert_eq!(entry.target_page_slug.as_deref(), Some("transformer"));
+        assert_eq!(entry.proposed_wiki_slug.as_deref(), Some("transformer"));
+        assert!(entry.rejection_reason.is_none());
+    }
+
+    #[tokio::test]
+    async fn execute_maintain_update_existing_appends_under_dated_heading() {
+        let tmp = tempdir().unwrap();
+        wiki_store::init_wiki(tmp.path()).unwrap();
+        let paths = wiki_store::WikiPaths::resolve(tmp.path());
+
+        // Pre-existing target page.
+        wiki_store::write_wiki_page(
+            &paths,
+            "attention",
+            "Attention Mechanism",
+            "Summary of attention.",
+            "# Attention\n\nOriginal body.",
+            None,
+        )
+        .unwrap();
+
+        let (inbox_id, _raw_id) = seed_raw_with_inbox(&paths, "New info about attention.");
+        let broker = MockBrokerSender {
+            canned: "unused".to_string(),
+        };
+
+        let outcome = execute_maintain(
+            &paths,
+            inbox_id,
+            MaintainAction::UpdateExisting {
+                target_page_slug: "attention".to_string(),
+            },
+            &broker,
+        )
+        .await
+        .unwrap();
+
+        match outcome {
+            MaintainOutcome::Updated { target_page_slug } => {
+                assert_eq!(target_page_slug, "attention");
+            }
+            other => panic!("expected Updated, got {other:?}"),
+        }
+
+        // Page body now has both the original content and a dated update heading.
+        let (_summary, body) = wiki_store::read_wiki_page(&paths, "attention").unwrap();
+        assert!(body.contains("Original body."));
+        assert!(body.contains("## 更新 ["), "should have dated update heading");
+
+        // Inbox patched.
+        let entries = wiki_store::list_inbox_entries(&paths).unwrap();
+        let entry = entries.iter().find(|e| e.id == inbox_id).unwrap();
+        assert_eq!(entry.status, wiki_store::InboxStatus::Approved);
+        assert_eq!(entry.maintain_action.as_deref(), Some("update_existing"));
+        assert_eq!(entry.target_page_slug.as_deref(), Some("attention"));
+    }
+
+    #[tokio::test]
+    async fn execute_maintain_reject_patches_inbox_and_logs() {
+        let tmp = tempdir().unwrap();
+        wiki_store::init_wiki(tmp.path()).unwrap();
+        let paths = wiki_store::WikiPaths::resolve(tmp.path());
+        let (inbox_id, _raw_id) = seed_raw_with_inbox(&paths, "Spammy content.");
+        let broker = MockBrokerSender {
+            canned: "unused".to_string(),
+        };
+
+        let outcome = execute_maintain(
+            &paths,
+            inbox_id,
+            MaintainAction::Reject {
+                reason: "low quality — off-topic".to_string(),
+            },
+            &broker,
+        )
+        .await
+        .unwrap();
+
+        match outcome {
+            MaintainOutcome::Rejected { reason } => {
+                assert!(reason.contains("low quality"));
+            }
+            other => panic!("expected Rejected, got {other:?}"),
+        }
+
+        // Inbox patched.
+        let entries = wiki_store::list_inbox_entries(&paths).unwrap();
+        let entry = entries.iter().find(|e| e.id == inbox_id).unwrap();
+        assert_eq!(entry.status, wiki_store::InboxStatus::Rejected);
+        assert_eq!(entry.maintain_action.as_deref(), Some("reject"));
+        assert!(entry
+            .rejection_reason
+            .as_deref()
+            .unwrap_or("")
+            .contains("low quality"));
+
+        // Log line appended.
+        let log_path = wiki_store::wiki_log_path(&paths);
+        let log = std::fs::read_to_string(&log_path).unwrap();
+        assert!(log.contains("reject-inbox"), "log should carry reject-inbox verb");
+        assert!(log.contains(&format!("inbox/{inbox_id}")));
+    }
+
+    #[test]
+    fn inbox_entry_backward_compat_roundtrip() {
+        // A pre-W1 inbox.json blob (no maintain fields present) must
+        // deserialize cleanly with `#[serde(default)]` filling in None.
+        let old_json = r#"[
+            {
+                "id": 1,
+                "kind": "new-raw",
+                "status": "pending",
+                "title": "old entry",
+                "description": "no W1 fields",
+                "created_at": "2026-04-15T00:00:00Z"
+            }
+        ]"#;
+        let parsed: Vec<wiki_store::InboxEntry> = serde_json::from_str(old_json).unwrap();
+        assert_eq!(parsed.len(), 1);
+        let entry = &parsed[0];
+        assert_eq!(entry.id, 1);
+        assert!(entry.maintain_action.is_none());
+        assert!(entry.target_page_slug.is_none());
+        assert!(entry.proposed_wiki_slug.is_none());
+        assert!(entry.rejection_reason.is_none());
     }
 }

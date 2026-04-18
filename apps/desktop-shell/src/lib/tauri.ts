@@ -159,6 +159,33 @@ export interface RuntimeSession {
   messages: RuntimeConversationMessage[];
 }
 
+/**
+ * URL enrichment status for the current turn. `null` (or absent) when
+ * the message had no URL worth enriching; `success` when a raw was
+ * ingested; the error variants describe why the fetch/validate didn't
+ * produce a useful raw.
+ *
+ * Wire format is `#[serde(rename_all = "snake_case", tag = "kind")]`
+ * on the Rust side — i.e. `{ kind: "success", title: "...", raw_id: 42 }`.
+ *
+ * M3 adds `reused` to cover the case where the URL-ingest dedupe layer
+ * recognised a prior raw for the same canonical URL and handed the
+ * existing entry back rather than re-fetching. The payload carries the
+ * reused `raw_id` plus a short `reason` string (e.g. "reused existing
+ * raw (pending inbox)") that the UI can surface verbatim if useful.
+ *
+ * The optional `none` kind below is a defensive fallback for
+ * environments where the backend may emit an explicit "no enrichment"
+ * marker instead of `null`.
+ */
+export type EnrichStatus =
+  | { kind: "none" }
+  | { kind: "success"; title: string; raw_id: number }
+  | { kind: "reused"; title: string; raw_id: number; reason: string }
+  | { kind: "rejected_quality"; reason: string }
+  | { kind: "fetch_failed"; reason: string }
+  | { kind: "prerequisite_missing"; dep: string; hint: string };
+
 export interface DesktopSessionDetail {
   id: string;
   title: string;
@@ -175,6 +202,13 @@ export interface DesktopSessionDetail {
   /** True if user flagged this session for attention. */
   flagged?: boolean;
   session: RuntimeSession;
+  /**
+   * Per-turn URL enrichment side-channel. Populated by
+   * `DesktopState::append_user_message` on the Rust side when the
+   * outgoing user message contains a URL; `null` / absent otherwise.
+   * See `EnrichStatus` for the variant shapes.
+   */
+  enrich_status?: EnrichStatus | null;
 }
 
 export interface DesktopProviderSetting {
@@ -809,3 +843,214 @@ export async function openclawGetDashboardUrl(): Promise<string> {
 // ---------------------------------------------------------------------------
 // Code tools commands
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// W1 Maintainer Workbench wrappers
+// ---------------------------------------------------------------------------
+//
+// Thin re-exports over `features/ingest/persist.ts` so call sites in
+// the Inbox Workbench can import everything from `@/lib/tauri`
+// without depending on the ingest module structure. `fetchRawById` is
+// an alias for the existing `getRawEntry` detail fetch, returning
+// `{ entry, body }`. `maintainInboxEntry` talks to Worker B's
+// `/api/wiki/inbox/{id}/maintain` contract.
+import { fetchJson as _fetchJsonForMaintain } from "@/lib/desktop/transport";
+import { getRawEntry as _getRawEntry } from "@/features/ingest/persist";
+import type {
+  InboxEntry,
+  MaintainAction,
+  MaintainOutcome,
+  MaintainRequest,
+  MaintainResponse,
+  RawDetailResponse,
+} from "@/features/ingest/types";
+
+// ── W1 Maintainer Workbench type mirrors (re-export + alias) ──────────
+//
+// Worker B's Rust contract names the wire types `InboxMaintainRequest`
+// / `InboxMaintainResponse` to match the handler function names in
+// `rust/crates/desktop-server/src/lib.rs`. The frontend types were
+// landed earlier under the shorter `MaintainRequest` / `MaintainResponse`
+// identifiers in `features/ingest/types.ts` — we alias both shapes
+// here so any caller that imports from `@/lib/tauri` gets the full
+// W1 vocabulary (MaintainAction, MaintainOutcome, InboxEntry +
+// request/response envelopes under both names).
+//
+// The `InboxEntry` interface re-exported below already carries the
+// four W1-optional fields the backend writes back after a maintain
+// call (see `rust/crates/wiki_store/src/lib.rs` `InboxEntry` +
+// `#[serde(default, skip_serializing_if = "Option::is_none")]`):
+//   * `proposed_wiki_slug`
+//   * `target_page_slug`
+//   * `maintain_action`
+//   * `rejection_reason`
+
+export type { InboxEntry, MaintainAction, MaintainOutcome };
+export type {
+  MaintainRequest as InboxMaintainRequest,
+  MaintainResponse as InboxMaintainResponse,
+};
+// Also re-export under the short names for callers that followed the
+// original ingest/types.ts naming.
+export type { MaintainRequest, MaintainResponse };
+
+/**
+ * Fetch a single raw entry by id, returning metadata + markdown body.
+ * Alias of `getRawEntry` from `features/ingest/persist.ts` — exposed
+ * here so the Workbench can pull it from a single import boundary.
+ */
+export async function fetchRawById(id: number): Promise<RawDetailResponse> {
+  return _getRawEntry(id);
+}
+
+/**
+ * `POST /api/wiki/inbox/{id}/maintain` — execute a maintainer action
+ * (create_new / update_existing / reject) against an inbox task and
+ * return the outcome envelope. Contract owned by Worker B.
+ *
+ * The caller is responsible for client-side validation (e.g.
+ * non-empty `target_page_slug` when `action === "update_existing"`).
+ */
+export async function maintainInboxEntry(
+  id: number,
+  payload: MaintainRequest,
+): Promise<MaintainResponse> {
+  return _fetchJsonForMaintain<MaintainResponse>(
+    `/api/wiki/inbox/${id}/maintain`,
+    {
+      method: "POST",
+      body: JSON.stringify(payload),
+    },
+  );
+}
+
+// ---------------------------------------------------------------------------
+// URL ingest diagnostics (M3)
+// ---------------------------------------------------------------------------
+
+/**
+ * Decision made by the URL ingest orchestrator for a given request.
+ *
+ * Wire format is `#[serde(tag = "kind", rename_all = "snake_case")]`
+ * on the Rust side — see `rust/crates/desktop-core/src/url_ingest/dedupe.rs`.
+ *
+ * - `created_new`: no prior raw for the canonical URL, a fresh fetch+ingest
+ *   ran.
+ * - `reused_with_pending_inbox`: a prior raw exists with an inbox task still
+ *   pending, so the same raw was handed back (no re-fetch) and the new
+ *   request was suppressed to avoid duplicate inbox entries.
+ * - `reused_approved`: a prior raw exists that was already approved into
+ *   the wiki, reuse it silently.
+ * - `reused_after_reject`: a prior raw was rejected; reuse surfaces the
+ *   rejection context rather than re-attempting.
+ * - `reused_silent`: miscellaneous reuse path that doesn't fit the above
+ *   three (catch-all).
+ * - `explicit_reingest`: user explicitly asked to re-ingest; carries the
+ *   previous raw_id for provenance.
+ * - `refreshed_content` (M4): the canonical URL was seen before but the
+ *   live fetch produced different content — a fresh raw was created
+ *   while the prior raw is kept for history. Carries `previous_raw_id`
+ *   and `previous_content_hash` for diff / audit.
+ * - `content_duplicate` (M4): a *different* URL resolves to identical
+ *   content as an existing raw (content-hash collision). The existing
+ *   raw is reused; `matching_raw_id` + `matching_url` point at it.
+ */
+export type IngestDecision =
+  | { kind: "created_new" }
+  | { kind: "reused_with_pending_inbox"; reason: string }
+  | { kind: "reused_approved"; reason: string }
+  | { kind: "reused_after_reject"; reason: string }
+  | { kind: "reused_silent"; reason: string }
+  | { kind: "explicit_reingest"; previous_raw_id: number }
+  | {
+      kind: "refreshed_content";
+      previous_raw_id: number;
+      previous_content_hash: string;
+    }
+  | {
+      kind: "content_duplicate";
+      matching_raw_id: number;
+      matching_url: string;
+    };
+
+/**
+ * Classification of the outcome of a single URL ingest request, as shown
+ * in the RecentIngestCard diagnostics table. Mirrors the
+ * `outcome_kind` string on the Rust `RecentIngestEntry`.
+ */
+export type RecentIngestOutcomeKind =
+  | "ingested"
+  | "reused_existing"
+  | "inbox_suppressed"
+  | "fallback_to_text"
+  | "rejected_quality"
+  | "fetch_failed"
+  | "prerequisite_missing"
+  | "invalid_url";
+
+/**
+ * One entry in the recent URL ingest decision log. Backed by
+ * `desktop-core::url_ingest::recent::RecentIngestEntry` on the Rust
+ * side. Intended for the WeChat Bridge / EnvironmentDoctor diagnostics
+ * surface — developers and power users ask "why was my URL reused /
+ * suppressed / rejected?" and this shape is the primary answer.
+ */
+export interface RecentIngestEntry {
+  timestamp_ms: number;
+  canonical_url: string;
+  original_url: string;
+  /** Which pipeline the request came from (ask-enrich / ilink / kefu / ...). */
+  entry_point: string;
+  outcome_kind: RecentIngestOutcomeKind;
+  decision?: IngestDecision | null;
+  raw_id?: number | null;
+  inbox_id?: number | null;
+  adapter?: string | null;
+  duration_ms?: number | null;
+  summary: string;
+  /**
+   * M4 observability — human-readable reason tag emitted alongside the
+   * decision (e.g. "refreshed:prev=42", "content_duplicate:src=...").
+   * Optional because older backends don't set it.
+   */
+  decision_reason?: string | null;
+  /**
+   * M4 observability — hex-encoded content hash computed from the
+   * fetched body. Absent when the fetch failed / the outcome was not
+   * an ingest.
+   */
+  content_hash?: string | null;
+  /**
+   * M4 observability — true when this hash matched an existing raw
+   * (content-duplicate / refresh paths). Absent on older backends.
+   */
+  content_hash_hit?: boolean | null;
+}
+
+/**
+ * M4 aggregate stats over the in-memory decision ring buffer. Currently
+ * exposed as two `kind → count` maps (by decision kind, by entry point)
+ * so the UI can render a compact summary strip without re-aggregating
+ * client-side. Optional on the response envelope because the field did
+ * not exist before M4 — legacy backends return `undefined`.
+ */
+export interface RecentIngestStats {
+  by_kind: Record<string, number>;
+  by_entry_point: Record<string, number>;
+}
+
+/**
+ * Response shape for `GET /api/desktop/url-ingest/recent`.
+ * `total` counts all decisions currently retained; `capacity` is the
+ * ring-buffer upper bound (so the UI can show "most recent N of M").
+ *
+ * `stats` (M4) is a summary over the retained decisions. Older
+ * backends omit the field; the UI should treat `undefined` as "no
+ * summary available" rather than an error.
+ */
+export interface RecentIngestResponse {
+  decisions: RecentIngestEntry[];
+  total: number;
+  capacity: number;
+  stats?: RecentIngestStats;
+}

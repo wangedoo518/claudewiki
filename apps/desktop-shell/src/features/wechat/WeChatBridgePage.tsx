@@ -54,6 +54,9 @@ import {
   type WeChatLoginStartResponse,
   type WeChatLoginStatusResponse,
 } from "@/features/settings/api/client";
+import { formatIngestError } from "@/lib/ingest/format-error";
+import { EnvironmentDoctor } from "@/components/EnvironmentDoctor";
+import { RecentIngestCard } from "@/components/RecentIngestCard";
 
 const wechatKeys = {
   accounts: () => ["wechat", "accounts"] as const,
@@ -86,26 +89,18 @@ function isSafeQrDataUrl(src: string): boolean {
   return src.startsWith("data:image/");
 }
 
+/**
+ * Thin wrapper around the shared `formatIngestError` util. Kept in place
+ * (rather than deleting and inlining `formatIngestError` everywhere) so
+ * the existing call sites read the same, and so future WeChat-specific
+ * pre-processing can be slotted here without changing the ingest util's
+ * contract. See `src/lib/ingest/format-error.ts` for the classification
+ * catalogue.
+ */
 function formatWeChatBridgeErrorMessage(
   message: string | null | undefined
 ): string {
-  const raw = (message ?? "").trim();
-  if (!raw) return "";
-
-  const normalized = raw.toLowerCase();
-  if (normalized.includes("npx not found")) {
-    return `未找到 npx。通常是本机还没有安装 Node.js，或者安装后终端 PATH 还没生效。请先确认终端里能正常运行 node -v 和 npx -v。原始错误：${raw}`;
-  }
-
-  if (normalized.includes("node.js not found")) {
-    return `未找到 Node.js。这个流程需要 Node.js 来执行接入脚本，请先安装 Node.js，并确认终端里能正常运行 node -v。原始错误：${raw}`;
-  }
-
-  if (normalized.includes("opencli unavailable")) {
-    return `未找到 OpenCLI。请先确认 OpenCLI 已正确安装，并且当前桌面应用继承到了它所在的 PATH。原始错误：${raw}`;
-  }
-
-  return raw;
+  return formatIngestError(message);
 }
 
 export function WeChatBridgePage() {
@@ -210,6 +205,17 @@ export function WeChatBridgePage() {
           <code>~/.clawwiki/raw/</code>
         </p>
       </div>
+
+      {/* Environment doctor — Playwright / MarkItDown capability matrix.
+          Sits directly below the Hero so a misconfigured machine is
+          diagnosed before the user fumbles with the login QR. */}
+      <EnvironmentDoctor />
+
+      {/* Recent URL ingest decisions — M3 observability surface. Sits
+          directly under the doctor so a power user can answer "why was
+          my URL reused / suppressed / rejected?" without opening the
+          logs. Collapsed by default; only polls while expanded. */}
+      <RecentIngestCard />
 
       {/* Connected accounts */}
       <section className="border-b border-border/50 px-6 py-5">
@@ -807,7 +813,7 @@ function KefuSection() {
                 )}
                 {status.last_error && (
                   <span style={{ color: "var(--color-error)" }}>
-                    {status.last_error}
+                    {formatWeChatBridgeErrorMessage(status.last_error)}
                   </span>
                 )}
               </div>
@@ -1035,7 +1041,7 @@ function KefuContactQR() {
         ) : (
           <div className="text-caption text-muted-foreground">
             {contactQuery.error
-              ? `获取客服链接失败: ${String(contactQuery.error)}`
+              ? `获取客服链接失败: ${formatWeChatBridgeErrorMessage(String(contactQuery.error))}`
               : "客服链接未生成"}
           </div>
         )}

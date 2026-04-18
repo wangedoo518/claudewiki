@@ -121,6 +121,8 @@ mod tests {
             source_url: None,
             ingested_at: "2026-04-09T14:22:00Z".to_string(),
             byte_size: 1234,
+            content_hash: None,
+            original_url: None,
         }
     }
 

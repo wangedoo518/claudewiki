@@ -635,16 +635,39 @@ pub struct RawFrontmatter {
     /// Where it came from: `paste`, `wechat-text`, `wechat-article`, etc.
     pub source: String,
     /// Optional source URL when ingesting a URL or web article.
+    /// In M4, this is always the **canonical** URL (normalized via
+    /// `url_ingest::canonical::canonicalize`). The user-supplied raw
+    /// URL (pre-canonicalization) is stored in `original_url` when it
+    /// differs from the canonical form.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_url: Option<String>,
     /// ISO-8601 datetime when the file was written.
     pub ingested_at: String,
+    /// M4: SHA-256 hex (lowercase) of the cleaned body. Computed via
+    /// `url_ingest::content_hash::compute_content_hash`. Used as the
+    /// secondary dedupe signal ("content identity") so re-submissions
+    /// with different canonical URLs but identical bodies collapse to
+    /// the same raw via `find_raw_by_content_hash`. `None` on old
+    /// entries persisted before M4 — back-compat only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_hash: Option<String>,
+    /// M4: the original user-supplied URL (pre-canonicalization) when
+    /// it differs from `source_url`. Only populated when canonicalize
+    /// mutated the input. Kept in frontmatter (not flattened to
+    /// `RawEntry`) so Raw Library listing isn't bloated; the URL-ingest
+    /// recent log is the primary surface that displays this.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub original_url: Option<String>,
 }
 
 impl RawFrontmatter {
     /// Build a frontmatter for a `paste`-source text entry. The
     /// `ingested_at` field is filled with the current UTC datetime
     /// (ISO-8601, second precision).
+    ///
+    /// M4: `content_hash` / `original_url` default to `None`. Callers
+    /// with identity signals (URL ingest orchestrator) should use
+    /// [`Self::for_paste_with_identity`] to populate them.
     #[must_use]
     pub fn for_paste(source: &str, source_url: Option<String>) -> Self {
         Self {
@@ -655,6 +678,40 @@ impl RawFrontmatter {
             source: source.to_string(),
             source_url,
             ingested_at: now_iso8601(),
+            content_hash: None,
+            original_url: None,
+        }
+    }
+
+    /// M4: build a frontmatter carrying full identity metadata — the
+    /// canonical URL (in `source_url`), the original user-supplied URL
+    /// (only when it differs, to keep the file lean), and the SHA-256
+    /// content hash. Used by the URL ingest orchestrator so that
+    /// dedupe + observability can key on either the canonical URL or
+    /// the content hash.
+    #[must_use]
+    pub fn for_paste_with_identity(
+        source: &str,
+        canonical_url: Option<String>,
+        original_url: Option<String>,
+        content_hash: Option<String>,
+    ) -> Self {
+        // Elide `original_url` when it matches the canonical form — no
+        // signal in that field beyond what `source_url` already shows.
+        let original_url = match (&canonical_url, original_url.as_deref()) {
+            (Some(canonical), Some(original)) if canonical == original => None,
+            _ => original_url,
+        };
+        Self {
+            kind: "raw".to_string(),
+            status: "ingested".to_string(),
+            owner: "user".to_string(),
+            schema: "v1".to_string(),
+            source: source.to_string(),
+            source_url: canonical_url,
+            ingested_at: now_iso8601(),
+            content_hash,
+            original_url,
         }
     }
 
@@ -677,6 +734,14 @@ impl RawFrontmatter {
             s.push_str(&format!("source_url: {url}\n"));
         }
         s.push_str(&format!("ingested_at: {}\n", self.ingested_at));
+        // M4: identity signals — always appended last so old parsers
+        // that stop at `ingested_at` still round-trip the core fields.
+        if let Some(hash) = &self.content_hash {
+            s.push_str(&format!("content_hash: {hash}\n"));
+        }
+        if let Some(url) = &self.original_url {
+            s.push_str(&format!("original_url: {url}\n"));
+        }
         s.push_str("---\n");
         s
     }
@@ -696,12 +761,21 @@ pub struct RawEntry {
     pub slug: String,
     /// ISO date from the filename `YYYY-MM-DD`.
     pub date: String,
-    /// Optional `source_url` from the frontmatter.
+    /// Optional `source_url` from the frontmatter (canonical URL in M4).
     pub source_url: Option<String>,
     /// ISO-8601 datetime from the frontmatter.
     pub ingested_at: String,
     /// File size in bytes (for the listing UI).
     pub byte_size: u64,
+    /// M4: SHA-256 hex of the cleaned body, when available. `None`
+    /// on entries written pre-M4 or with empty bodies.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_hash: Option<String>,
+    /// M4: the original user-supplied URL when it differs from the
+    /// canonical `source_url`. `None` when the input was already
+    /// canonical or when the entry was written pre-M4.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub original_url: Option<String>,
 }
 
 /// Compute the next available numeric id by scanning `raw/` for
@@ -945,6 +1019,8 @@ pub fn write_raw_entry(
         source_url: frontmatter.source_url.clone(),
         ingested_at: frontmatter.ingested_at.clone(),
         byte_size: metadata.len(),
+        content_hash: frontmatter.content_hash.clone(),
+        original_url: frontmatter.original_url.clone(),
     })
 }
 
@@ -1019,6 +1095,104 @@ pub fn delete_raw_entry(paths: &WikiPaths, id: u32) -> Result<()> {
     Ok(())
 }
 
+/// Find the most recent raw entry whose frontmatter `source_url`
+/// equals `canonical_url` exactly. Returns `Ok(None)` when no match
+/// exists. The comparison is byte-identical — callers who want to
+/// dedupe across tracking-param variants must canonicalize the URL
+/// before calling (see `desktop-core::url_ingest::canonical`).
+///
+/// # Performance
+///
+/// O(n) in the raw count — we list every entry and scan. Fine for
+/// M3 since typical raw counts stay well under 1000 during normal
+/// use. A future `manifest.json` cache can pin this to O(1) without
+/// changing the signature.
+///
+/// "Most recent" is defined by ascending id from [`list_raw_entries`]
+/// — we return the highest matching id rather than the first match
+/// so that re-ingests (which write a new raw with a larger id but
+/// keep the same `source_url`) surface the newest landing.
+///
+/// Used by: `desktop-core::url_ingest::dedupe::decide` to derive the
+/// dedupe key for M3 canonical-URL ingestion.
+pub fn find_recent_raw_by_source_url(
+    paths: &WikiPaths,
+    canonical_url: &str,
+) -> Result<Option<RawEntry>> {
+    if canonical_url.is_empty() {
+        return Ok(None);
+    }
+    let mut entries = list_raw_entries(paths)?;
+    // list_raw_entries sorts ascending, so the final match is the
+    // highest id with a matching url — the "most recent" landing.
+    entries.reverse();
+    for entry in entries {
+        if entry.source_url.as_deref() == Some(canonical_url) {
+            return Ok(Some(entry));
+        }
+    }
+    Ok(None)
+}
+
+/// M4: find the most recent raw entry whose frontmatter `content_hash`
+/// equals `target_hash` exactly. Skips raw entries persisted before
+/// M4 (where `content_hash` is `None`) — those are invisible to this
+/// lookup by design.
+///
+/// Comparison is byte-identical (SHA-256 hex is case-sensitive here,
+/// but `compute_content_hash` always emits lowercase hex so in practice
+/// this is stable).
+///
+/// # Performance
+///
+/// O(n) in the raw count — mirrors [`find_recent_raw_by_source_url`].
+/// A future `manifest.json` cache can convert to O(1).
+///
+/// "Most recent" is defined by the highest matching id (same rule as
+/// [`find_recent_raw_by_source_url`]).
+///
+/// Used by: `desktop-core::url_ingest::dedupe::decide` for the M4
+/// "content identity" secondary dedupe path — when the canonical URL
+/// doesn't match any existing raw, a content-hash match reuses the
+/// prior landing anyway (same article reached via a different URL).
+pub fn find_raw_by_content_hash(
+    paths: &WikiPaths,
+    target_hash: &str,
+) -> Result<Option<RawEntry>> {
+    if target_hash.is_empty() {
+        return Ok(None);
+    }
+    let entries = list_raw_entries(paths)?;
+    Ok(entries
+        .into_iter()
+        .filter(|e| e.content_hash.as_deref() == Some(target_hash))
+        .max_by_key(|e| e.id))
+}
+
+/// Find the latest inbox entry (any status, any kind) whose
+/// `source_raw_id` equals `raw_id`. Returns `Ok(None)` when no match
+/// exists.
+///
+/// "Latest" means the highest `id` — the inbox append path is
+/// monotonic, so a higher id is always strictly later in time. If
+/// multiple entries reference the same raw (e.g. a Pending `NewRaw`
+/// was resolved + a follow-up `Conflict` was later filed), this
+/// returns whichever was filed most recently.
+///
+/// Used by: `desktop-core::url_ingest::dedupe::decide` to classify
+/// an existing raw's inbox state (Pending / Approved / Rejected /
+/// absent) when deciding whether to reuse or re-fetch.
+pub fn find_inbox_by_source_raw_id(
+    paths: &WikiPaths,
+    raw_id: u32,
+) -> Result<Option<InboxEntry>> {
+    let entries = load_inbox_file(paths)?;
+    Ok(entries
+        .into_iter()
+        .filter(|e| e.source_raw_id == Some(raw_id))
+        .max_by_key(|e| e.id))
+}
+
 // ── internal helpers ──────────────────────────────────────────────
 
 /// Pull the leading 5-digit id off a filename, returning `None` for
@@ -1068,7 +1242,7 @@ fn parse_raw_file(path: &Path) -> Result<RawEntry> {
     let slug = sas.next().unwrap_or("").to_string();
 
     let content = fs::read_to_string(path).map_err(|e| WikiStoreError::io(path.to_path_buf(), e))?;
-    let (source_url, ingested_at) = parse_frontmatter_fields(&content);
+    let fields = parse_frontmatter_fields(&content);
     let metadata = fs::metadata(path).map_err(|e| WikiStoreError::io(path.to_path_buf(), e))?;
 
     Ok(RawEntry {
@@ -1077,18 +1251,31 @@ fn parse_raw_file(path: &Path) -> Result<RawEntry> {
         source,
         slug,
         date,
-        source_url,
-        ingested_at,
+        source_url: fields.source_url,
+        ingested_at: fields.ingested_at,
         byte_size: metadata.len(),
+        content_hash: fields.content_hash,
+        original_url: fields.original_url,
     })
 }
 
-/// Pull `source_url` and `ingested_at` out of the YAML frontmatter
-/// block at the top of a file. Tolerant: missing fields are returned
-/// as `None` / empty string rather than erroring.
-fn parse_frontmatter_fields(content: &str) -> (Option<String>, String) {
-    let mut source_url: Option<String> = None;
-    let mut ingested_at = String::new();
+/// M4: parsed view of the raw frontmatter fields consumed during
+/// listing. Grouped into a struct so adding new optional fields (like
+/// `content_hash` / `original_url`) doesn't churn every call site.
+#[derive(Debug, Default)]
+struct RawFrontmatterFields {
+    source_url: Option<String>,
+    ingested_at: String,
+    content_hash: Option<String>,
+    original_url: Option<String>,
+}
+
+/// Pull frontmatter fields out of the YAML block at the top of a file.
+/// Tolerant: missing fields are returned as `None` / empty string
+/// rather than erroring. Silently ignores unknown keys for forward
+/// compat with future schema additions.
+fn parse_frontmatter_fields(content: &str) -> RawFrontmatterFields {
+    let mut fields = RawFrontmatterFields::default();
     let mut in_frontmatter = false;
     for line in content.lines() {
         if line == "---" {
@@ -1102,12 +1289,16 @@ fn parse_frontmatter_fields(content: &str) -> (Option<String>, String) {
             continue;
         }
         if let Some(rest) = line.strip_prefix("source_url: ") {
-            source_url = Some(rest.to_string());
+            fields.source_url = Some(rest.to_string());
         } else if let Some(rest) = line.strip_prefix("ingested_at: ") {
-            ingested_at = rest.to_string();
+            fields.ingested_at = rest.to_string();
+        } else if let Some(rest) = line.strip_prefix("content_hash: ") {
+            fields.content_hash = Some(rest.to_string());
+        } else if let Some(rest) = line.strip_prefix("original_url: ") {
+            fields.original_url = Some(rest.to_string());
         }
     }
-    (source_url, ingested_at)
+    fields
 }
 
 /// Return the body text after the closing `---` of a frontmatter
@@ -2375,6 +2566,44 @@ pub struct InboxEntry {
     /// ISO-8601 datetime the task was resolved, or `None` while pending.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resolved_at: Option<String>,
+
+    // ── W1 Maintainer Workbench additions (all optional) ─────────
+    //
+    // These fields were introduced in W1 when the maintainer flipped
+    // from a black-box `approve` action to a structured three-choice
+    // workflow (`create_new` / `update_existing` / `reject`). All
+    // four are `Option<String>` with `#[serde(default)]` so that
+    // older `inbox.json` files (pre-W1) deserialize cleanly with
+    // `None` in each slot and `skip_serializing_if` keeps the
+    // written-back JSON byte-identical for untouched entries.
+
+    /// Kebab slug the server "proposed" from the raw (pre-commit).
+    /// Populated when the propose pass runs, independently of whether
+    /// the user later picks `create_new` or `update_existing`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proposed_wiki_slug: Option<String>,
+
+    /// Slug of the wiki page that was actually written on success.
+    /// Set by `execute_maintain` for `CreateNew` (echoes the proposal
+    /// slug) and for `UpdateExisting { target_page_slug }` (echoes the
+    /// chosen target). `None` while the entry is still pending or
+    /// rejected.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_page_slug: Option<String>,
+
+    /// Which maintainer action the user picked:
+    /// `"create_new"` | `"update_existing"` | `"reject"`. Stored as
+    /// a loose string rather than a typed enum so the wire format
+    /// aligns with the TS `MaintainAction` union in
+    /// `apps/desktop-shell/src/features/ingest/types.ts`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub maintain_action: Option<String>,
+
+    /// User-provided reason for a `Reject` action. Surfaced in the
+    /// Inbox detail pane and written verbatim into `wiki/log.md`
+    /// on the reject path so rejections are auditable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rejection_reason: Option<String>,
 }
 
 /// Filename for the inbox persistence file under `{meta}/`.
@@ -2449,6 +2678,14 @@ fn append_inbox_pending_locked(
         source_raw_id,
         created_at: now_iso8601(),
         resolved_at: None,
+        // W1 Maintainer Workbench additions — start unset and let
+        // `execute_maintain` populate them when the user picks an
+        // action. skip_serializing_if keeps these invisible in the
+        // on-disk JSON while still None.
+        proposed_wiki_slug: None,
+        target_page_slug: None,
+        maintain_action: None,
+        rejection_reason: None,
     };
     entries.push(entry.clone());
     save_inbox_file(paths, &entries)?;
@@ -2495,6 +2732,61 @@ pub fn count_pending_inbox(paths: &WikiPaths) -> Result<usize> {
         .iter()
         .filter(|e| e.status == InboxStatus::Pending)
         .count())
+}
+
+/// W1 Maintainer Workbench: atomically update the maintain-action
+/// bookkeeping fields on an inbox entry in a single critical section.
+///
+/// Writes (all optional, `None` leaves the existing value untouched):
+///   * `status` — always applied; callers stamp `Approved` for
+///     create/update and `Rejected` for reject.
+///   * `maintain_action` — `"create_new"` | `"update_existing"` |
+///     `"reject"`.
+///   * `proposed_wiki_slug` — the slug the LLM suggested (create path).
+///   * `target_page_slug` — the slug that was actually written to.
+///   * `rejection_reason` — human-entered reason for the reject path.
+///
+/// Also stamps `resolved_at` (mirrors `resolve_inbox_entry`). Thread-
+/// safe via [`INBOX_WRITE_GUARD`]. Returns `NotFound` if `id` is stale.
+///
+/// Why a dedicated helper instead of extending `resolve_inbox_entry`:
+/// the W0 resolve path takes a bare `"approve"` / `"reject"` string,
+/// and its signature is public API used by `POST /api/wiki/inbox/{id}
+/// /resolve`. Keeping the W1 field writes on a separate function lets
+/// the existing resolve endpoint stay byte-for-byte compatible with
+/// clients that haven't shipped the Workbench yet.
+pub fn update_inbox_maintain(
+    paths: &WikiPaths,
+    id: u32,
+    status: InboxStatus,
+    maintain_action: Option<String>,
+    proposed_wiki_slug: Option<String>,
+    target_page_slug: Option<String>,
+    rejection_reason: Option<String>,
+) -> Result<InboxEntry> {
+    let _guard = lock_inbox_writes();
+    let mut entries = load_inbox_file(paths)?;
+    let found = entries
+        .iter_mut()
+        .find(|e| e.id == id)
+        .ok_or(WikiStoreError::NotFound(id))?;
+    found.status = status;
+    found.resolved_at = Some(now_iso8601());
+    if let Some(action) = maintain_action {
+        found.maintain_action = Some(action);
+    }
+    if let Some(slug) = proposed_wiki_slug {
+        found.proposed_wiki_slug = Some(slug);
+    }
+    if let Some(slug) = target_page_slug {
+        found.target_page_slug = Some(slug);
+    }
+    if let Some(reason) = rejection_reason {
+        found.rejection_reason = Some(reason);
+    }
+    let updated = found.clone();
+    save_inbox_file(paths, &entries)?;
+    Ok(updated)
 }
 
 /// Strip markdown noise so the leftover text is human-readable for
@@ -4225,6 +4517,8 @@ mod tests {
             source: "paste".to_string(),
             source_url: Some("https://example.com/article".to_string()),
             ingested_at: "2026-04-09T14:22:00Z".to_string(),
+            content_hash: None,
+            original_url: None,
         };
         let yaml = fm.to_yaml_block();
         assert!(yaml.starts_with("---\n"));
@@ -4243,6 +4537,156 @@ mod tests {
         let fm = RawFrontmatter::for_paste("paste", None);
         let yaml = fm.to_yaml_block();
         assert!(!yaml.contains("source_url:"));
+    }
+
+    #[test]
+    fn frontmatter_round_trips_content_hash_and_original_url() {
+        // M4: RawFrontmatter::for_paste_with_identity populates all
+        // four identity fields and emits them into the YAML block.
+        let fm = RawFrontmatter::for_paste_with_identity(
+            "url",
+            Some("https://example.com/canonical".to_string()),
+            Some("https://example.com/canonical?utm_source=x".to_string()),
+            Some(
+                "a".repeat(64), // fake hex hash
+            ),
+        );
+        let yaml = fm.to_yaml_block();
+        assert!(yaml.contains("source_url: https://example.com/canonical\n"));
+        assert!(yaml.contains(&format!("content_hash: {}\n", "a".repeat(64))));
+        assert!(yaml.contains(
+            "original_url: https://example.com/canonical?utm_source=x\n"
+        ));
+    }
+
+    #[test]
+    fn frontmatter_identity_elides_original_url_when_matches_canonical() {
+        // M4 optimization: don't waste bytes on `original_url` when it
+        // already equals the canonical form — the field is a signal
+        // only when canonicalize actually mutated the input.
+        let url = "https://example.com/identical".to_string();
+        let fm = RawFrontmatter::for_paste_with_identity(
+            "url",
+            Some(url.clone()),
+            Some(url),
+            Some("b".repeat(64)),
+        );
+        assert!(fm.original_url.is_none());
+        let yaml = fm.to_yaml_block();
+        assert!(!yaml.contains("original_url:"));
+    }
+
+    #[test]
+    fn frontmatter_omits_identity_fields_when_none() {
+        let fm = RawFrontmatter::for_paste("paste", None);
+        let yaml = fm.to_yaml_block();
+        assert!(!yaml.contains("content_hash:"));
+        assert!(!yaml.contains("original_url:"));
+    }
+
+    #[test]
+    fn parse_frontmatter_fields_extracts_content_hash() {
+        let yaml = "---\nkind: raw\nstatus: ingested\nowner: user\nschema: v1\n\
+                   source: url\nsource_url: https://example.com/\n\
+                   ingested_at: 2026-04-17T00:00:00Z\n\
+                   content_hash: deadbeefcafe\n\
+                   original_url: https://example.com/?utm_source=x\n---\n\nbody text";
+        let fields = parse_frontmatter_fields(yaml);
+        assert_eq!(fields.source_url.as_deref(), Some("https://example.com/"));
+        assert_eq!(fields.content_hash.as_deref(), Some("deadbeefcafe"));
+        assert_eq!(
+            fields.original_url.as_deref(),
+            Some("https://example.com/?utm_source=x")
+        );
+    }
+
+    #[test]
+    fn find_raw_by_content_hash_hits_when_present() {
+        let tmp = tempdir().unwrap();
+        init_wiki(tmp.path()).unwrap();
+        let paths = WikiPaths::resolve(tmp.path());
+        let hash = "c".repeat(64);
+
+        let fm = RawFrontmatter::for_paste_with_identity(
+            "url",
+            Some("https://a.example/".to_string()),
+            None,
+            Some(hash.clone()),
+        );
+        let written = write_raw_entry(
+            &paths,
+            "url",
+            "content-hash-test",
+            "this is body content with enough text to pass validation exemption",
+            &fm,
+        )
+        .unwrap();
+
+        let found = find_raw_by_content_hash(&paths, &hash).unwrap();
+        assert!(found.is_some(), "hash lookup should hit");
+        assert_eq!(found.unwrap().id, written.id);
+    }
+
+    #[test]
+    fn find_raw_by_content_hash_misses_when_absent() {
+        let tmp = tempdir().unwrap();
+        init_wiki(tmp.path()).unwrap();
+        let paths = WikiPaths::resolve(tmp.path());
+
+        // Pre-M4 entry without content_hash still shouldn't match
+        // anything (the field stays None after a round-trip through
+        // list_raw_entries).
+        let fm = RawFrontmatter::for_paste("paste", None);
+        write_raw_entry(&paths, "paste", "no-hash", "some body content here with enough text", &fm)
+            .unwrap();
+
+        let found = find_raw_by_content_hash(&paths, &"d".repeat(64)).unwrap();
+        assert!(found.is_none(), "hash lookup against absent hash should miss");
+    }
+
+    #[test]
+    fn find_raw_by_content_hash_picks_latest_on_collision() {
+        let tmp = tempdir().unwrap();
+        init_wiki(tmp.path()).unwrap();
+        let paths = WikiPaths::resolve(tmp.path());
+        let hash = "e".repeat(64);
+
+        let fm_a = RawFrontmatter::for_paste_with_identity(
+            "url",
+            Some("https://first.example/".to_string()),
+            None,
+            Some(hash.clone()),
+        );
+        let first = write_raw_entry(
+            &paths,
+            "url",
+            "first",
+            "body text one, longer than fifty characters to satisfy the raw validation gate",
+            &fm_a,
+        )
+        .unwrap();
+
+        let fm_b = RawFrontmatter::for_paste_with_identity(
+            "url",
+            Some("https://second.example/".to_string()),
+            None,
+            Some(hash.clone()),
+        );
+        let second = write_raw_entry(
+            &paths,
+            "url",
+            "second",
+            "body text two, longer than fifty characters to satisfy the raw validation gate",
+            &fm_b,
+        )
+        .unwrap();
+
+        let found = find_raw_by_content_hash(&paths, &hash).unwrap().unwrap();
+        assert!(
+            found.id > first.id,
+            "should return the newer of the two matching entries"
+        );
+        assert_eq!(found.id, second.id);
     }
 
     #[test]

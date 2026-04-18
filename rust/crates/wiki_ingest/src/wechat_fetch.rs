@@ -76,7 +76,7 @@ pub async fn fetch_wechat_article(url: &str) -> Result<IngestResult, crate::Inge
         .spawn()
         .map_err(|e| {
             crate::IngestError::Parse(format!(
-                "Failed to spawn Python: {e}. Is Playwright installed?"
+                "Failed to spawn Python: {e}. Is Python installed and on PATH?"
             ))
         })?;
 

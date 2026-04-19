@@ -1689,3 +1689,118 @@ export async function updateWeChatIngestConfig(
     },
   );
 }
+
+// ---------------------------------------------------------------------------
+// P1 End-to-End Provenance + Lineage Explorer
+// ---------------------------------------------------------------------------
+//
+// Three read APIs over `{meta}/lineage.jsonl`. The wire types mirror
+// the `wiki_store::provenance` Rust structs and are mechanically
+// regenerated via `protocol.generated.ts`
+// (`Generated{LineageEvent,LineageRef,...}`) — we redeclare them here
+// as hand-written shapes to keep the frontend-facing API explicit
+// about the discriminated-union shape of `LineageRef` / `LineageEventType`.
+//
+// Usage:
+//   * Wiki page lineage tab:  `fetchWikiLineage(slug, { limit, offset })`
+//   * Inbox detail pane:      `fetchInboxLineage(id)` → upstream + downstream
+//   * Raw inspector:          `fetchRawLineage(id)` → flat list
+
+/** Discriminator string for `LineageEvent.event_type`. */
+export type LineageEventType =
+  | "raw_written"
+  | "inbox_appended"
+  | "proposal_generated"
+  | "wiki_page_applied"
+  | "combined_wiki_page_applied"
+  | "inbox_rejected"
+  | "wechat_message_received"
+  | "url_ingested";
+
+/**
+ * `LineageRef` — a discriminated-union pointer into one of the five
+ * canonical pipeline surfaces (raw / inbox / wiki page / wechat msg
+ * / url). Matches the Rust `#[serde(tag = "kind", rename_all =
+ * "snake_case")]` encoding.
+ */
+export type LineageRef =
+  | { kind: "raw"; id: number }
+  | { kind: "inbox"; id: number }
+  | { kind: "wiki_page"; slug: string; title?: string }
+  | { kind: "wechat_message"; event_key: string }
+  | { kind: "url_source"; canonical: string };
+
+/** One row in `lineage.jsonl`. */
+export interface LineageEvent {
+  event_id: string;
+  event_type: LineageEventType;
+  timestamp_ms: number;
+  upstream: LineageRef[];
+  downstream: LineageRef[];
+  display_title: string;
+  metadata: Record<string, unknown>;
+}
+
+/** Response envelope for `GET /api/lineage/wiki/:slug`. */
+export interface WikiLineageResponse {
+  events: LineageEvent[];
+  total_count: number;
+}
+
+/** Response envelope for `GET /api/lineage/inbox/:id`. */
+export interface InboxLineageResponse {
+  upstream_events: LineageEvent[];
+  downstream_events: LineageEvent[];
+}
+
+/** Response envelope for `GET /api/lineage/raw/:id`. */
+export interface RawLineageResponse {
+  events: LineageEvent[];
+}
+
+/**
+ * Fetch the lineage timeline for a wiki page. `limit` / `offset`
+ * are server-side — the backend linearly scans `lineage.jsonl`,
+ * filters by slug, sorts descending, then slices.
+ */
+export async function fetchWikiLineage(
+  slug: string,
+  options?: { limit?: number; offset?: number },
+): Promise<WikiLineageResponse> {
+  const parts: string[] = [];
+  if (options?.limit !== undefined) {
+    parts.push(`limit=${options.limit}`);
+  }
+  if (options?.offset !== undefined) {
+    parts.push(`offset=${options.offset}`);
+  }
+  const qs = parts.length > 0 ? `?${parts.join("&")}` : "";
+  return _fetchJsonForMaintain<WikiLineageResponse>(
+    `/api/lineage/wiki/${encodeURIComponent(slug)}${qs}`,
+  );
+}
+
+/**
+ * Fetch the lineage for a single inbox id, split into upstream
+ * (events that produced this inbox entry) and downstream (events
+ * this inbox entry drove).
+ */
+export async function fetchInboxLineage(
+  id: number,
+): Promise<InboxLineageResponse> {
+  return _fetchJsonForMaintain<InboxLineageResponse>(
+    `/api/lineage/inbox/${id}`,
+  );
+}
+
+/**
+ * Fetch the flat lineage for a single raw id — every event whose
+ * upstream or downstream mentions this raw, sorted newest-first.
+ */
+export async function fetchRawLineage(
+  id: number,
+): Promise<RawLineageResponse> {
+  return _fetchJsonForMaintain<RawLineageResponse>(
+    `/api/lineage/raw/${id}`,
+  );
+}

@@ -42,6 +42,15 @@ use std::sync::{Mutex, MutexGuard, OnceLock};
 
 use serde::{Deserialize, Serialize};
 
+// P1 End-to-End Provenance + Lineage Explorer.
+//
+// New child module that owns `.clawwiki/lineage.jsonl` — the append-only
+// event log every P1 write point fires into. Exposed as `pub mod` rather
+// than `pub use` of individual symbols so the caller site stays explicit
+// (`wiki_store::provenance::fire_event`) and the struct / enum contract
+// for LineageEvent / LineageRef lives in one discoverable namespace.
+pub mod provenance;
+
 /// Process-global guard that serializes read-modify-write access to
 /// `{meta}/inbox.json`. Addresses the TOCTOU race found by the
 /// S4/S5/S6 code review: without this guard, two concurrent callers
@@ -1010,6 +1019,35 @@ pub fn write_raw_entry(
     fs::write(&path, &content).map_err(|e| WikiStoreError::io(path.clone(), e))?;
 
     let metadata = fs::metadata(&path).map_err(|e| WikiStoreError::io(path.clone(), e))?;
+
+    // P1 provenance: fire a `raw_written` event *inside* the
+    // RAW_WRITE_GUARD critical section so the jsonl timeline
+    // matches the physical write order. `fire_event` is soft-fail —
+    // any provenance error is logged and swallowed so the caller
+    // still gets the `RawEntry` back on the happy path.
+    let mut upstream: Vec<provenance::LineageRef> = Vec::new();
+    if let Some(url) = &frontmatter.source_url {
+        upstream.push(provenance::LineageRef::UrlSource {
+            canonical: url.clone(),
+        });
+    }
+    let display_title = provenance::display_title_raw_written(&safe_slug);
+    provenance::fire_event(
+        paths,
+        provenance::LineageEvent {
+            event_id: provenance::new_event_id(),
+            event_type: provenance::LineageEventType::RawWritten,
+            timestamp_ms: provenance::now_unix_ms(),
+            upstream,
+            downstream: vec![provenance::LineageRef::Raw { id }],
+            display_title,
+            metadata: serde_json::json!({
+                "source": source,
+                "filename": filename.clone(),
+            }),
+        },
+    );
+
     Ok(RawEntry {
         id,
         filename,
@@ -3573,13 +3611,39 @@ pub fn append_new_raw_task(
             format!("来源：{origin}。建议操作：总结为概念知识页面。"),
         ),
     };
-    append_inbox_pending_locked(
+    let inbox_entry = append_inbox_pending_locked(
         paths,
         InboxKind::NewRaw,
         &display_title,
         &description,
         Some(entry.id),
-    )
+    )?;
+
+    // P1 provenance: fire `inbox_appended` after a successful append
+    // under INBOX_WRITE_GUARD. `fire_event` is soft-fail so a
+    // lineage.jsonl failure never rolls back the inbox write.
+    // Upstream = the raw entry that caused this task; downstream =
+    // the new inbox id. `display_title` mirrors the inbox title so
+    // the UI timeline reads naturally.
+    provenance::fire_event(
+        paths,
+        provenance::LineageEvent {
+            event_id: provenance::new_event_id(),
+            event_type: provenance::LineageEventType::InboxAppended,
+            timestamp_ms: provenance::now_unix_ms(),
+            upstream: vec![provenance::LineageRef::Raw { id: entry.id }],
+            downstream: vec![provenance::LineageRef::Inbox {
+                id: inbox_entry.id,
+            }],
+            display_title: provenance::display_title_inbox_appended(&inbox_entry.title),
+            metadata: serde_json::json!({
+                "origin": origin,
+                "kind": "new_raw",
+            }),
+        },
+    );
+
+    Ok(inbox_entry)
 }
 
 /// Append a `Conflict` inbox task. Canonical §8 Triggers row 4:

@@ -344,6 +344,40 @@ impl MessageHandler for DesktopAgentHandler {
             DedupeResult::Miss => {}
         }
 
+        // P1 provenance: `wechat_message_received`. Fired after M5
+        // dedupe lets the message through but *before* the
+        // `tokio::spawn` below — so the lineage timestamp reflects
+        // the moment the pipeline accepted the message, not the
+        // moment the spawned task got scheduled. The event_key
+        // stable_id doubles as the `WeChatMessage` lineage ref so
+        // downstream raw / url events can link back. Only fires when
+        // the handler is wired to a wiki root (unit tests / echo
+        // mode leave `wiki_paths = None`).
+        if let Some(paths) = self.wiki_paths.as_ref() {
+            let wechat_ref = wiki_store::provenance::LineageRef::WeChatMessage {
+                event_key: event_key.stable_id(),
+            };
+            wiki_store::provenance::fire_event(
+                paths,
+                wiki_store::provenance::LineageEvent {
+                    event_id: wiki_store::provenance::new_event_id(),
+                    event_type:
+                        wiki_store::provenance::LineageEventType::WeChatMessageReceived,
+                    timestamp_ms: wiki_store::provenance::now_unix_ms(),
+                    upstream: vec![],
+                    downstream: vec![wechat_ref],
+                    display_title:
+                        wiki_store::provenance::display_title_wechat_message_received(
+                            &short_openid(&from_user_id),
+                        ),
+                    metadata: serde_json::json!({
+                        "account_id": self.account_id,
+                        "has_group": message.group_id.is_some(),
+                    }),
+                },
+            );
+        }
+
         // Spawn the actual work in a background task so the long-poll loop
         // in monitor.rs returns to fetch the next message immediately.
         // This is critical: an agentic turn can take several minutes; the
@@ -654,7 +688,36 @@ fn ingest_wechat_text_to_wiki(
                 // configured never reach here (we always pass a
                 // fallback), so the non-persisted branches are
                 // defensive logging only.
-                if !o.is_persisted() {
+                if o.is_persisted() {
+                    // P1 provenance: `url_ingested` on a successful
+                    // URL fetch. The underlying `write_raw_entry` call
+                    // already fired its own `raw_written`, so this
+                    // event is purely the "URL → pipeline" hop. Kept
+                    // separate rather than folded into `raw_written`
+                    // so the lineage tab can show the two steps
+                    // (URL identified → raw persisted) as sibling rows.
+                    wiki_store::provenance::fire_event(
+                        paths,
+                        wiki_store::provenance::LineageEvent {
+                            event_id: wiki_store::provenance::new_event_id(),
+                            event_type:
+                                wiki_store::provenance::LineageEventType::UrlIngested,
+                            timestamp_ms: wiki_store::provenance::now_unix_ms(),
+                            upstream: vec![
+                                wiki_store::provenance::LineageRef::UrlSource {
+                                    canonical: url.clone(),
+                                },
+                            ],
+                            downstream: vec![],
+                            display_title:
+                                wiki_store::provenance::display_title_url_ingested(&url),
+                            metadata: serde_json::json!({
+                                "outcome": o.as_display(),
+                                "from_user_id_short": short_openid(from_user_id),
+                            }),
+                        },
+                    );
+                } else {
                     eprintln!(
                         "[wechat agent] url_ingest did not persist — chat reply path continues"
                     );

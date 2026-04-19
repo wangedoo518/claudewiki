@@ -665,6 +665,22 @@ pub fn app(state: AppState) -> Router {
         // ── ClawWiki G1: page-level graph (outgoing + backlinks + related) ─
         // One request per page-graph render; frontend avoids three round-trips.
         .route("/api/wiki/pages/{slug}/graph", get(get_page_graph_handler))
+        // ── P1 Lineage Explorer: end-to-end provenance read APIs ──
+        // Three pure-read endpoints over `{meta}/lineage.jsonl`. Each
+        // scans the full file linearly and filters by LineageRef
+        // (MVP scale is fine; an index file is a P1.1 concern).
+        .route(
+            "/api/lineage/wiki/{slug}",
+            get(get_wiki_lineage_handler),
+        )
+        .route(
+            "/api/lineage/inbox/{id}",
+            get(get_inbox_lineage_handler),
+        )
+        .route(
+            "/api/lineage/raw/{id}",
+            get(get_raw_lineage_handler),
+        )
         // ── v2 SKILL engine endpoints (technical-design.md §2.1-§2.9) ──
         .route("/api/wiki/absorb", post(absorb_handler))
         .route("/api/wiki/query", post(query_wiki_handler))
@@ -3091,6 +3107,70 @@ async fn get_page_graph_handler(
         ),
     })?;
     Ok(Json(graph))
+}
+
+/// Query parameters for `GET /api/lineage/wiki/:slug`.
+///
+/// Pagination is server-side: the scanner collects every matching
+/// event, sorts descending, then slices. Defaults mirror the
+/// Lineage tab's initial render (10 rows, offset 0).
+#[derive(Debug, Deserialize)]
+struct WikiLineageQuery {
+    #[serde(default = "default_lineage_limit")]
+    limit: usize,
+    #[serde(default)]
+    offset: usize,
+}
+
+fn default_lineage_limit() -> usize {
+    10
+}
+
+/// `GET /api/lineage/wiki/:slug?limit=10&offset=0`
+///
+/// Returns every lineage event touching the given wiki slug
+/// (upstream or downstream), sorted newest-first, sliced by
+/// `offset` + `limit`. Used by the Wiki page's Lineage tab to
+/// render "what happened to this page" as a timeline.
+async fn get_wiki_lineage_handler(
+    Path(slug): Path<String>,
+    Query(query): Query<WikiLineageQuery>,
+) -> Result<Json<wiki_store::provenance::WikiLineageResponse>, ApiError> {
+    let paths = resolve_wiki_root_for_handler()?;
+    let resp =
+        wiki_store::provenance::read_lineage_for_wiki(&paths, &slug, query.limit, query.offset);
+    Ok(Json(resp))
+}
+
+/// `GET /api/lineage/inbox/:id`
+///
+/// Returns two lineage buckets for the given inbox id:
+///   * `upstream_events` — events where `Inbox{id}` appears as a
+///     downstream ref, i.e. "what produced this inbox task"
+///     (typically the `inbox_appended` and one `raw_written`).
+///   * `downstream_events` — events where `Inbox{id}` appears as an
+///     upstream ref, i.e. "what did this inbox drive"
+///     (proposal_generated / wiki_page_applied / inbox_rejected).
+async fn get_inbox_lineage_handler(
+    Path(id): Path<u32>,
+) -> Result<Json<wiki_store::provenance::InboxLineageResponse>, ApiError> {
+    let paths = resolve_wiki_root_for_handler()?;
+    let resp = wiki_store::provenance::read_lineage_for_inbox(&paths, id);
+    Ok(Json(resp))
+}
+
+/// `GET /api/lineage/raw/:id`
+///
+/// Returns every lineage event whose upstream or downstream
+/// mentions the given raw id. Flat list sorted newest-first —
+/// a raw's lineage is naturally short (write → inbox → proposal →
+/// apply) so pagination isn't needed for the MVP.
+async fn get_raw_lineage_handler(
+    Path(id): Path<u32>,
+) -> Result<Json<wiki_store::provenance::RawLineageResponse>, ApiError> {
+    let paths = resolve_wiki_root_for_handler()?;
+    let resp = wiki_store::provenance::read_lineage_for_raw(&paths, id);
+    Ok(Json(resp))
 }
 
 async fn resolve_wiki_inbox_handler(

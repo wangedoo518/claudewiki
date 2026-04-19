@@ -461,6 +461,33 @@ pub async fn create_new(
         },
     )?;
 
+    // P1 provenance: `wiki_page_applied` — the create_new path
+    // writes a brand-new wiki page. Upstream = inbox + raw that
+    // seeded the proposal; downstream = the new wiki page.
+    wiki_store::provenance::fire_event(
+        paths,
+        wiki_store::provenance::LineageEvent {
+            event_id: wiki_store::provenance::new_event_id(),
+            event_type: wiki_store::provenance::LineageEventType::WikiPageApplied,
+            timestamp_ms: wiki_store::provenance::now_unix_ms(),
+            upstream: vec![
+                wiki_store::provenance::LineageRef::Inbox { id: inbox_id },
+                wiki_store::provenance::LineageRef::Raw { id: raw_id },
+            ],
+            downstream: vec![wiki_store::provenance::LineageRef::WikiPage {
+                slug: proposal.slug.clone(),
+                title: Some(proposal.title.clone()),
+            }],
+            display_title: wiki_store::provenance::display_title_wiki_page_applied(
+                &proposal.slug,
+            ),
+            metadata: serde_json::json!({
+                "path": "create_new",
+                "title": proposal.title,
+            }),
+        },
+    );
+
     Ok(MaintainOutcome::Created {
         target_page_slug: proposal.slug,
     })
@@ -558,6 +585,32 @@ pub fn update_existing(
         },
     )?;
 
+    // P1 provenance: `wiki_page_applied` — the v1 deterministic
+    // append path ran a raw body into an existing page. Upstream =
+    // inbox + raw; downstream = the updated wiki page.
+    wiki_store::provenance::fire_event(
+        paths,
+        wiki_store::provenance::LineageEvent {
+            event_id: wiki_store::provenance::new_event_id(),
+            event_type: wiki_store::provenance::LineageEventType::WikiPageApplied,
+            timestamp_ms: wiki_store::provenance::now_unix_ms(),
+            upstream: vec![
+                wiki_store::provenance::LineageRef::Inbox { id: inbox_id },
+                wiki_store::provenance::LineageRef::Raw { id: raw_id },
+            ],
+            downstream: vec![wiki_store::provenance::LineageRef::WikiPage {
+                slug: target_page_slug.to_string(),
+                title: Some(summary.title.clone()),
+            }],
+            display_title: wiki_store::provenance::display_title_wiki_page_applied(
+                target_page_slug,
+            ),
+            metadata: serde_json::json!({
+                "path": "update_existing",
+            }),
+        },
+    );
+
     Ok(MaintainOutcome::Updated {
         target_page_slug: target_page_slug.to_string(),
     })
@@ -585,11 +638,13 @@ pub fn reject(
     // id is stale, rather than appending a log entry for a ghost.
     let entries = wiki_store::list_inbox_entries(paths)
         .map_err(|e| MaintainerError::Store(e.to_string()))?;
-    if !entries.iter().any(|e| e.id == inbox_id) {
-        return Err(MaintainerError::RawNotAvailable(format!(
-            "inbox entry not found: {inbox_id}"
-        )));
-    }
+    let entry_title = entries
+        .iter()
+        .find(|e| e.id == inbox_id)
+        .map(|e| e.title.clone())
+        .ok_or_else(|| {
+            MaintainerError::RawNotAvailable(format!("inbox entry not found: {inbox_id}"))
+        })?;
 
     // Step 2: stamp maintain fields on the inbox entry + flip status.
     patch_inbox_after_maintain(
@@ -609,6 +664,27 @@ pub fn reject(
     // greppable audit trail (see canonical §8).
     let title = format!("inbox/{inbox_id} — reason: {reason}");
     let _ = wiki_store::append_wiki_log(paths, "reject-inbox", &title);
+
+    // P1 provenance: `inbox_rejected`. Upstream = the inbox id that
+    // was just rejected; downstream = empty (reject does not produce
+    // a further event). Reason is echoed into metadata so the UI can
+    // surface why without re-reading log.md.
+    wiki_store::provenance::fire_event(
+        paths,
+        wiki_store::provenance::LineageEvent {
+            event_id: wiki_store::provenance::new_event_id(),
+            event_type: wiki_store::provenance::LineageEventType::InboxRejected,
+            timestamp_ms: wiki_store::provenance::now_unix_ms(),
+            upstream: vec![wiki_store::provenance::LineageRef::Inbox { id: inbox_id }],
+            downstream: vec![],
+            display_title: wiki_store::provenance::display_title_inbox_rejected(
+                &entry_title,
+            ),
+            metadata: serde_json::json!({
+                "reason": reason,
+            }),
+        },
+    );
 
     Ok(MaintainOutcome::Rejected {
         reason: reason.to_string(),
@@ -784,6 +860,35 @@ pub async fn propose_update(
     .map_err(|e| MaintainerError::Store(e.to_string()))?;
 
     let generated_at = unix_ms_now();
+
+    // P1 provenance: `proposal_generated` — the LLM merge proposal has
+    // been persisted to the inbox entry. The W3 preview path does NOT
+    // fire (it produces a throwaway preview, not a persisted proposal).
+    // Upstream = inbox + raw; downstream = the target wiki page the
+    // proposal would touch if the user accepts.
+    wiki_store::provenance::fire_event(
+        paths,
+        wiki_store::provenance::LineageEvent {
+            event_id: wiki_store::provenance::new_event_id(),
+            event_type: wiki_store::provenance::LineageEventType::ProposalGenerated,
+            timestamp_ms: wiki_store::provenance::now_unix_ms(),
+            upstream: vec![
+                wiki_store::provenance::LineageRef::Inbox { id: inbox_id },
+                wiki_store::provenance::LineageRef::Raw { id: raw_id },
+            ],
+            downstream: vec![wiki_store::provenance::LineageRef::WikiPage {
+                slug: target_slug.to_string(),
+                title: Some(target_summary.title.clone()),
+            }],
+            display_title: wiki_store::provenance::display_title_proposal_generated(
+                target_slug,
+            ),
+            metadata: serde_json::json!({
+                "summary": summary,
+            }),
+        },
+    );
+
     Ok(UpdateProposal {
         target_slug: target_slug.to_string(),
         before_markdown,
@@ -893,6 +998,36 @@ pub fn apply_update_proposal(
         },
     )
     .map_err(|e| MaintainerError::Store(e.to_string()))?;
+
+    // P1 provenance: `wiki_page_applied` — W2 apply wrote the merged
+    // after_markdown back to the target page. Raw id is recovered
+    // from the original inbox entry so the event carries the full
+    // `inbox + raw → wiki_page` triangle.
+    let upstream_raw_id = entry.source_raw_id;
+    let mut upstream: Vec<wiki_store::provenance::LineageRef> =
+        vec![wiki_store::provenance::LineageRef::Inbox { id: inbox_id }];
+    if let Some(rid) = upstream_raw_id {
+        upstream.push(wiki_store::provenance::LineageRef::Raw { id: rid });
+    }
+    wiki_store::provenance::fire_event(
+        paths,
+        wiki_store::provenance::LineageEvent {
+            event_id: wiki_store::provenance::new_event_id(),
+            event_type: wiki_store::provenance::LineageEventType::WikiPageApplied,
+            timestamp_ms: wiki_store::provenance::now_unix_ms(),
+            upstream,
+            downstream: vec![wiki_store::provenance::LineageRef::WikiPage {
+                slug: target_slug.to_string(),
+                title: Some(existing_summary.title.clone()),
+            }],
+            display_title: wiki_store::provenance::display_title_wiki_page_applied(
+                target_slug,
+            ),
+            metadata: serde_json::json!({
+                "path": "apply_update_proposal",
+            }),
+        },
+    );
 
     Ok(MaintainOutcome::Updated {
         target_page_slug: target_slug.to_string(),
@@ -1359,6 +1494,44 @@ pub fn apply_combined_proposal(
     } else {
         "partial_applied".to_string()
     };
+
+    // P1 provenance: `combined_wiki_page_applied` — N inbox entries
+    // were merged into a single wiki page in one apply call. Upstream
+    // is every applied (inbox, raw) pair; downstream is the target
+    // wiki page. `outcome` + `failed_ids` travel as metadata so the
+    // UI can distinguish a full `applied` from `partial_applied`.
+    let mut upstream_refs: Vec<wiki_store::provenance::LineageRef> = Vec::new();
+    for id in &applied {
+        upstream_refs.push(wiki_store::provenance::LineageRef::Inbox { id: *id });
+        if let Some(entry) = by_id.get(id) {
+            if let Some(rid) = entry.source_raw_id {
+                upstream_refs.push(wiki_store::provenance::LineageRef::Raw { id: rid });
+            }
+        }
+    }
+    wiki_store::provenance::fire_event(
+        paths,
+        wiki_store::provenance::LineageEvent {
+            event_id: wiki_store::provenance::new_event_id(),
+            event_type: wiki_store::provenance::LineageEventType::CombinedWikiPageApplied,
+            timestamp_ms: wiki_store::provenance::now_unix_ms(),
+            upstream: upstream_refs,
+            downstream: vec![wiki_store::provenance::LineageRef::WikiPage {
+                slug: target_slug.to_string(),
+                title: Some(existing_summary.title.clone()),
+            }],
+            display_title:
+                wiki_store::provenance::display_title_combined_wiki_page_applied(
+                    applied.len(),
+                    target_slug,
+                ),
+            metadata: serde_json::json!({
+                "outcome": outcome,
+                "failed_ids": failed,
+                "summary": summary,
+            }),
+        },
+    );
 
     Ok(CombinedApplyResult {
         outcome,

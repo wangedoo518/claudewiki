@@ -17,6 +17,11 @@ publish.workspace = true
 serde = { version = "1", features = ["derive"] }
 serde_json.workspace = true
 thiserror = "2"
+# P1 Provenance engine: `LineageEvent.event_id` is a UUID v4. `wiki_store`
+# is the crate that owns the `.clawwiki/lineage.jsonl` persistence layer,
+# so the uuid dep lives here (not in wiki_maintainer / desktop-server /
+# desktop-core, which only pass events through `fire_event`).
+uuid = { version = "1", features = ["v4", "serde"] }
 
 [dev-dependencies]
 tempfile = "3"

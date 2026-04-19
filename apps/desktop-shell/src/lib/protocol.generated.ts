@@ -292,3 +292,126 @@ export type GeneratedBridgeHealthResponse = {
   };
 };
 
+export type GeneratedLineageEventType = string;
+
+export type GeneratedLineageRefRaw = {
+  id: number;
+  kind: string;
+};
+
+export type GeneratedLineageRefInbox = {
+  id: number;
+  kind: string;
+};
+
+export type GeneratedLineageRefWikiPage = {
+  kind: string;
+  slug: string;
+  title: string;
+};
+
+export type GeneratedLineageRefWeChatMessage = {
+  event_key: string;
+  kind: string;
+};
+
+export type GeneratedLineageRefUrlSource = {
+  canonical: string;
+  kind: string;
+};
+
+export type GeneratedLineageEvent = {
+  display_title: string;
+  downstream: Array<{
+    kind: string;
+    slug: string;
+    title: string;
+  }>;
+  event_id: string;
+  event_type: string;
+  metadata: {
+    path: string;
+  };
+  timestamp_ms: number;
+  upstream: Array<{
+    id: number;
+    kind: string;
+  }>;
+};
+
+export type GeneratedWikiLineageResponse = {
+  events: Array<{
+    display_title: string;
+    downstream: Array<{
+      kind: string;
+      slug: string;
+      title: string;
+    }>;
+    event_id: string;
+    event_type: string;
+    metadata: {
+    };
+    timestamp_ms: number;
+    upstream: Array<{
+      id: number;
+      kind: string;
+    }>;
+  }>;
+  total_count: number;
+};
+
+export type GeneratedInboxLineageResponse = {
+  downstream_events: Array<{
+    display_title: string;
+    downstream: Array<{
+      kind: string;
+      slug: string;
+      title: string;
+    }>;
+    event_id: string;
+    event_type: string;
+    metadata: {
+    };
+    timestamp_ms: number;
+    upstream: Array<{
+      id: number;
+      kind: string;
+    }>;
+  }>;
+  upstream_events: Array<{
+    display_title: string;
+    downstream: Array<{
+      id: number;
+      kind: string;
+    }>;
+    event_id: string;
+    event_type: string;
+    metadata: {
+    };
+    timestamp_ms: number;
+    upstream: Array<{
+      id: number;
+      kind: string;
+    }>;
+  }>;
+};
+
+export type GeneratedRawLineageResponse = {
+  events: Array<{
+    display_title: string;
+    downstream: Array<{
+      id: number;
+      kind: string;
+    }>;
+    event_id: string;
+    event_type: string;
+    metadata: {
+    };
+    timestamp_ms: number;
+    upstream: Array<{
+      canonical: string;
+      kind: string;
+    }>;
+  }>;
+};
+

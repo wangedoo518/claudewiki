@@ -586,6 +586,148 @@ mod tests {
                     }).unwrap(),
                 }),
             ),
+            // ── P1 End-to-End Provenance + Lineage Explorer ─────────
+            // Five new shapes for the three lineage read APIs. Each
+            // type round-trips through the real wiki_store::provenance
+            // types so the TS mirror tracks any field rename or
+            // variant addition. `LineageRef` is an externally-tagged
+            // enum (`{"kind":"raw","id":...}`), so we emit one sample
+            // per variant + one LineageEvent that ties them together.
+            (
+                "GeneratedLineageEventType",
+                serde_json::to_value(wiki_store::provenance::LineageEventType::RawWritten)
+                    .unwrap(),
+            ),
+            (
+                "GeneratedLineageRefRaw",
+                serde_json::to_value(wiki_store::provenance::LineageRef::Raw { id: 42 })
+                    .unwrap(),
+            ),
+            (
+                "GeneratedLineageRefInbox",
+                serde_json::to_value(wiki_store::provenance::LineageRef::Inbox { id: 7 })
+                    .unwrap(),
+            ),
+            (
+                "GeneratedLineageRefWikiPage",
+                serde_json::to_value(wiki_store::provenance::LineageRef::WikiPage {
+                    slug: "attention".into(),
+                    title: Some("Attention".into()),
+                })
+                .unwrap(),
+            ),
+            (
+                "GeneratedLineageRefWeChatMessage",
+                serde_json::to_value(wiki_store::provenance::LineageRef::WeChatMessage {
+                    event_key: "ilink:acct1:mid-0001".into(),
+                })
+                .unwrap(),
+            ),
+            (
+                "GeneratedLineageRefUrlSource",
+                serde_json::to_value(wiki_store::provenance::LineageRef::UrlSource {
+                    canonical: "https://example.com/a".into(),
+                })
+                .unwrap(),
+            ),
+            (
+                "GeneratedLineageEvent",
+                serde_json::to_value(wiki_store::provenance::LineageEvent {
+                    event_id: "6f7a0f0e-0000-4000-8000-000000000000".into(),
+                    event_type: wiki_store::provenance::LineageEventType::WikiPageApplied,
+                    timestamp_ms: 1_700_000_000_000_i64,
+                    upstream: vec![
+                        wiki_store::provenance::LineageRef::Inbox { id: 7 },
+                        wiki_store::provenance::LineageRef::Raw { id: 42 },
+                    ],
+                    downstream: vec![wiki_store::provenance::LineageRef::WikiPage {
+                        slug: "attention".into(),
+                        title: Some("Attention".into()),
+                    }],
+                    display_title: "已应用到 attention".into(),
+                    metadata: serde_json::json!({
+                        "path": "apply_update_proposal",
+                    }),
+                })
+                .unwrap(),
+            ),
+            (
+                "GeneratedWikiLineageResponse",
+                serde_json::to_value(wiki_store::provenance::WikiLineageResponse {
+                    events: vec![wiki_store::provenance::LineageEvent {
+                        event_id: "6f7a0f0e-0000-4000-8000-000000000000".into(),
+                        event_type:
+                            wiki_store::provenance::LineageEventType::WikiPageApplied,
+                        timestamp_ms: 1_700_000_000_000_i64,
+                        upstream: vec![wiki_store::provenance::LineageRef::Inbox {
+                            id: 7,
+                        }],
+                        downstream: vec![wiki_store::provenance::LineageRef::WikiPage {
+                            slug: "attention".into(),
+                            title: Some("Attention".into()),
+                        }],
+                        display_title: "已应用到 attention".into(),
+                        metadata: serde_json::json!({}),
+                    }],
+                    total_count: 1,
+                })
+                .unwrap(),
+            ),
+            (
+                "GeneratedInboxLineageResponse",
+                serde_json::to_value(wiki_store::provenance::InboxLineageResponse {
+                    upstream_events: vec![wiki_store::provenance::LineageEvent {
+                        event_id: "6f7a0f0e-0000-4000-8000-000000000001".into(),
+                        event_type:
+                            wiki_store::provenance::LineageEventType::InboxAppended,
+                        timestamp_ms: 1_700_000_000_000_i64,
+                        upstream: vec![wiki_store::provenance::LineageRef::Raw {
+                            id: 42,
+                        }],
+                        downstream: vec![wiki_store::provenance::LineageRef::Inbox {
+                            id: 7,
+                        }],
+                        display_title: "新任务: Transformer 论文".into(),
+                        metadata: serde_json::json!({}),
+                    }],
+                    downstream_events: vec![wiki_store::provenance::LineageEvent {
+                        event_id: "6f7a0f0e-0000-4000-8000-000000000002".into(),
+                        event_type:
+                            wiki_store::provenance::LineageEventType::ProposalGenerated,
+                        timestamp_ms: 1_700_000_000_500_i64,
+                        upstream: vec![
+                            wiki_store::provenance::LineageRef::Inbox { id: 7 },
+                            wiki_store::provenance::LineageRef::Raw { id: 42 },
+                        ],
+                        downstream: vec![wiki_store::provenance::LineageRef::WikiPage {
+                            slug: "attention".into(),
+                            title: Some("Attention".into()),
+                        }],
+                        display_title: "为 attention 生成提案".into(),
+                        metadata: serde_json::json!({}),
+                    }],
+                })
+                .unwrap(),
+            ),
+            (
+                "GeneratedRawLineageResponse",
+                serde_json::to_value(wiki_store::provenance::RawLineageResponse {
+                    events: vec![wiki_store::provenance::LineageEvent {
+                        event_id: "6f7a0f0e-0000-4000-8000-000000000003".into(),
+                        event_type: wiki_store::provenance::LineageEventType::RawWritten,
+                        timestamp_ms: 1_700_000_000_000_i64,
+                        upstream: vec![wiki_store::provenance::LineageRef::UrlSource {
+                            canonical: "https://example.com/a".into(),
+                        }],
+                        downstream: vec![wiki_store::provenance::LineageRef::Raw {
+                            id: 42,
+                        }],
+                        display_title: "已入库 example-domain".into(),
+                        metadata: serde_json::json!({}),
+                    }],
+                })
+                .unwrap(),
+            ),
         ];
 
         let file_contents = ts_file(&types);

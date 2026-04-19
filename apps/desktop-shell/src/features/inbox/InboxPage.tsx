@@ -342,6 +342,9 @@ export function InboxPage() {
   // the rules here are intentionally strict:
   //   * batchMode must be on (no accidental triggers from single mode)
   //   * selection size ≥ 2 (single-row merges go through the Workbench)
+  //   * every selected entry is still `pending` (backend rejects
+  //     non-pending ids in propose_combined_update — surfacing the
+  //     button on a resolved row produced U1 "合并预览生成失败" bug)
   //   * every selected entry has a `target_candidate.slug`
   //   * all those slugs agree
   // Any violation returns null → button is hidden (not disabled) per
@@ -352,7 +355,8 @@ export function InboxPage() {
     let agreed: string | null = null;
     for (const id of selectedIds) {
       const entry = intelligentEntries.find((e) => e.id === id);
-      const slug = entry?.intelligence?.target_candidate?.slug;
+      if (!entry || entry.status !== "pending") return null;
+      const slug = entry.intelligence?.target_candidate?.slug;
       if (!slug) return null;
       if (agreed === null) {
         agreed = slug;
@@ -411,7 +415,7 @@ export function InboxPage() {
             Inbox
           </h1>
           <p className="mt-1 text-muted-foreground/60" style={{ fontSize: 11 }}>
-            新素材自动入队 -- AI 生成知识页面 -- 审批后写入 Wiki
+            新素材自动入队 · AI 生成知识页面 · 审批后写入 Wiki
           </p>
         </div>
         <div className="flex items-center gap-2" style={{ fontSize: 11 }}>
@@ -1206,10 +1210,20 @@ function EntryDetail({
   // Primary button label + click handler — both depend on the
   // Phase the update_existing branch is in. Other actions keep
   // the W1 "执行" semantics untouched.
+  // U1 fix: when the proposal diff is empty (LLM merge produced no
+  // change), the "应用更新" label is misleading — there is literally
+  // nothing to update. Relabel to "标记完成" so the user understands
+  // the click simply closes out the inbox task. Backend still runs
+  // the apply call; the wiki write is idempotent when before===after.
+  const proposalDiffEmpty =
+    displayProposal != null &&
+    displayProposal.before_markdown === displayProposal.after_markdown;
+
   const executeLabel = useMemo(() => {
     if (maintainAction !== "update_existing") return "执行";
-    return displayProposal ? "应用更新" : "生成提案";
-  }, [maintainAction, displayProposal]);
+    if (!displayProposal) return "生成提案";
+    return proposalDiffEmpty ? "标记完成（无改动）" : "应用更新";
+  }, [maintainAction, displayProposal, proposalDiffEmpty]);
 
   /** Raw mutation trigger — bypasses the Q2 Layer 2 guard. */
   const runExecute = () => {

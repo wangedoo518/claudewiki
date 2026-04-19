@@ -237,7 +237,7 @@ export function WeChatBridgePage() {
               className="mt-1 text-muted-foreground/60"
               style={{ fontSize: 11 }}
             >
-              个微 iLink 登录 -- 长轮询监听 -- 文本消息自动入{" "}
+              个微 iLink 登录 · 长轮询监听 · 文本消息自动入{" "}
               <code>~/.clawwiki/raw/</code>
             </p>
           </div>

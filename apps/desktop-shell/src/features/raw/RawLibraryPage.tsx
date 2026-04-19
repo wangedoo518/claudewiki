@@ -640,9 +640,19 @@ function AddPanel({ onIngested }: AddPanelProps) {
           <button
             type="button"
             onClick={() => ingestMutation.mutate()}
-            disabled={ingestMutation.isPending}
-            className="flex shrink-0 items-center gap-1 self-end rounded-md bg-primary px-3 py-1.5 font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"
+            disabled={
+              ingestMutation.isPending ||
+              (mode === "text" ? !body.trim() : !url.trim())
+            }
+            className="flex shrink-0 items-center gap-1 self-end rounded-md bg-primary px-3 py-1.5 font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
             style={{ fontSize: 13 }}
+            title={
+              mode === "text" && !body.trim()
+                ? "请先粘贴内容"
+                : mode === "url" && !url.trim()
+                  ? "请先填写 URL"
+                  : undefined
+            }
           >
             {ingestMutation.isPending && <Loader2 className="size-3 animate-spin" />}
             {ingestMutation.isPending ? "入库中..." : "入库"}

@@ -200,10 +200,18 @@ export function WikiFileTree({ embedded = false }: { embedded?: boolean }) {
   };
 
   /** Unified action dispatch — every node carries its own action,
-   *  so there's no "renders but click does nothing" dead-node bug. */
+   *  so there's no "renders but click does nothing" dead-node bug.
+   *
+   *  U1 fix: when a wiki tab is opened from a non-/wiki route, the
+   *  tab appeared in the store but the user was still looking at
+   *  the previous page. Always route to /wiki alongside the openTab
+   *  so the newly-opened article actually surfaces. */
   const handleNodeClick = (node: TreeNode) => {
     if (node.action.type === "openTab") {
       openTab(node.action.tab);
+      if (!window.location.hash.startsWith("#/wiki")) {
+        navigate("/wiki");
+      }
     } else {
       navigate(node.action.to);
     }

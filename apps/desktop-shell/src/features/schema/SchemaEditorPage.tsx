@@ -100,7 +100,7 @@ export function SchemaEditorPage() {
           Schema Editor
         </h1>
         <p className="mt-1 text-muted-foreground/60" style={{ fontSize: 11 }}>
-          <code>schema/CLAUDE.md</code> 是维护 agent 的唯一行为契约 -- 人写优先
+          <code>schema/CLAUDE.md</code> 是维护 agent 的唯一行为契约 · 人写优先
         </p>
       </div>
 

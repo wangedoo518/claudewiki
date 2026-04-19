@@ -22,6 +22,7 @@ import {
   Plus,
   QrCode,
   RefreshCw,
+  Settings,
   Trash2,
   Wifi,
   WifiOff,
@@ -58,9 +59,18 @@ import { formatIngestError } from "@/lib/ingest/format-error";
 import { EnvironmentDoctor } from "@/components/EnvironmentDoctor";
 import { RecentIngestCard } from "@/components/RecentIngestCard";
 import { EmptyState } from "@/components/ui/empty-state";
+import { FailureBanner } from "@/components/ui/failure-banner";
+import { BridgeHealthHeader } from "@/features/wechat/components/BridgeHealthHeader";
+import { GroupScopeModal } from "@/features/wechat/components/GroupScopeModal";
+import {
+  fetchWeChatBridgeHealth,
+  type BridgeHealthResponse,
+  type WeChatIngestConfig,
+} from "@/features/wechat/health-state";
 
 const wechatKeys = {
   accounts: () => ["wechat", "accounts"] as const,
+  bridgeHealth: () => ["wechat", "bridge-health"] as const,
 };
 
 const TERMINAL_LOGIN_STATUSES = [
@@ -113,6 +123,26 @@ export function WeChatBridgePage() {
     staleTime: 10_000,
     refetchInterval: 20_000,
   });
+
+  /**
+   * M5 — dual-channel health + ingest-scope snapshot. 30s polling is
+   * Explorer C UX gate #2 (polling more often than 30s is wasteful and
+   * makes the "N 分钟前" labels flicker). Read-only refetching is kept on
+   * for the whole page so ops can watch recovery live.
+   *
+   * TODO(worker-a): swap the stub import for the real tauri.ts wrapper.
+   */
+  const bridgeHealthQuery = useQuery<BridgeHealthResponse>({
+    queryKey: wechatKeys.bridgeHealth(),
+    queryFn: () => fetchWeChatBridgeHealth(),
+    staleTime: 15_000,
+    refetchInterval: 30_000,
+  });
+
+  const [groupScopeOpen, setGroupScopeOpen] = useState(false);
+  const [dismissedErrorChannels, setDismissedErrorChannels] = useState<
+    Set<"ilink" | "kefu">
+  >(() => new Set());
 
   const [loginHandle, setLoginHandle] = useState<WeChatLoginStartResponse | null>(
     null,
@@ -194,18 +224,50 @@ export function WeChatBridgePage() {
     loginStatus !== null &&
     !isTerminalLoginStatus(loginStatus.status);
 
+  const bridgeHealth = bridgeHealthQuery.data;
+
   return (
     <div className="flex h-full flex-col overflow-hidden">
       {/* Hero */}
       <div className="shrink-0 border-b border-border/50 px-6 py-4">
-        <h1 className="text-lg text-foreground">
-          WeChat Bridge
-        </h1>
-        <p className="mt-1 text-muted-foreground/60" style={{ fontSize: 11 }}>
-          个微 iLink 登录 -- 长轮询监听 -- 文本消息自动入{" "}
-          <code>~/.clawwiki/raw/</code>
-        </p>
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <h1 className="text-lg text-foreground">WeChat Bridge</h1>
+            <p
+              className="mt-1 text-muted-foreground/60"
+              style={{ fontSize: 11 }}
+            >
+              个微 iLink 登录 -- 长轮询监听 -- 文本消息自动入{" "}
+              <code>~/.clawwiki/raw/</code>
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={() => setGroupScopeOpen(true)}
+            disabled={!bridgeHealth}
+            className="flex shrink-0 items-center gap-1.5 rounded-md border border-border bg-background px-3 py-1.5 text-caption text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-50"
+          >
+            <Settings className="size-3" />
+            配置群组
+          </button>
+        </div>
       </div>
+
+      {/* M5 — dual-channel bridge health summary */}
+      {bridgeHealth ? (
+        <BridgeHealthHeader
+          ilink={bridgeHealth.ilink}
+          kefu={bridgeHealth.kefu}
+          dismissedErrorChannels={dismissedErrorChannels}
+          onErrorDismiss={(channel) =>
+            setDismissedErrorChannels((prev) => {
+              const next = new Set(prev);
+              next.add(channel);
+              return next;
+            })
+          }
+        />
+      ) : null}
 
       {/* Environment doctor — Playwright / MarkItDown capability matrix.
           Sits directly below the Hero so a misconfigured machine is
@@ -280,18 +342,15 @@ export function WeChatBridgePage() {
         />
 
         {startLoginMutation.error && (
-          <div
-            className="mt-3 rounded-md border px-3 py-2 text-caption"
-            style={{
-              borderColor:
-                "color-mix(in srgb, var(--color-error) 30%, transparent)",
-              backgroundColor:
-                "color-mix(in srgb, var(--color-error) 5%, transparent)",
-              color: "var(--color-error)",
-            }}
-          >
-            启动登录失败：
-            {formatWeChatBridgeErrorMessage(String(startLoginMutation.error))}
+          <div className="mt-3">
+            <FailureBanner
+              severity="error"
+              title="启动登录失败"
+              description={formatWeChatBridgeErrorMessage(
+                String(startLoginMutation.error),
+              )}
+              technicalDetail={String(startLoginMutation.error)}
+            />
           </div>
         )}
       </section>
@@ -354,6 +413,25 @@ export function WeChatBridgePage() {
           </div>
         </div>
       </section>
+
+      {/* M5 — group scope modal. Lives inside the page root so the dialog
+          portal lifts it above every surrounding section. */}
+      {bridgeHealth ? (
+        <GroupScopeModal
+          open={groupScopeOpen}
+          onOpenChange={setGroupScopeOpen}
+          config={bridgeHealth.config}
+          onSaved={(saved: WeChatIngestConfig) => {
+            queryClient.setQueryData<BridgeHealthResponse>(
+              wechatKeys.bridgeHealth(),
+              (prev) => (prev ? { ...prev, config: saved } : prev),
+            );
+            void queryClient.invalidateQueries({
+              queryKey: wechatKeys.bridgeHealth(),
+            });
+          }}
+        />
+      ) : null}
     </div>
   );
 }
@@ -383,18 +461,12 @@ function AccountList({
   }
   if (error) {
     return (
-      <div
-        className="rounded-md border px-3 py-2 text-caption"
-        style={{
-          borderColor:
-            "color-mix(in srgb, var(--color-error) 30%, transparent)",
-          backgroundColor:
-            "color-mix(in srgb, var(--color-error) 5%, transparent)",
-          color: "var(--color-error)",
-        }}
-      >
-        列出微信账号失败：{formatWeChatBridgeErrorMessage(error.message)}
-      </div>
+      <FailureBanner
+        severity="error"
+        title="列出微信账号失败"
+        description={formatWeChatBridgeErrorMessage(error.message)}
+        technicalDetail={error.message}
+      />
     );
   }
   if (accounts.length === 0) {
@@ -767,9 +839,15 @@ function KefuSection() {
               )}
             </div>
             {createMutation.error && (
-              <div className="mt-2 text-caption" style={{ color: "var(--color-error)" }}>
-                创建客服账号失败：
-                {formatWeChatBridgeErrorMessage(String(createMutation.error))}
+              <div className="mt-2">
+                <FailureBanner
+                  severity="error"
+                  title="创建客服账号失败"
+                  description={formatWeChatBridgeErrorMessage(
+                    String(createMutation.error),
+                  )}
+                  technicalDetail={String(createMutation.error)}
+                />
               </div>
             )}
           </div>
@@ -835,9 +913,13 @@ function KefuSection() {
           )}
         </div>
       ) : (
-        <div className="rounded-md border border-dashed border-border/50 bg-muted/10 px-4 py-6 text-center text-caption text-muted-foreground">
-          <Link2 className="mx-auto mb-1.5 size-5 opacity-40" />
-          点击 "配置" 填入企业微信 corpid 和客服 secret，开始接入微信客服。
+        <div className="rounded-md border border-dashed border-border/50">
+          <EmptyState
+            size="compact"
+            icon={Link2}
+            title="尚未配置企业微信客服"
+            description='点击 "配置" 填入企业微信 corpid 和客服 secret，开始接入微信客服。'
+          />
         </div>
       )}
     </section>
@@ -987,13 +1069,19 @@ function KefuConfigForm({ onSaved }: { onSaved: () => void }) {
               "保存配置"
             )}
           </button>
-          {saveMutation.error && (
-            <span className="text-caption" style={{ color: "var(--color-error)" }}>
-              保存配置失败：
-              {formatWeChatBridgeErrorMessage(String(saveMutation.error))}
-            </span>
-          )}
         </div>
+        {saveMutation.error && (
+          <div className="mt-3">
+            <FailureBanner
+              severity="error"
+              title="保存配置失败"
+              description={formatWeChatBridgeErrorMessage(
+                String(saveMutation.error),
+              )}
+              technicalDetail={String(saveMutation.error)}
+            />
+          </div>
+        )}
       </div>
     </div>
   );
@@ -1213,9 +1301,14 @@ function KefuPipelineSection() {
             {hasStarted ? "重新开始" : "一键接入"}
           </button>
           {startMutation.error && (
-            <div className="text-caption" style={{ color: "var(--color-error)" }}>
-              {formatWeChatBridgeErrorMessage(String(startMutation.error))}
-            </div>
+            <FailureBanner
+              severity="error"
+              title="启动接入流程失败"
+              description={formatWeChatBridgeErrorMessage(
+                String(startMutation.error),
+              )}
+              technicalDetail={String(startMutation.error)}
+            />
           )}
         </div>
       )}

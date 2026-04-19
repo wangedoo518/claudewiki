@@ -525,6 +525,67 @@ mod tests {
                 })
                 .unwrap(),
             ),
+            // ── M5 WeChat Bridge contract ─────────────────────────
+            // `WeChatIngestConfig` round-trips through the real type
+            // in `desktop_core::wechat_ilink::ingest_config`.
+            // `ChannelHealth` / `BridgeHealthResponse` are defined in
+            // `desktop-server` (which sits *above* desktop-core in the
+            // crate graph), so we hand-build their sample JSON to
+            // avoid a circular dep. Keep the shapes here in sync with
+            // the real structs in `rust/crates/desktop-server/src/lib.rs`.
+            (
+                "GeneratedWeChatIngestConfig",
+                serde_json::to_value(crate::wechat_ilink::WeChatIngestConfig {
+                    enabled_mode: "whitelist".into(),
+                    enabled_group_ids: vec!["grp1@chatroom".into()],
+                })
+                .unwrap(),
+            ),
+            (
+                "GeneratedChannelHealth",
+                serde_json::json!({
+                    "channel": "ilink",
+                    "running": true,
+                    "last_poll_unix_ms": 1_700_000_000_000_i64,
+                    "last_inbound_unix_ms": 1_700_000_000_000_i64,
+                    "last_ingest_unix_ms": 1_700_000_000_000_i64,
+                    "consecutive_failures": 0,
+                    "last_error": "session expired",
+                    "processed_msg_count": 42,
+                    "dedupe_hit_count": 7,
+                }),
+            ),
+            (
+                "GeneratedBridgeHealthResponse",
+                serde_json::json!({
+                    "ilink": {
+                        "channel": "ilink",
+                        "running": true,
+                        "last_poll_unix_ms": 1_700_000_000_000_i64,
+                        "last_inbound_unix_ms": 1_700_000_000_000_i64,
+                        "last_ingest_unix_ms": 1_700_000_000_000_i64,
+                        "consecutive_failures": 0,
+                        "last_error": "session expired",
+                        "processed_msg_count": 42,
+                        "dedupe_hit_count": 7,
+                    },
+                    "kefu": {
+                        "channel": "kefu",
+                        "running": false,
+                        "last_poll_unix_ms": null,
+                        "last_inbound_unix_ms": null,
+                        "last_ingest_unix_ms": null,
+                        "consecutive_failures": 0,
+                        "last_error": null,
+                        "processed_msg_count": 0,
+                        "dedupe_hit_count": 0,
+                    },
+                    "config": serde_json::to_value(crate::wechat_ilink::WeChatIngestConfig {
+                        enabled_mode: "all".into(),
+                        enabled_group_ids: vec![],
+                    }).unwrap(),
+                }),
+            ),
         ];
 
         let file_contents = ts_file(&types);

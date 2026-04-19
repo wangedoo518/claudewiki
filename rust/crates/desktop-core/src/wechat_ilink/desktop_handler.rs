@@ -28,7 +28,9 @@ use tokio::time::timeout;
 
 use super::account;
 use super::client::IlinkClient;
+use super::dedupe::{self, DedupeResult, WeChatEventKey};
 use super::handlers::{build_text_reply, extract_first_text};
+use super::ingest_config;
 use super::markdown_split::{split_markdown_for_wechat, DEFAULT_MAX_CHARS};
 use super::monitor::{MessageHandler, MonitorError};
 use super::types::WeixinMessage;
@@ -306,6 +308,42 @@ impl MessageHandler for DesktopAgentHandler {
             }
         };
 
+        // ── M5 middleware guard ─────────────────────────────────────
+        // L1 event dedupe + group-scope config. Both checks are
+        // synchronous and cheap (in-memory map lookups), so we run
+        // them before the tokio::spawn below. On `Hit` or `Skipped`
+        // we short-circuit and drop the message silently — no reply,
+        // no wiki write, no raw_task.
+        let event_key = WeChatEventKey {
+            channel: "ilink".to_string(),
+            account_id: self.account_id.clone(),
+            message_id: message.message_id.map(|id| id.to_string()),
+            create_time_ms: message.create_time_ms,
+            text_hash: WeChatEventKey::hash_text(&user_text),
+        };
+        let ingest_cfg = ingest_config::read_snapshot();
+        if !ingest_cfg.allows(message.group_id.as_deref()) {
+            eprintln!(
+                "[wechat agent] skipped (group scope: mode={} group_id={:?})",
+                ingest_cfg.enabled_mode, message.group_id
+            );
+            return Ok(());
+        }
+        match dedupe::global().check(&event_key) {
+            DedupeResult::Hit { first_seen_ms } => {
+                eprintln!(
+                    "[wechat agent] dedupe hit (first_seen_ms={first_seen_ms}) id={} — dropping duplicate",
+                    event_key.stable_id()
+                );
+                return Ok(());
+            }
+            DedupeResult::Skipped { reason } => {
+                eprintln!("[wechat agent] dedupe skipped: {reason}");
+                return Ok(());
+            }
+            DedupeResult::Miss => {}
+        }
+
         // Spawn the actual work in a background task so the long-poll loop
         // in monitor.rs returns to fetch the next message immediately.
         // This is critical: an agentic turn can take several minutes; the
@@ -321,6 +359,7 @@ impl MessageHandler for DesktopAgentHandler {
         // enough to push the 35 s long-poll window over its budget.
         let handler = self.clone();
         let client = client.clone();
+        let event_key_for_task = event_key.clone();
         tokio::spawn(async move {
             // S5 ClawWiki ingest (D2 override): if the handler is wired
             // with a wiki root, persist the raw text message to
@@ -339,10 +378,11 @@ impl MessageHandler for DesktopAgentHandler {
             // richer adapters (voice transcription, image captioning)
             // by moving the text-handling branch above into an adapter
             // dispatch.
+            let mut ingest_ok = true;
             if let Some(paths) = handler.wiki_paths.clone() {
                 let user_text_for_wiki = user_text.clone();
                 let from_user_id_for_wiki = from_user_id.clone();
-                let _ = tokio::task::spawn_blocking(move || {
+                let join = tokio::task::spawn_blocking(move || {
                     ingest_wechat_text_to_wiki(
                         &paths,
                         &from_user_id_for_wiki,
@@ -350,6 +390,23 @@ impl MessageHandler for DesktopAgentHandler {
                     );
                 })
                 .await;
+                if join.is_err() {
+                    // A panic inside the blocking task is the only way
+                    // to land here. Treat it as an ingest failure so
+                    // we do NOT mark the event as processed — the
+                    // server will retry and the dedupe layer will
+                    // allow the retry through.
+                    ingest_ok = false;
+                }
+            }
+
+            // M5: mark_processed fires only on a successful ingest /
+            // kick-off. If the wiki ingest panicked we leave the key
+            // un-marked so a server retry goes through. The per-channel
+            // counter bump also powers the health endpoint's
+            // `processed_msg_count` field.
+            if ingest_ok {
+                dedupe::global().mark_processed(&event_key_for_task);
             }
 
             // Find or create a session for this WeChat user.

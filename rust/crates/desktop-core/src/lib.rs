@@ -5249,6 +5249,18 @@ impl DesktopState {
         Ok(())
     }
 
+    /// Snapshot every registered ilink monitor's [`wechat_ilink::MonitorStatus`].
+    /// Ordering is arbitrary — the consumer in the HTTP health route
+    /// aggregates across entries so the sequence doesn't matter. An
+    /// empty vec means no monitors are currently registered.
+    pub async fn wechat_ilink_monitor_statuses(&self) -> Vec<wechat_ilink::MonitorStatus> {
+        let monitors = self.wechat_monitors.read().await;
+        monitors
+            .values()
+            .map(|handle| handle.status_rx.borrow().clone())
+            .collect()
+    }
+
     // ===================================================================
     // Channel B: Official WeChat Customer Service (kefu)
     // ===================================================================

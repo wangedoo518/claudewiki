@@ -675,6 +675,15 @@ pub fn app(state: AppState) -> Router {
         .route("/api/wiki/stats", get(get_stats_handler))
         .route("/api/wiki/patrol/report", get(get_patrol_report_handler))
         .route("/api/wiki/schema/templates", get(get_schema_templates_handler))
+        // ── M5: WeChat bridge health + group-scope config ──────────
+        .route(
+            "/api/wechat/bridge/health",
+            get(wechat_bridge_health_handler),
+        )
+        .route(
+            "/api/wechat/bridge/config",
+            get(wechat_bridge_config_get_handler).post(wechat_bridge_config_post_handler),
+        )
         // ── Phase 6C: WeChat account management ────────────────────
         .route(
             "/api/desktop/wechat/accounts",
@@ -1957,6 +1966,141 @@ async fn cancel_wechat_login_handler(
 ) -> Json<serde_json::Value> {
     let cancelled = state.desktop.cancel_wechat_login(&handle).await;
     Json(serde_json::json!({ "ok": cancelled }))
+}
+
+// ── M5 WeChat bridge: health + group-scope config handlers ────────
+//
+// Three routes, all wire-compatible with the TypeScript wrappers in
+// `apps/desktop-shell/src/lib/tauri.ts`. The health endpoint merges
+// monitor-side status (poll timestamps, consecutive failures) with
+// handler-side dedupe counters (processed / hits / last ingest).
+
+/// Per-channel health row. Mirrors the `ChannelHealth` struct documented
+/// in the M5 contract — the same shape is re-emitted by the codegen
+/// under `GeneratedChannelHealth` so the frontend can pin the contract.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ChannelHealth {
+    pub channel: String,
+    pub running: bool,
+    pub last_poll_unix_ms: Option<i64>,
+    pub last_inbound_unix_ms: Option<i64>,
+    pub last_ingest_unix_ms: Option<i64>,
+    pub consecutive_failures: u32,
+    pub last_error: Option<String>,
+    pub processed_msg_count: u64,
+    pub dedupe_hit_count: u64,
+}
+
+/// Envelope for `GET /api/wechat/bridge/health`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BridgeHealthResponse {
+    pub ilink: ChannelHealth,
+    pub kefu: ChannelHealth,
+    pub config: desktop_core::wechat_ilink::WeChatIngestConfig,
+}
+
+/// `GET /api/wechat/bridge/health` — summarise the connection health
+/// of both WeChat bridges. The kefu channel is currently dead code
+/// (M5 ships ilink-only); we still surface a disconnected row so the
+/// frontend can render a two-column layout.
+async fn wechat_bridge_health_handler(
+    State(state): State<AppState>,
+) -> Json<BridgeHealthResponse> {
+    // ── ilink: merge every registered monitor into a single row.
+    // When multiple accounts run in parallel (rare — most users only
+    // bind one bot), pick the most-recently-active monitor as the
+    // representative and OR the `running` flag.
+    let monitors = state.desktop.wechat_ilink_monitor_statuses().await;
+    let mut ilink_running = false;
+    let mut last_poll: Option<i64> = None;
+    let mut last_inbound: Option<i64> = None;
+    let mut consecutive_failures: u32 = 0;
+    let mut last_error: Option<String> = None;
+    for status in monitors {
+        if status.running {
+            ilink_running = true;
+        }
+        match (last_poll, status.last_poll_unix_ms) {
+            (_, None) => {}
+            (None, Some(v)) => last_poll = Some(v),
+            (Some(cur), Some(v)) if v > cur => last_poll = Some(v),
+            _ => {}
+        }
+        match (last_inbound, status.last_inbound_unix_ms) {
+            (_, None) => {}
+            (None, Some(v)) => last_inbound = Some(v),
+            (Some(cur), Some(v)) if v > cur => last_inbound = Some(v),
+            _ => {}
+        }
+        if status.consecutive_failures > consecutive_failures {
+            consecutive_failures = status.consecutive_failures;
+        }
+        if status.last_error.is_some() && last_error.is_none() {
+            last_error = status.last_error.clone();
+        }
+    }
+
+    let dedupe = desktop_core::wechat_ilink::dedupe::global();
+    let ilink = ChannelHealth {
+        channel: "ilink".to_string(),
+        running: ilink_running,
+        last_poll_unix_ms: last_poll,
+        last_inbound_unix_ms: last_inbound,
+        last_ingest_unix_ms: dedupe.last_ingest_ms("ilink"),
+        consecutive_failures,
+        last_error,
+        processed_msg_count: dedupe.processed_count("ilink"),
+        dedupe_hit_count: dedupe.hit_count("ilink"),
+    };
+
+    // ── kefu: M5 keeps the channel as a dead-code stub. Report
+    // disconnected but still let the dedupe counters shine through
+    // in case a dev-mode harness exercises the kefu path.
+    let kefu = ChannelHealth {
+        channel: "kefu".to_string(),
+        running: false,
+        last_poll_unix_ms: None,
+        last_inbound_unix_ms: None,
+        last_ingest_unix_ms: dedupe.last_ingest_ms("kefu"),
+        consecutive_failures: 0,
+        last_error: None,
+        processed_msg_count: dedupe.processed_count("kefu"),
+        dedupe_hit_count: dedupe.hit_count("kefu"),
+    };
+
+    Json(BridgeHealthResponse {
+        ilink,
+        kefu,
+        config: desktop_core::wechat_ilink::ingest_config::read_snapshot(),
+    })
+}
+
+/// `GET /api/wechat/bridge/config` — return the currently-active
+/// group-scope config. Equivalent to reading
+/// `~/.clawwiki/wechat_ingest_config.json` but served through the
+/// cache so repeated polls are cheap.
+async fn wechat_bridge_config_get_handler()
+-> Json<desktop_core::wechat_ilink::WeChatIngestConfig> {
+    Json(desktop_core::wechat_ilink::ingest_config::read_snapshot())
+}
+
+/// `POST /api/wechat/bridge/config` — replace the group-scope config.
+/// Body must be a full [`WeChatIngestConfig`] payload (the handler
+/// does not support PATCH-style merges). The new value is flushed to
+/// disk before the cache swap so a reload always sees the latest.
+async fn wechat_bridge_config_post_handler(
+    Json(body): Json<desktop_core::wechat_ilink::WeChatIngestConfig>,
+) -> Result<Json<desktop_core::wechat_ilink::WeChatIngestConfig>, (StatusCode, Json<serde_json::Value>)>
+{
+    match desktop_core::wechat_ilink::ingest_config::update(body) {
+        Ok(updated) => Ok(Json(updated)),
+        Err(err) => Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({
+                "error": format!("failed to save wechat ingest config: {err}")
+            })),
+        )),
+    }
 }
 
 // ── Channel B: Official WeChat Customer Service (kefu) handlers ──

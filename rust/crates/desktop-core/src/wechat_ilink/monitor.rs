@@ -69,6 +69,13 @@ pub enum MonitorError {
 /// Health snapshot the monitor publishes via a `watch::Receiver` so other
 /// parts of the application (HTTP status endpoints, frontend UI) can read
 /// the connection state without holding the loop's internal lock.
+///
+/// M5: the `last_ingest_unix_ms`, `processed_msg_count`, and
+/// `dedupe_hit_count` fields are filled in by the handler (not the
+/// monitor loop) via the health endpoint layer — the monitor always
+/// publishes them as `None`/`0`. `serde(default)` is declared so any
+/// future persistent snapshot can round-trip older payloads missing
+/// the new fields without breaking.
 #[derive(Debug, Clone, Default)]
 pub struct MonitorStatus {
     pub running: bool,
@@ -76,6 +83,15 @@ pub struct MonitorStatus {
     pub last_inbound_unix_ms: Option<i64>,
     pub consecutive_failures: u32,
     pub last_error: Option<String>,
+    /// Time (unix ms) of the most recent successful ingest. Populated
+    /// by the HTTP health handler from the dedupe store's per-channel
+    /// stats, not by the monitor loop itself.
+    pub last_ingest_unix_ms: Option<i64>,
+    /// Lifetime count of messages that cleared dedupe and reached the
+    /// ingest path. Backed by the process-global [`crate::wechat_ilink::DedupeStore`].
+    pub processed_msg_count: u64,
+    /// Lifetime count of inbound events the dedupe layer short-circuited.
+    pub dedupe_hit_count: u64,
 }
 
 /// Configuration for a monitor instance.

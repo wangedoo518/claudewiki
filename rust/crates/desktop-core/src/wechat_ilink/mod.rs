@@ -16,8 +16,10 @@
 
 pub mod account;
 pub mod client;
+pub mod dedupe;
 pub mod desktop_handler;
 pub mod handlers;
+pub mod ingest_config;
 pub mod login;
 pub mod markdown_split;
 pub mod monitor;
@@ -30,8 +32,10 @@ pub use account::{
     upsert_context_token, upsert_openid_session, AccountError,
 };
 pub use client::{IlinkClient, IlinkError, SESSION_EXPIRED_ERRCODE};
+pub use dedupe::{DedupeResult, DedupeStore, WeChatEventKey};
 pub use desktop_handler::DesktopAgentHandler;
 pub use handlers::EchoHandler;
+pub use ingest_config::WeChatIngestConfig;
 pub use login::{LoginConfirmation, LoginError, LoginStatus, QrLoginSession};
 pub use monitor::{run_monitor, MessageHandler, MonitorConfig, MonitorError, MonitorStatus};
 pub use pending_logins::{PendingLoginSlot, PendingLoginState, PENDING_LOGIN_TTL_SECS};

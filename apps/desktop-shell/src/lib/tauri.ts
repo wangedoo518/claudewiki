@@ -1606,3 +1606,86 @@ export interface RecentIngestResponse {
   capacity: number;
   stats?: RecentIngestStats;
 }
+
+// ---------------------------------------------------------------------------
+// M5 WeChat bridge — health + group-scope config
+// ---------------------------------------------------------------------------
+//
+// Three routes backing the M5 Settings → WeChat bridge panel:
+//
+//   * `GET /api/wechat/bridge/health` — latest per-channel status
+//     (poll/inbound/ingest timestamps, dedupe counters, bound config).
+//   * `GET /api/wechat/bridge/config` — current group-scope config.
+//   * `POST /api/wechat/bridge/config` — replace the config; body must
+//     be a full `WeChatIngestConfig` payload.
+//
+// Wire shapes are pinned by the Rust structs in
+// `rust/crates/desktop-server/src/lib.rs` and the codegen outputs
+// `GeneratedBridgeHealthResponse` / `GeneratedChannelHealth` /
+// `GeneratedWeChatIngestConfig` in `protocol.generated.ts`. The
+// hand-authored interfaces below are stricter (e.g. explicit
+// `| null` for Option fields) so call sites get tight narrowing.
+
+/** Group-scope config for the WeChat auto-ingest bridge. */
+export interface WeChatIngestConfig {
+  /** "all" passes every event; "whitelist" requires a known group_id. */
+  enabled_mode: "all" | "whitelist";
+  /** WeChat-side group ids allowed under `"whitelist"` mode. */
+  enabled_group_ids: string[];
+}
+
+/** Per-channel health snapshot returned by the bridge health route. */
+export interface WeChatChannelHealth {
+  channel: "ilink" | "kefu";
+  running: boolean;
+  last_poll_unix_ms: number | null;
+  last_inbound_unix_ms: number | null;
+  last_ingest_unix_ms: number | null;
+  consecutive_failures: number;
+  last_error: string | null;
+  processed_msg_count: number;
+  dedupe_hit_count: number;
+}
+
+/** Envelope returned by `GET /api/wechat/bridge/health`. */
+export interface WeChatBridgeHealthResponse {
+  ilink: WeChatChannelHealth;
+  kefu: WeChatChannelHealth;
+  config: WeChatIngestConfig;
+}
+
+/**
+ * Fetch the merged per-channel health snapshot for the WeChat bridge.
+ * Used by the Settings panel heartbeat; cheap enough to poll every
+ * few seconds.
+ */
+export async function fetchWeChatBridgeHealth(): Promise<WeChatBridgeHealthResponse> {
+  return _fetchJsonForMaintain<WeChatBridgeHealthResponse>(
+    "/api/wechat/bridge/health",
+  );
+}
+
+/** Fetch the currently-active group-scope config. */
+export async function fetchWeChatIngestConfig(): Promise<WeChatIngestConfig> {
+  return _fetchJsonForMaintain<WeChatIngestConfig>(
+    "/api/wechat/bridge/config",
+  );
+}
+
+/**
+ * Replace the group-scope config. Server persists the payload to
+ * `~/.clawwiki/wechat_ingest_config.json` and swaps the runtime cache.
+ * Returns the value that was actually stored (mirrors the POST body
+ * on success).
+ */
+export async function updateWeChatIngestConfig(
+  config: WeChatIngestConfig,
+): Promise<WeChatIngestConfig> {
+  return _fetchJsonForMaintain<WeChatIngestConfig>(
+    "/api/wechat/bridge/config",
+    {
+      method: "POST",
+      body: JSON.stringify(config),
+    },
+  );
+}

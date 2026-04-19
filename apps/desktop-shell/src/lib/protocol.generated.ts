@@ -246,3 +246,49 @@ export type GeneratedCombinedApplyResponse = {
   target_page_slug: string;
 };
 
+export type GeneratedWeChatIngestConfig = {
+  enabled_group_ids: Array<string>;
+  enabled_mode: string;
+};
+
+export type GeneratedChannelHealth = {
+  channel: string;
+  consecutive_failures: number;
+  dedupe_hit_count: number;
+  last_error: string;
+  last_inbound_unix_ms: number;
+  last_ingest_unix_ms: number;
+  last_poll_unix_ms: number;
+  processed_msg_count: number;
+  running: boolean;
+};
+
+export type GeneratedBridgeHealthResponse = {
+  config: {
+    enabled_group_ids: unknown[];
+    enabled_mode: string;
+  };
+  ilink: {
+    channel: string;
+    consecutive_failures: number;
+    dedupe_hit_count: number;
+    last_error: string;
+    last_inbound_unix_ms: number;
+    last_ingest_unix_ms: number;
+    last_poll_unix_ms: number;
+    processed_msg_count: number;
+    running: boolean;
+  };
+  kefu: {
+    channel: string;
+    consecutive_failures: number;
+    dedupe_hit_count: number;
+    last_error: null;
+    last_inbound_unix_ms: null;
+    last_ingest_unix_ms: null;
+    last_poll_unix_ms: null;
+    processed_msg_count: number;
+    running: boolean;
+  };
+};
+

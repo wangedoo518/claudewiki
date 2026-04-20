@@ -11,9 +11,8 @@
  * Each entry:
  * - `path` is the HashRouter pathname (must start with `/`)
  * - `key` is stable across renames and is used in tests / analytics
- * - `icon` uses a single-char glyph so we don't need to import a full
- *   icon library at the Sidebar level (Lucide is available but the
- *   wireframes already use these emoji, keeping parity is cheaper)
+ * - `icon` is a Lucide component (canonical iconography per the
+ *   design-system handoff; replaces the S0.2-era emoji route glyphs).
  * - `label` is the Chinese user-facing label — I4 sprint moved
  *   everything to task-oriented language (问问题 / 待整理 / 知识库
  *   etc.) so the default sidebar stops reading like a system module
@@ -31,12 +30,25 @@
  * - `badge` is an optional Sidebar counter (e.g. Inbox unread) — for
  *   S0.2 all badges are static "—" placeholders
  */
+import {
+  BookOpen,
+  FileStack,
+  Home,
+  Inbox,
+  Link2,
+  MessageCircle,
+  Network,
+  Settings,
+  Sigma,
+  type LucideIcon,
+} from "lucide-react";
+
 export type ClawWikiSection = "primary" | "funnel" | "advanced" | "settings";
 
 export interface ClawWikiRoute {
   key: string;
   path: string;
-  icon: string;
+  icon: LucideIcon;
   label: string;
   section: ClawWikiSection;
   sprint: string;
@@ -47,7 +59,7 @@ export const CLAWWIKI_ROUTES: readonly ClawWikiRoute[] = [
   {
     key: "dashboard",
     path: "/dashboard",
-    icon: "🏠",
+    icon: Home,
     label: "首页",
     section: "primary",
     sprint: "S3",
@@ -58,7 +70,7 @@ export const CLAWWIKI_ROUTES: readonly ClawWikiRoute[] = [
   {
     key: "ask",
     path: "/ask",
-    icon: "💬",
+    icon: MessageCircle,
     label: "问问题",
     section: "primary",
     sprint: "S3",
@@ -66,7 +78,7 @@ export const CLAWWIKI_ROUTES: readonly ClawWikiRoute[] = [
   {
     key: "inbox",
     path: "/inbox",
-    icon: "📥",
+    icon: Inbox,
     label: "待整理",
     section: "primary",
     sprint: "S4",
@@ -75,7 +87,7 @@ export const CLAWWIKI_ROUTES: readonly ClawWikiRoute[] = [
   {
     key: "wiki",
     path: "/wiki",
-    icon: "📖",
+    icon: BookOpen,
     label: "知识库",
     section: "primary",
     sprint: "S4",
@@ -83,7 +95,7 @@ export const CLAWWIKI_ROUTES: readonly ClawWikiRoute[] = [
   {
     key: "wechat",
     path: "/wechat",
-    icon: "🔗",
+    icon: Link2,
     label: "微信接入",
     section: "funnel",
     sprint: "S5 (iLink)",
@@ -95,7 +107,7 @@ export const CLAWWIKI_ROUTES: readonly ClawWikiRoute[] = [
   {
     key: "raw",
     path: "/raw",
-    icon: "📄",
+    icon: FileStack,
     label: "素材库",
     section: "advanced",
     sprint: "S1",
@@ -103,7 +115,7 @@ export const CLAWWIKI_ROUTES: readonly ClawWikiRoute[] = [
   {
     key: "graph",
     path: "/graph",
-    icon: "🕸",
+    icon: Network,
     label: "关系图",
     section: "advanced",
     sprint: "S6",
@@ -111,7 +123,7 @@ export const CLAWWIKI_ROUTES: readonly ClawWikiRoute[] = [
   {
     key: "schema",
     path: "/schema",
-    icon: "📐",
+    icon: Sigma,
     label: "整理规则",
     section: "advanced",
     sprint: "S6",
@@ -119,7 +131,7 @@ export const CLAWWIKI_ROUTES: readonly ClawWikiRoute[] = [
   {
     key: "settings",
     path: "/settings",
-    icon: "⚙️",
+    icon: Settings,
     label: "设置",
     section: "settings",
     sprint: "reused",

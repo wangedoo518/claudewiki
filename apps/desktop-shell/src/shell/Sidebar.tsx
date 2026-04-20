@@ -244,13 +244,16 @@ interface RouteItemProps {
 }
 
 function RouteItem({ route, active, badge }: RouteItemProps) {
+  const Icon = route.icon;
   return (
     <SidebarMenuItem>
       <SidebarMenuButton asChild isActive={active} tooltip={route.label}>
         <Link to={route.path} aria-current={active ? "page" : undefined}>
-          <span className="text-base leading-none" aria-hidden="true">
-            {route.icon}
-          </span>
+          <Icon
+            aria-hidden="true"
+            className="size-4 shrink-0"
+            strokeWidth={1.5}
+          />
           <span>{route.label}</span>
         </Link>
       </SidebarMenuButton>

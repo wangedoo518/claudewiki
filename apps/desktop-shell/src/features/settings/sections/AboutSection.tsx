@@ -16,7 +16,7 @@ export function AboutSection({
 }: AboutSectionProps) {
   return (
     <div className="space-y-4">
-      <SettingGroup title="About">
+      <SettingGroup title="关于">
         <div className="flex items-center gap-4">
           <div className="flex size-12 items-center justify-center rounded-xl bg-primary/10">
             <Sparkles className="size-6 text-primary" />
@@ -26,7 +26,7 @@ export function AboutSection({
               {productName ?? "Warwolf"}
             </div>
             <div className="text-caption text-muted-foreground">
-              Desktop shell
+              桌面外脑
             </div>
             <div className="mt-1 flex gap-1">
               <Badge variant="secondary" className="text-caption">
@@ -36,38 +36,38 @@ export function AboutSection({
                 React 19
               </Badge>
               <Badge variant="secondary" className="text-caption">
-                Rust runtime
+                Rust 运行时
               </Badge>
             </div>
           </div>
         </div>
       </SettingGroup>
 
-      <SettingGroup title="Runtime Paths">
+      <SettingGroup title="运行路径">
         <div className="space-y-1.5 text-body-sm">
           <div className="flex justify-between gap-4">
-            <span className="text-muted-foreground">Project</span>
+            <span className="text-muted-foreground">知识库</span>
             <span className="max-w-[360px] truncate text-right">
-              {settings?.project_path ?? "Unavailable"}
+              {settings?.project_path ?? "暂不可用"}
             </span>
           </div>
           <div className="flex justify-between gap-4">
-            <span className="text-muted-foreground">Session Store</span>
+            <span className="text-muted-foreground">对话存档</span>
             <span className="max-w-[360px] truncate text-right">
-              {settings?.desktop_session_store_path ?? "Unavailable"}
+              {settings?.desktop_session_store_path ?? "暂不可用"}
             </span>
           </div>
           <div className="flex justify-between gap-4">
-            <span className="text-muted-foreground">OAuth Credentials</span>
+            <span className="text-muted-foreground">OAuth 凭据</span>
             <span className="max-w-[360px] truncate text-right">
-              {settings?.oauth_credentials_path ?? "Unavailable"}
+              {settings?.oauth_credentials_path ?? "暂不可用"}
             </span>
           </div>
         </div>
       </SettingGroup>
 
       {error && (
-        <SettingGroup title="Warnings">
+        <SettingGroup title="警告">
           <div className="text-caption text-muted-foreground">{error}</div>
         </SettingGroup>
       )}

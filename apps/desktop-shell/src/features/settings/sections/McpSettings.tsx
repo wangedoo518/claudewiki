@@ -93,8 +93,8 @@ export function McpSettings({ customize, error }: McpSettingsProps) {
     <div className="space-y-4">
       {/* User-configured servers */}
       <SettingGroup
-        title="MCP Servers"
-        description="Configure and manage MCP server connections"
+        title="工具插件 (MCP)"
+        description="通过 Model Context Protocol 接入外部工具。配置在本机，不会上传到远程。"
       >
         <div className="space-y-2">
           {userServers.map((server) =>
@@ -129,7 +129,7 @@ export function McpSettings({ customize, error }: McpSettingsProps) {
               onClick={() => setShowAddForm(true)}
             >
               <Plus className="size-3.5" />
-              Add MCP Server
+              添加工具插件
             </Button>
           )}
         </div>
@@ -138,8 +138,8 @@ export function McpSettings({ customize, error }: McpSettingsProps) {
       {/* Discovered servers from runtime */}
       {discoveredServers.length > 0 && (
         <SettingGroup
-          title="Discovered Servers"
-          description="Servers detected from runtime configuration files"
+          title="已检测到的插件"
+          description="从运行时配置文件中自动发现的插件（只读展示）"
         >
           <div className="space-y-2">
             {discoveredServers.map((server) => (
@@ -177,7 +177,7 @@ export function McpSettings({ customize, error }: McpSettingsProps) {
 
       {/* Warnings */}
       {(error || (customize?.warnings.length ?? 0) > 0) && (
-        <SettingGroup title="Warnings">
+        <SettingGroup title="警告">
           <div className="space-y-2 text-body-sm text-muted-foreground">
             {error && <div>{error}</div>}
             {customize?.warnings.map((warning) => (
@@ -190,9 +190,9 @@ export function McpSettings({ customize, error }: McpSettingsProps) {
       <ConfirmDialog
         open={!!deleteConfirmId}
         onOpenChange={(open) => { if (!open) setDeleteConfirmId(null); }}
-        title="Remove MCP server"
-        description={`Remove "${deleteTarget?.name ?? ""}" server? This will remove it from your local configuration.`}
-        confirmLabel="Remove"
+        title="删除工具插件"
+        description={`确定删除「${deleteTarget?.name ?? ""}」？本次操作只会清除本机配置，不影响远端服务。`}
+        confirmLabel="删除"
         variant="destructive"
         onConfirm={confirmDelete}
       />
@@ -259,7 +259,7 @@ function UserServerCard({
         <button
           className="rounded p-1 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
           onClick={onToggle}
-          title={server.enabled ? "Disable" : "Enable"}
+          title={server.enabled ? "停用" : "启用"}
         >
           {server.enabled ? (
             <PowerOff className="size-3.5" />
@@ -270,7 +270,7 @@ function UserServerCard({
         <button
           className="rounded p-1 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
           onClick={onEdit}
-          title="Edit"
+          title="编辑"
         >
           <Pencil className="size-3.5" />
         </button>
@@ -278,7 +278,7 @@ function UserServerCard({
           className="rounded p-1 transition-colors hover:bg-accent"
           style={{ color: "var(--color-error)" }}
           onClick={onDelete}
-          title="Delete"
+          title="删除"
         >
           <Trash2 className="size-3.5" />
         </button>
@@ -320,20 +320,20 @@ function ServerForm({
   return (
     <div className="rounded-md border border-[color:var(--agent-cyan,rgb(8,145,178))]/30 bg-[color:var(--agent-cyan,rgb(8,145,178))]/5 p-3">
       <div className="mb-3 text-body-sm font-medium text-foreground">
-        {initial ? "Edit Server" : "Add MCP Server"}
+        {initial ? "编辑插件" : "添加工具插件"}
       </div>
 
       <div className="space-y-2">
         {/* Name */}
         <div>
           <label className="mb-1 block text-label font-medium text-muted-foreground">
-            Server Name
+            插件名称
           </label>
           <input
             type="text"
             value={name}
             onChange={(e) => setName(e.target.value)}
-            placeholder="e.g. github, slack, filesystem"
+            placeholder="例如 github / slack / filesystem"
             className="w-full rounded-md border border-input bg-background px-2.5 py-1.5 text-body-sm text-foreground outline-none focus:border-ring focus:ring-1 focus:ring-ring/50"
           />
         </div>
@@ -342,7 +342,7 @@ function ServerForm({
         <div className="flex gap-2">
           <div className="flex-1">
             <label className="mb-1 block text-label font-medium text-muted-foreground">
-              Transport
+              传输方式
             </label>
             <select
               value={transport}
@@ -360,7 +360,7 @@ function ServerForm({
           </div>
           <div className="flex-1">
             <label className="mb-1 block text-label font-medium text-muted-foreground">
-              Scope
+              作用范围
             </label>
             <select
               value={scope}
@@ -382,10 +382,10 @@ function ServerForm({
         <div>
           <label className="mb-1 block text-label font-medium text-muted-foreground">
             {transport === "stdio"
-              ? "Command"
+              ? "启动命令"
               : transport === "sse" || transport === "http"
-                ? "URL"
-                : "Target"}
+                ? "连接 URL"
+                : "目标地址"}
           </label>
           <input
             type="text"
@@ -412,7 +412,7 @@ function ServerForm({
           onClick={onCancel}
         >
           <X className="size-3" />
-          Cancel
+          取消
         </Button>
         <Button
           size="sm"
@@ -421,7 +421,7 @@ function ServerForm({
           onClick={handleSubmit}
         >
           <Check className="size-3" />
-          {initial ? "Save" : "Add"}
+          {initial ? "保存" : "添加"}
         </Button>
       </div>
     </div>

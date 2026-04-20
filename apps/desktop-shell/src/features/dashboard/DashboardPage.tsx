@@ -324,22 +324,27 @@ export function DashboardPage() {
         </div>
       </section>
 
-      {/* Quick Actions — 07-dashboard.md §6.6 */}
+      {/* Quick Actions — I4 reframed to user tasks. */}
       <section className="px-8 pb-6">
-        <div className="flex gap-3">
+        <div className="flex flex-wrap gap-3">
           <Button variant="outline" size="default" asChild>
             <Link to="/inbox">
-              <InboxIcon className="size-3.5" /> 开始维护
-            </Link>
-          </Button>
-          <Button variant="outline" size="default" asChild>
-            <Link to="/graph">
-              查看图谱
+              <InboxIcon className="size-3.5" /> 查看待整理
             </Link>
           </Button>
           <Button variant="outline" size="default" asChild>
             <Link to="/wiki">
-              打开 Wiki
+              打开知识库
+            </Link>
+          </Button>
+          <Button variant="outline" size="default" asChild>
+            <Link to="/raw">
+              浏览素材库
+            </Link>
+          </Button>
+          <Button variant="ghost" size="default" asChild>
+            <Link to="/graph">
+              查看关系图
             </Link>
           </Button>
         </div>

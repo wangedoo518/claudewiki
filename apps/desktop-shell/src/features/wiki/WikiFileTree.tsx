@@ -86,10 +86,10 @@ export function WikiFileTree({ embedded = false }: { embedded?: boolean }) {
     const matchesFilter = (text: string) =>
       !lowerFilter || text.toLowerCase().includes(lowerFilter);
 
-    // Inbox section
+    // Inbox section (待整理) — click the header to go to /inbox.
     const inboxSection: TreeSection = {
       id: "inbox",
-      label: "Inbox",
+      label: "待整理",
       icon: <Inbox className="size-4" />,
       badge: pendingCount > 0 ? pendingCount : undefined,
       children: [],
@@ -109,7 +109,7 @@ export function WikiFileTree({ embedded = false }: { embedded?: boolean }) {
 
     const rawSection: TreeSection = {
       id: "raw",
-      label: "Raw",
+      label: "素材库",
       icon: <FileText className="size-4" />,
       children: rawNodes,
     };
@@ -149,44 +149,37 @@ export function WikiFileTree({ embedded = false }: { embedded?: boolean }) {
 
     const wikiSection: TreeSection = {
       id: "wiki",
-      label: "Wiki",
+      label: "知识库",
       icon: <BookOpen className="size-4" />,
       children: wikiChildren,
     };
 
-    // Schema section — CLAUDE.md opens the dedicated /schema editor page,
-    // NOT a wiki tab (SchemaEditorPage is its own route, not a WikiTabItem).
-    const schemaSection: TreeSection = {
-      id: "schema",
-      label: "Schema",
+    // I4 sprint: 整理规则 (formerly "Schema") and 最近变更 (formerly
+    // "Log") are grouped into a single collapsed "高级" section so the
+    // default sidebar shows 待整理 / 素材库 / 知识库 only. Both routes
+    // remain reachable from the command palette and from direct URLs.
+    const advancedSection: TreeSection = {
+      id: "advanced",
+      label: "高级",
       icon: <ScrollText className="size-4" />,
       children: [
         {
           id: "schema-claude",
-          label: "CLAUDE.md",
+          label: "整理规则",
           action: { type: "navigate", to: "/schema" },
         },
-      ],
-    };
-
-    // Log section — changelog / audit trail (opens as closable wiki tab)
-    const logSection: TreeSection = {
-      id: "log-section",
-      label: "Log",
-      icon: <FileText className="size-4" />,
-      children: [
         {
           id: "_log",
-          label: "Changelog",
+          label: "最近变更",
           action: {
             type: "openTab",
-            tab: { id: "_log", kind: "log", title: "Log", closable: true },
+            tab: { id: "_log", kind: "log", title: "最近变更", closable: true },
           },
         },
       ],
     };
 
-    return [inboxSection, rawSection, wikiSection, schemaSection, logSection];
+    return [inboxSection, rawSection, wikiSection, advancedSection];
   }, [rawData, pagesData, inboxData, filter]);
 
   /* ── Handlers ──────────────────────────────────────────────── */

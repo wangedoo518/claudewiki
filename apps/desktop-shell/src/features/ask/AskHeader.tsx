@@ -26,7 +26,7 @@ interface AskHeaderProps {
 }
 
 export function AskHeader({
-  title = "Ask",
+  title = "问问题",
   projectPath,
   modelLabel = "Codex GPT-5.4",
   environmentLabel = "内置代理",

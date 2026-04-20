@@ -1,5 +1,6 @@
 import { useEffect, useMemo } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
+import { useQuery } from "@tanstack/react-query";
 import { useSettingsStore } from "@/state/settings-store";
 import {
   CLAWWIKI_ROUTES,
@@ -10,6 +11,7 @@ import { useAskSessionContext } from "@/features/ask/AskSessionContext";
 import { SessionSidebar } from "@/features/ask/SessionSidebar";
 import { WikiFileTree } from "@/features/wiki/WikiFileTree";
 import { WeChatStatusBadge } from "@/features/wechat-kefu/WeChatStatusBadge";
+import { listInboxEntries } from "@/features/ingest/persist";
 import {
   Sidebar as UiSidebar,
   SidebarContent,
@@ -22,16 +24,27 @@ import {
 } from "@/components/ui/sidebar";
 
 /**
- * ClawWiki canonical Sidebar — Rowboat-style (256px expanded / 48px
- * icon-mode).
+ * ClawWiki canonical Sidebar — task-first layout (I4).
  *
- * This file is a thin adapter around the shared
- * `components/ui/sidebar.tsx` primitives (SidebarProvider lives in
- * ClawWikiShell). It renders:
+ * Post-I4 structure:
  *
- *   Header  → logo + title + ModeToggle (Chat | Wiki)
- *   Content → PRIMARY group (7 routes) + FUNNEL group (1 route)
- *   Footer  → Settings link
+ *   Header  → logo + title
+ *   Content → 5-item primary task nav (首页 / 问问题 / 待整理 / 知识库
+ *             / 微信接入) + context-aware secondary pane (Ask sessions
+ *             on /ask, WikiFileTree elsewhere)
+ *   Footer  → WeChat status badge + Settings link
+ *
+ * Pre-I4 the top of the sidebar was a "Chat | Wiki" mode toggle and
+ * the route entries from `CLAWWIKI_ROUTES` never actually rendered
+ * as sidebar buttons — most of the product was reachable only via
+ * the WikiFileTree secondary pane or via deep-link URLs. That read
+ * like a system module directory; the I4 sprint turns the default
+ * sidebar into an answer to "what do you want to do next?".
+ *
+ * The `appMode` zustand slice still exists so `ClawWikiShell` can
+ * keep deciding whether to mount the right-docked `ChatSidePanel`.
+ * It's now derived from the route instead of from a manual toggle;
+ * see the effect below.
  *
  * Design decisions captured here:
  * - Expanded width (256px) and icon-mode width (3rem / 48px) come from
@@ -42,9 +55,8 @@ import {
  * - Active state comes from `useLocation` (not zustand) so
  *   back/forward browser history and deep links work without extra
  *   plumbing.
- * - Badge overrides: Inbox's pending count comes from a
- *   react-query-backed useQuery; all other routes fall back to the
- *   static `badge` field on the route definition (currently none).
+ * - Inbox badge: pending count comes from a react-query-backed hook;
+ *   other primary items don't carry badges today.
  */
 
 function groupBySection(
@@ -53,6 +65,7 @@ function groupBySection(
   const grouped: Record<ClawWikiSection, ClawWikiRoute[]> = {
     primary: [],
     funnel: [],
+    advanced: [],
     settings: [],
   };
   for (const r of routes) {
@@ -70,9 +83,56 @@ function isActive(currentPath: string, itemPath: string): boolean {
 export function AppSidebar() {
   const location = useLocation();
   const appMode = useSettingsStore((s) => s.appMode);
+  const setAppMode = useSettingsStore((s) => s.setAppMode);
   const grouped = useMemo(() => groupBySection(CLAWWIKI_ROUTES), []);
 
+  const primaryRoutes = grouped.primary;
+  const funnelRoutes = grouped.funnel;
   const settingsRoute = grouped.settings[0];
+
+  // Inbox pending-count badge. Kept small and resilient: if the
+  // fetch errors or is still loading, we silently skip the badge
+  // rather than render a fragile "…" / "!" placeholder.
+  const inboxBadgeQuery = useQuery({
+    queryKey: ["wiki", "inbox", "list"] as const,
+    queryFn: () => listInboxEntries(),
+    staleTime: 30_000,
+    refetchInterval: 30_000,
+  });
+  const inboxPending = inboxBadgeQuery.data?.pending_count ?? 0;
+
+  // Derive `appMode` from the current route so `ClawWikiShell` still
+  // knows whether to mount the right-docked `ChatSidePanel`. We no
+  // longer require the user to press a Chat/Wiki toggle — landing
+  // on /ask implies "chat", knowledge-flow paths imply "wiki", and
+  // everything else preserves the last mode.
+  useEffect(() => {
+    const path = location.pathname;
+    if (path.startsWith("/ask") || path.startsWith("/chat")) {
+      if (appMode !== "chat") setAppMode("chat");
+    } else if (
+      path.startsWith("/wiki") ||
+      path.startsWith("/graph") ||
+      path.startsWith("/schema") ||
+      path.startsWith("/inbox") ||
+      path.startsWith("/raw")
+    ) {
+      if (appMode !== "wiki") setAppMode("wiki");
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [location.pathname]);
+
+  // Secondary content is derived from the path, not from `appMode`,
+  // so the sidebar body always reflects where the user is right
+  // now — independent of whatever mode was last persisted.
+  const path = location.pathname;
+  const secondary: "sessions" | "tree" | "none" = path.startsWith("/ask")
+    ? "sessions"
+    : path.startsWith("/wiki") ||
+        path.startsWith("/inbox") ||
+        path.startsWith("/raw")
+      ? "tree"
+      : "none";
 
   return (
     <UiSidebar collapsible="icon">
@@ -89,13 +149,40 @@ export function AppSidebar() {
             <span className="text-[10px] text-muted-foreground">你的外脑</span>
           </div>
         </div>
-
-        {/* v2 Chat/Wiki mode toggle — ia-layout.md §2 */}
-        <ModeToggle />
       </SidebarHeader>
 
       <SidebarContent className="group-data-[collapsible=icon]:hidden">
-        {appMode === "chat" ? <ChatSidebarContent /> : <WikiSidebarContent />}
+        {/* Primary task nav (I4) — always visible at the top. */}
+        <div className="flex flex-col gap-0.5 border-b border-sidebar-border/60 px-2 py-2">
+          <SidebarMenu>
+            {primaryRoutes.map((route) => (
+              <RouteItem
+                key={route.key}
+                route={route}
+                active={isActive(location.pathname, route.path)}
+                badge={
+                  route.key === "inbox" && inboxPending > 0
+                    ? String(inboxPending)
+                    : undefined
+                }
+              />
+            ))}
+            {funnelRoutes.map((route) => (
+              <RouteItem
+                key={route.key}
+                route={route}
+                active={isActive(location.pathname, route.path)}
+                badge={undefined}
+              />
+            ))}
+          </SidebarMenu>
+        </div>
+
+        {/* Context pane — SessionSidebar on /ask*, WikiFileTree on
+            knowledge-flow pages, nothing elsewhere. This keeps the
+            sidebar useful without turning it into a control panel. */}
+        {secondary === "sessions" && <ChatSidebarContent />}
+        {secondary === "tree" && <WikiSidebarContent />}
       </SidebarContent>
 
       <SidebarFooter>
@@ -142,7 +229,9 @@ function ChatSidebarContent() {
 }
 
 /**
- * Wiki mode sidebar content — renders WikiFileTree (Inbox/Raw/Wiki/Schema).
+ * Wiki mode sidebar content — renders WikiFileTree (待整理 / 素材库 /
+ * 知识库 sections, plus an opt-in "高级 · 整理规则 / 最近变更" collapsed
+ * section for power users).
  */
 function WikiSidebarContent() {
   return <WikiFileTree embedded />;
@@ -157,11 +246,7 @@ interface RouteItemProps {
 function RouteItem({ route, active, badge }: RouteItemProps) {
   return (
     <SidebarMenuItem>
-      <SidebarMenuButton
-        asChild
-        isActive={active}
-        tooltip={route.label}
-      >
+      <SidebarMenuButton asChild isActive={active} tooltip={route.label}>
         <Link to={route.path} aria-current={active ? "page" : undefined}>
           <span className="text-base leading-none" aria-hidden="true">
             {route.icon}
@@ -171,78 +256,5 @@ function RouteItem({ route, active, badge }: RouteItemProps) {
       </SidebarMenuButton>
       {badge ? <SidebarMenuBadge>{badge}</SidebarMenuBadge> : null}
     </SidebarMenuItem>
-  );
-}
-
-/**
- * Chat/Wiki mode toggle — per ia-layout.md §2.
- * Two buttons: [Chat] [Wiki]. Active mode has accent background +
- * primary text. Hidden in icon-mode via Tailwind's
- * group-data-[collapsible=icon] selector (no JS branch needed).
- */
-function ModeToggle() {
-  const appMode = useSettingsStore((s) => s.appMode);
-  const setAppMode = useSettingsStore((s) => s.setAppMode);
-  const navigate = useNavigate();
-  const location = useLocation();
-
-  // v2 bugfix: keep appMode in sync with the current route.
-  // When the user clicks a Sidebar nav item (Ask/Wiki/etc.) the URL
-  // changes without going through ModeToggle. This effect mirrors the
-  // URL back into appMode so the toggle highlight and ChatSidePanel
-  // visibility stay consistent with what's displayed.
-  useEffect(() => {
-    const path = location.pathname;
-    if (path.startsWith("/ask") || path.startsWith("/chat")) {
-      if (appMode !== "chat") setAppMode("chat");
-    } else if (
-      path.startsWith("/wiki") ||
-      path.startsWith("/graph") ||
-      path.startsWith("/schema") ||
-      path.startsWith("/inbox") ||
-      path.startsWith("/raw")
-    ) {
-      if (appMode !== "wiki") setAppMode("wiki");
-    }
-    // Other routes (dashboard, wechat, settings) preserve
-    // whichever mode the user last chose.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [location.pathname]);
-
-  const switchMode = (mode: "chat" | "wiki") => {
-    setAppMode(mode);
-    // Sync the route so main content re-renders for the new mode.
-    if (mode === "chat" && !location.pathname.startsWith("/ask")) {
-      navigate("/ask");
-    } else if (mode === "wiki" && !location.pathname.startsWith("/wiki")) {
-      navigate("/wiki");
-    }
-  };
-
-  return (
-    <div className="flex h-9 flex-shrink-0 items-center gap-1 border-b border-sidebar-border px-2 group-data-[collapsible=icon]:hidden">
-      <button
-        type="button"
-        onClick={() => switchMode("chat")}
-        className={`flex-1 rounded-md px-2 py-1 text-[12px] font-medium transition-colors ${
-          appMode === "chat"
-            ? "bg-sidebar-accent text-primary font-semibold"
-            : "text-muted-foreground hover:bg-sidebar-accent/50"
-        }`}
-      >
-        Chat
-      </button>
-      <button
-        type="button"
-        onClick={() => switchMode("wiki")}
-        className={`flex-1 rounded-md px-2 py-1 text-[12px] font-medium transition-colors ${
-          appMode === "wiki"
-            ? "bg-sidebar-accent text-primary font-semibold"
-            : "text-muted-foreground hover:bg-sidebar-accent/50"
-        }`}
-      >
-        Wiki
-      </button>
-    </div>
   );
 }

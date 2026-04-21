@@ -29,14 +29,17 @@ import {
   FileStack,
   ServerCog,
   Brain,
+  BookOpen,
+  Link2,
   Inbox as InboxIcon,
   ArrowRight,
+  Sparkles,
 } from "lucide-react";
 import { listRawEntries, listInboxEntries, getWikiStats, getAbsorbLog, getPatrolReport, triggerPatrol } from "@/features/ingest/persist";
 // useSettingsStore / useWikiTabStore available for future Quick Action routing.
 import { getBootstrap } from "@/features/settings/api/client";
 import { getBrokerStatus } from "@/features/settings/api/private-cloud";
-import { Button } from "@/components/ui/button";
+import { getKefuStatus } from "@/features/settings/api/client";
 import { cn } from "@/lib/utils";
 
 const dashboardKeys = {
@@ -46,6 +49,9 @@ const dashboardKeys = {
   inbox: () => ["wiki", "inbox", "list"] as const,
   wikiPages: () => ["wiki", "pages", "list"] as const,
   stats: () => ["wiki", "stats"] as const,
+  // DS1-D: WeChat Kefu status — summarized on Dashboard so the user
+  // sees at a glance whether their 外脑 intake channel is ready.
+  wechatKefu: () => ["wechat-kefu", "status"] as const,
 };
 
 export function DashboardPage() {
@@ -97,6 +103,16 @@ export function DashboardPage() {
     staleTime: 60_000,
   });
 
+  // DS1-D: lightweight WeChat status summary for the default layer.
+  // Graceful degradation: if the endpoint is unreachable or returns an
+  // error the summary chip just reads "未连接" instead of exploding.
+  const kefuStatusQuery = useQuery({
+    queryKey: dashboardKeys.wechatKefu(),
+    queryFn: () => getKefuStatus(),
+    staleTime: 30_000,
+    retry: false,
+  });
+
   // Derive "today's new ingests" on the client so we don't need a
   // dedicated backend endpoint during S3. `entry.date` is the
   // ISO `YYYY-MM-DD` from the filename; comparing against the
@@ -108,7 +124,10 @@ export function DashboardPage() {
   const todaysIngests = statsQuery.data?.today_ingest_count
     ?? rawEntries.filter((e) => e.date === todayDate).length;
 
-  const brokerStatus = privateCloudEnabled ? brokerQuery.data : undefined;
+  // DS1-D — we no longer surface broker pool_size at the default layer,
+  // so only the error signal is kept (for the inline FYI banner below).
+  // `brokerQuery.data` is still held by React Query for any power-user
+  // view that wants to read it via useQuery(..., { queryKey: broker }).
   const brokerError =
     privateCloudEnabled && brokerQuery.error instanceof Error
       ? brokerQuery.error.message
@@ -130,11 +149,72 @@ export function DashboardPage() {
         <div className="section-divider-warm mt-4" />
       </section>
 
-      {/* Stat cards */}
+      {/* DS1-D · 快速开始 — 4 cards, user-task oriented.
+          Sits above the stats so a brand-new user's first eye-line is
+          "what can I do?" rather than "what does this dashboard measure?".
+          Each card is a link to the corresponding primary route so
+          keyboard users can Tab through them, and every card carries a
+          plain-Chinese subtitle that matches the v2 design kit's
+          SkillCard treatment. */}
+      <section className="px-8 py-3">
+        <h2
+          className="mb-3 uppercase tracking-widest text-muted-foreground/60"
+          style={{ fontSize: 11 }}
+        >
+          快速开始
+        </h2>
+        <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+          <QuickStartCard
+            icon={MessageCircle}
+            title="问一个问题"
+            sub="让 AI 基于你的内容回答"
+            to="/ask"
+            tint="var(--claude-orange)"
+          />
+          <QuickStartCard
+            icon={InboxIcon}
+            title="查看待整理"
+            sub={
+              inboxQuery.data?.pending_count
+                ? `${inboxQuery.data.pending_count} 条待你审阅`
+                : "还没有待处理的提议"
+            }
+            to="/inbox"
+            tint="var(--color-warning)"
+          />
+          <QuickStartCard
+            icon={BookOpen}
+            title="打开知识库"
+            sub="浏览页面、关系图、素材"
+            to="/wiki"
+            tint="var(--deeptutor-purple, var(--agent-purple))"
+          />
+          <QuickStartCard
+            icon={Link2}
+            title="连接微信"
+            sub={
+              kefuStatusQuery.data?.configured
+                ? kefuStatusQuery.data.account_created
+                  ? "已配置，可转发内容"
+                  : "已配置，未创建账号"
+                : "尚未连接"
+            }
+            to="/wechat"
+            tint="var(--color-success)"
+          />
+        </div>
+      </section>
+
+      {/* Stat cards — DS1-D simplified.
+          `Codex 令牌池` got dropped: it exposes runtime terminology at
+          the default layer and is irrelevant to a普通用户. Advanced
+          users still find broker status via `/settings → 高级`.
+          Remaining cards answer "今天增长了多少 / 本周新增 / 待审阅" —
+          the three questions the 工作起点 actually needs. */}
       <section
         className={cn(
-          "grid grid-cols-2 gap-3 px-8 py-4",
-          privateCloudEnabled ? "md:grid-cols-4" : "md:grid-cols-3"
+          "grid grid-cols-1 gap-3 px-8 py-4",
+          "md:grid-cols-3"
         )}
       >
         <StatCard
@@ -143,30 +223,8 @@ export function DashboardPage() {
           value={rawQuery.isLoading ? "…" : String(todaysIngests)}
           hint={`共 ${totalIngests} 条`}
           tint="var(--color-success)"
-          link="/raw"
+          link="/wiki?view=raw"
         />
-        {privateCloudEnabled && (
-          <StatCard
-            icon={ServerCog}
-            label="Codex 令牌池"
-            value={
-              brokerQuery.isLoading
-                ? "…"
-                : brokerStatus
-                  ? String(brokerStatus.pool_size)
-                  : "—"
-            }
-            hint={
-              brokerError
-                ? "代理不可达"
-                : brokerStatus
-                  ? `${brokerStatus.fresh_count} 可用`
-                  : "连接中…"
-            }
-            tint={brokerError ? "var(--color-error)" : "var(--claude-blue)"}
-            link="/settings"
-          />
-        )}
         <StatCard
           icon={Brain}
           label="本周新增"
@@ -183,34 +241,6 @@ export function DashboardPage() {
           tint={inboxQuery.error ? "var(--color-error)" : "var(--color-warning)"}
           link="/inbox"
         />
-      </section>
-
-      {/* QuickAsk CTA */}
-      <section className="px-8 py-3">
-        <div className="rounded-md border border-border/40 px-5 py-4">
-          <div className="flex items-center justify-between gap-4">
-            <div>
-              <div className="mb-0.5 flex items-center gap-2 text-foreground" style={{ fontSize: 14, fontWeight: 500 }}>
-                <MessageCircle
-                  className="size-3.5"
-                  style={{ color: "var(--claude-orange)" }}
-                />
-                问问你的外脑
-              </div>
-              <p className="text-muted-foreground/60" style={{ fontSize: 11 }}>
-                与 AI 对话，探索你的素材库。支持 @raw/ 引用和多轮问答。
-              </p>
-            </div>
-            <Link
-              to="/ask"
-              className="inline-flex shrink-0 items-center gap-1.5 rounded-md bg-primary px-4 py-2 text-primary-foreground transition-colors hover:bg-primary/90"
-              style={{ fontSize: 13, fontWeight: 500 }}
-            >
-              开始对话
-              <ArrowRight className="size-3" />
-            </Link>
-          </div>
-        </div>
       </section>
 
       {/* Activity Feed — 07-dashboard.md §6.3 */}
@@ -266,9 +296,26 @@ export function DashboardPage() {
         )}
       </section>
 
-      {/* Patrol Summary — 07-dashboard.md §6.5 */}
-      <section className="px-8 pb-6">
-        <div className="rounded-md border border-border/40 px-4 py-3">
+      {/* Patrol Summary — DS1-D downgraded from default layer to
+          `<details>` collapsible. The list of "schema 违规 / 孤儿页 /
+          stub / 过期 / 超长" is maintainer-facing terminology —普通
+          用户打开首页不应该先看到这 5 个术语。默认折叠；需要的人一键
+          展开。 */}
+      <details className="group px-8 pb-6">
+        <summary className="flex cursor-pointer items-center gap-2 rounded-md border border-border/40 px-4 py-3 text-[11px] text-muted-foreground transition-colors hover:bg-accent/40">
+          <Sparkles className="size-3.5" />
+          <span className="font-semibold uppercase tracking-widest">
+            知识质量巡检
+          </span>
+          <span className="text-muted-foreground/60">· 高级</span>
+          <span className="ml-auto text-muted-foreground/60 group-open:hidden">
+            展开
+          </span>
+          <span className="ml-auto hidden text-muted-foreground/60 group-open:inline">
+            收起
+          </span>
+        </summary>
+        <div className="mt-2 rounded-md border border-border/40 px-4 py-3">
           <div className="mb-2 flex items-center justify-between">
             <h3 className="text-[11px] font-semibold uppercase tracking-widest text-muted-foreground/60">
               知识质量
@@ -322,34 +369,79 @@ export function DashboardPage() {
             </p>
           )}
         </div>
-      </section>
+      </details>
 
-      {/* Quick Actions — I4 reframed to user tasks. */}
-      <section className="px-8 pb-6">
-        <div className="flex flex-wrap gap-3">
-          <Button variant="outline" size="default" asChild>
-            <Link to="/inbox">
-              <InboxIcon className="size-3.5" /> 查看待整理
-            </Link>
-          </Button>
-          <Button variant="outline" size="default" asChild>
-            <Link to="/wiki">
-              打开知识库
-            </Link>
-          </Button>
-          <Button variant="outline" size="default" asChild>
-            <Link to="/raw">
-              浏览素材库
-            </Link>
-          </Button>
-          <Button variant="ghost" size="default" asChild>
-            <Link to="/graph">
-              查看关系图
-            </Link>
-          </Button>
-        </div>
-      </section>
+      {/* DS1-D: drop the explicit Quick Actions row — 快速开始 row at
+          the top already covers 待整理 / 知识库 / 微信接入 with clearer
+          copy, and "查看关系图" no longer belongs at the default layer
+          (users reach Graph via 知识库 → 关系图 tab). Advanced users
+          still have the palette (Ctrl/Cmd+K) for deep-linking. */}
+      {/* Private-cloud broker reference — render only when the feature
+          is actually enabled AND errored out, as an inline FYI.
+          Otherwise the default layer stays free of "Codex 令牌池" jargon. */}
+      {privateCloudEnabled && brokerError && (
+        <section className="px-8 pb-6">
+          <div
+            className="rounded-md border px-4 py-2 text-[11px]"
+            style={{
+              borderColor: "color-mix(in srgb, var(--color-error) 30%, transparent)",
+              backgroundColor: "color-mix(in srgb, var(--color-error) 4%, transparent)",
+              color: "var(--color-error)",
+            }}
+          >
+            <ServerCog className="mr-1 inline size-3 align-[-2px]" />
+            私有云代理不可达 · <Link to="/settings" className="underline">打开设置排查 →</Link>
+          </div>
+        </section>
+      )}
     </div>
+  );
+}
+
+/* ─── DS1-D helpers ─────────────────────────────────────────────── */
+
+/**
+ * 快速开始 card — link with a warm Terracotta accent on the icon
+ * rail and a two-line label. Visually the warm-ring treatment from the
+ * design system; keeps the action obvious without being loud.
+ */
+function QuickStartCard({
+  icon: Icon,
+  title,
+  sub,
+  to,
+  tint,
+}: {
+  icon: typeof MessageCircle;
+  title: string;
+  sub: string;
+  to: string;
+  tint?: string;
+}) {
+  return (
+    <Link
+      to={to}
+      className="group block rounded-xl border bg-card p-4 shadow-warm-ring transition-shadow hover:shadow-warm-ring-hover"
+      style={
+        tint ? { borderLeft: `3px solid ${tint}` } : undefined
+      }
+    >
+      <div className="flex items-center gap-2 text-foreground">
+        <Icon
+          className="size-4"
+          strokeWidth={1.5}
+          style={tint ? { color: tint } : undefined}
+        />
+        <span style={{ fontSize: 13, fontWeight: 500 }}>{title}</span>
+        <ArrowRight
+          className="ml-auto size-3.5 opacity-40 transition-opacity group-hover:opacity-80"
+          strokeWidth={1.5}
+        />
+      </div>
+      <p className="mt-1.5 text-muted-foreground/80" style={{ fontSize: 11 }}>
+        {sub}
+      </p>
+    </Link>
   );
 }
 

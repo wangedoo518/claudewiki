@@ -9,7 +9,7 @@ import { AskPage } from "@/features/ask/AskPage";
 import { ChatSidePanel } from "@/features/ask/ChatSidePanel";
 import { InboxPage } from "@/features/inbox/InboxPage";
 import { RawLibraryPage } from "@/features/raw/RawLibraryPage";
-import { WikiExplorerPage } from "@/features/wiki/WikiExplorerPage";
+import { KnowledgeHubPage } from "@/features/wiki/KnowledgeHubPage";
 import { GraphPage } from "@/features/graph/GraphPage";
 import { SchemaEditorPage } from "@/features/schema/SchemaEditorPage";
 import { WeChatBridgePage } from "@/features/wechat/WeChatBridgePage";
@@ -128,11 +128,19 @@ export function ClawWikiShell() {
                       </PageTransition>
                     }
                   />
+                  {/* DS1-B: /wiki/* now renders the Knowledge Hub,
+                      which internally shows WikiExplorerPage / GraphPage
+                      / RawLibraryPage based on a `?view=` query tab.
+                      Direct-access /raw and /graph routes below remain
+                      unchanged so existing links + palette entries keep
+                      working. A raw `/wiki/:slug` sub-path still flows
+                      through because WikiExplorerPage is mounted inside
+                      the hub's `pages` tab (the default). */}
                   <Route
                     path="/wiki/*"
                     element={
                       <PageTransition>
-                        <WikiExplorerPage />
+                        <KnowledgeHubPage />
                       </PageTransition>
                     }
                   />

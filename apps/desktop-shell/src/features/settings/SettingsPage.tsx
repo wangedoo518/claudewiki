@@ -91,41 +91,42 @@ interface GroupMeta {
   icon: LucideIcon;
 }
 
+// DS1.5 · captions ≤ 12 字, 书章节式。组名能说清楚的不写 caption。
 const GROUPS: readonly GroupMeta[] = [
   {
     id: "account-model",
     label: "账户与模型",
-    caption: "选择 Ask 默认使用的模型服务。连接后 ClawWiki 用这个模型回答问题和整理内容。",
+    caption: "选择模型服务。",
     icon: Cpu,
   },
   {
     id: "wechat",
     label: "微信接入",
-    caption: "管理已绑定的微信小号。第一次接入请从「微信接入」页开始。",
+    caption: "绑定和长轮询。",
     icon: MessageCircle,
   },
   {
     id: "security",
     label: "权限与安全",
-    caption: "决定执行工具和修改文件前是否需要你确认。灰度测试建议保持「需要确认」。",
+    caption: "限制 AI 可以读写的文件。",
     icon: ShieldCheck,
   },
   {
     id: "appearance",
     label: "外观与快捷键",
-    caption: "调整主题、字号、界面语言，以及常用快捷键。",
+    caption: "",
     icon: Palette,
   },
   {
     id: "data-backup",
     label: "数据与备份",
-    caption: "查看本地知识库位置，导出或备份你的数据。",
+    caption: "你的数据存在哪里。",
     icon: Database,
   },
   {
     id: "advanced",
     label: "高级",
-    caption: "工具插件、模型网关、运行路径等给工程用户的细节。多数人可忽略。",
+    caption: "MCP、扩展和运行时路径。",
     icon: Wrench,
   },
 ];
@@ -270,7 +271,11 @@ export function SettingsPage() {
           <div className="ds-settings-content-inner">
             <div className="ds-settings-section-head">
               <h2 className="ds-settings-section-h">{currentMeta.label}</h2>
-              <p className="ds-settings-section-help">{currentMeta.caption}</p>
+              {currentMeta.caption && (
+                <p className="ds-settings-section-help">
+                  {currentMeta.caption}
+                </p>
+              )}
             </div>
 
             <GroupBody

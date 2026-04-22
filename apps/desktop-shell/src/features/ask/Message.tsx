@@ -728,27 +728,27 @@ function askErrorCopy(
     case "credentials_missing":
       return {
         severity: "error",
-        title: "🔐 还没连接大模型账号",
+        title: "还没连接大模型账号",
         description:
           "Ask 需要一个大模型账号来生成回答。当前没找到有效的 API key，请在设置里配置。",
       };
     case "broker_empty":
       return {
         severity: "warning",
-        title: "🪫 大模型账号池空",
+        title: "大模型账号池空",
         description:
           "暂时没有可用的 Claude 账号来处理这一轮。稍等片刻再重试。",
       };
     case "session_not_found":
       return {
         severity: "warning",
-        title: "📝 对话不存在或已过期",
+        title: "对话不存在或已过期",
         description: "后端找不到这个会话 id。请新建一个对话继续。",
       };
     case "url_enrich_failed":
       return {
         severity: "warning",
-        title: "🔗 链接抓取失败",
+        title: "链接抓取失败",
         description:
           "没能从你发的链接里取到正文。可能是网站挡了 bot 或超时。",
       };

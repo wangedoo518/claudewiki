@@ -54,6 +54,8 @@ import {
 } from "@/features/ingest/persist";
 import { getBootstrap, getKefuStatus } from "@/features/settings/api/client";
 import { getBrokerStatus } from "@/features/settings/api/private-cloud";
+import { SkillCard } from "@/components/ds/SkillCard";
+import { StatCard } from "@/components/ds/StatCard";
 
 const dashboardKeys = {
   bootstrap: () => ["desktop", "bootstrap"] as const,
@@ -151,7 +153,7 @@ export function DashboardPage() {
             title="问一个问题"
             sub="让 AI 基于你喂的内容回答"
             icon={MessageCircle}
-            to="/ask"
+            href="/ask"
           />
           <SkillCard
             variant="c2"
@@ -162,21 +164,21 @@ export function DashboardPage() {
                 : "暂时没有新提议"
             }
             icon={InboxIcon}
-            to="/inbox"
+            href="/inbox"
           />
           <SkillCard
             variant="c3"
             title="打开知识库"
             sub="浏览已整理的页面、关系图、素材"
             icon={BookOpen}
-            to="/wiki"
+            href="/wiki"
           />
           <SkillCard
             variant="c4"
             title="连接微信"
             sub={kefuSub}
             icon={Link2}
-            to="/wechat"
+            href="/wechat"
           />
         </section>
 
@@ -215,21 +217,21 @@ export function DashboardPage() {
              screens and wraps gracefully on narrow ones. */}
         <section className="mx-auto mt-10 max-w-[1040px] px-6">
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-            <SlimStat
+            <StatCard
               icon={FileStack}
               label="今日入库"
               value={rawQuery.isLoading ? "…" : String(todaysIngests)}
               hint={`共 ${totalIngests} 条`}
               to="/wiki?view=raw"
             />
-            <SlimStat
+            <StatCard
               icon={Brain}
               label="本周新增"
               value={statsQuery.isLoading ? "…" : String(weekNew)}
               hint={`共 ${wikiCount} 页`}
               to="/wiki"
             />
-            <SlimStat
+            <StatCard
               icon={InboxIcon}
               label="待审阅"
               value={inboxQuery.isLoading ? "…" : String(pendingInbox)}
@@ -239,7 +241,7 @@ export function DashboardPage() {
                   : `共 ${inboxQuery.data?.total_count ?? 0} 条任务`
               }
               to="/inbox"
-              warn={!!inboxQuery.error}
+              tone={inboxQuery.error ? "warn" : "default"}
             />
           </div>
         </section>
@@ -360,84 +362,6 @@ export function DashboardPage() {
       </div>
     </div>
   );
-}
-
-/* ─── Skill card (DS1.1) ────────────────────────────────────────── */
-
-function SkillCard({
-  variant,
-  title,
-  sub,
-  icon: Icon,
-  to,
-}: {
-  variant: "c1" | "c2" | "c3" | "c4" | "c5";
-  title: string;
-  sub: string;
-  icon: typeof MessageCircle;
-  to: string;
-}) {
-  return (
-    <Link to={to} className={`ds-skill-card ds-skill-${variant} animate-fade-in`}>
-      <Icon className="size-5" strokeWidth={1.5} aria-hidden="true" />
-      <div className="ds-skill-title">{title}</div>
-      <div className="ds-skill-sub">{sub}</div>
-      <span className="ds-skill-ill">
-        <ArrowRight className="size-5" strokeWidth={1.5} />
-      </span>
-    </Link>
-  );
-}
-
-/* ─── Slim stat (DS1.1) ─────────────────────────────────────────── */
-
-function SlimStat({
-  icon: Icon,
-  label,
-  value,
-  hint,
-  to,
-  warn,
-}: {
-  icon: typeof FileStack;
-  label: string;
-  value: string;
-  hint: string;
-  to: string;
-  warn?: boolean;
-}) {
-  const body = (
-    <div
-      className="flex items-center gap-3 rounded-lg border border-border/50 bg-card px-4 py-3 shadow-warm-ring transition-shadow hover:shadow-warm-ring-hover"
-      style={warn ? { borderLeft: "3px solid var(--color-error)" } : undefined}
-    >
-      <Icon
-        className="size-4 shrink-0 text-muted-foreground"
-        strokeWidth={1.5}
-      />
-      <div className="min-w-0 flex-1">
-        <div
-          className="text-[10.5px] font-semibold uppercase tracking-widest text-muted-foreground/70"
-        >
-          {label}
-        </div>
-        <div className="flex items-baseline gap-2">
-          <span
-            className="tabular-nums text-foreground"
-            style={{ fontSize: 18, fontWeight: 600 }}
-          >
-            {value}
-          </span>
-          <span className="text-[11px] text-muted-foreground/60">{hint}</span>
-        </div>
-      </div>
-      <ArrowRight
-        className="size-3.5 shrink-0 text-muted-foreground/50"
-        strokeWidth={1.5}
-      />
-    </div>
-  );
-  return <Link to={to}>{body}</Link>;
 }
 
 /* ─── Activity feed (compact, replaces old RecentEntries block) ── */

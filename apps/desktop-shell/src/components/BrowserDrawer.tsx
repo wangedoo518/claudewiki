@@ -9,6 +9,30 @@
  * Renders at Shell level inside the SidebarInset flex row.
  * Uses CSS width transition (never position:fixed) so it participates
  * in the normal flex layout.
+ *
+ * DS1.3 visibility contract: the drawer ONLY renders when a real URL
+ * is attached. Previously the component always rendered a 28px
+ * collapse-toggle arrow on the right edge of every primary route
+ * (Dashboard / Inbox / Wiki / WeChat / Settings) and, once toggled
+ * open without a URL, a blank "浏览器面板 / 此处将加载网页内容"
+ * placeholder. That leaked developer-console chrome into the default
+ * layer. DS1.3 gates the entire component on `browserUrl`, so:
+ *
+ *   - No URL + toggle closed  → component renders null (no chrome).
+ *   - No URL + toggle open    → component still renders null (empty
+ *                               panel was a DS violation; the toggle
+ *                               button was the only way to reopen it,
+ *                               but since the URL field is null, the
+ *                               drawer has nothing to show anyway).
+ *   - URL present             → full drawer, unchanged behaviour.
+ *
+ * Callers that still emit `openBrowser("")` (for example the
+ * ConnectWeChatPipelinePage phase indicator) degrade gracefully: the
+ * drawer simply doesn't appear and that page continues to convey
+ * phase state via its own left panel + progress bar. The store
+ * contract is unchanged — `openBrowser(url, ...)` with a real URL
+ * (Raw / Inbox / Wiki lineage "打开来源" future callers) still works
+ * exactly as before.
  */
 
 import { useSettingsStore } from "@/state/settings-store";
@@ -21,10 +45,16 @@ export function BrowserDrawer() {
   const toggle = useSettingsStore((s) => s.toggleBrowser);
   const close = useSettingsStore((s) => s.closeBrowser);
 
+  // DS1.3 gate — nothing to show when no URL is attached. We check both
+  // `null` and empty string because some callers (pipeline phases) pass
+  // `""` explicitly to reuse the drawer as a status indicator, which
+  // DS1.3 retires. `trim()` catches whitespace-only sentinels.
+  if (!url || url.trim().length === 0) {
+    return null;
+  }
+
   const handleOpenExternal = () => {
-    if (url) {
-      window.open(url, "_blank");
-    }
+    window.open(url, "_blank");
   };
 
   return (

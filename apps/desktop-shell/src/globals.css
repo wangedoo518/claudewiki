@@ -140,7 +140,7 @@
     --sidebar-accent-foreground: oklch(0.4161 0.0067 95.2);
     --sidebar-border: oklch(0.9485 0.0109 95.2);
     --sidebar-ring: oklch(0.6634 0.1531 248.9);
-    --stone-gray: oklch(0.6188 0.0104 100.1);
+    --stone-gray: oklch(0.60 0.006 95);                        /* = DS #87867f */
     --dark-warm: oklch(0.3590 0.0051 106.6);
     --coral: oklch(0.6724 0.1308 38.8);
     --shadow-warm-ring:        0 0 0 1px oklch(0.8533 0.0138 97.5);
@@ -330,7 +330,7 @@
   }
   ::-webkit-scrollbar-thumb {
     background: oklch(0.7 0.01 95);
-    border-radius: 4px;
+    border-radius: 6px;
   }
   ::-webkit-scrollbar-thumb:hover {
     background: oklch(0.62 0.012 95);
@@ -721,9 +721,13 @@
   width: 36px;
   height: 36px;
   border-radius: 999px;
-  margin: 4px auto 18px;
-  background: linear-gradient(135deg, #e8c7a8, oklch(0.6171 0.1375 39.0));
-  color: #faf9f5;
+  margin: 4px auto 16px;
+  background: linear-gradient(
+    135deg,
+    color-mix(in oklch, var(--claude-orange) 30%, white),
+    oklch(0.6171 0.1375 39.0)
+  );
+  color: var(--color-card);
   font-family: var(--font-serif, "Lora", Georgia, serif);
   font-weight: 500;
   font-size: 15px;
@@ -823,7 +827,7 @@
   height: 8px;
   background: color-mix(in srgb, var(--claude-orange) 18%, transparent);
   z-index: -1;
-  border-radius: 4px;
+  border-radius: 6px;
   transform: skewX(-8deg);
 }
 .ds-home-hero .ds-greet .ds-greet-accent {
@@ -983,11 +987,11 @@
 }
 .ds-step-row[data-state="done"] .ds-step-n {
   background: var(--color-success, oklch(0.58 0.14 150));
-  color: #faf9f5;
+  color: var(--color-card);
 }
 .ds-step-row[data-state="active"] .ds-step-n {
   background: var(--claude-orange);
-  color: #faf9f5;
+  color: var(--color-card);
   box-shadow: 0 0 0 4px color-mix(in srgb, var(--claude-orange) 20%, transparent);
 }
 .ds-step-title {

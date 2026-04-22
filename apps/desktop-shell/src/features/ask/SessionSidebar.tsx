@@ -15,6 +15,7 @@ import {
   Loader2,
   Sparkles,
 } from "lucide-react";
+import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import {
   listSessions,
@@ -22,6 +23,7 @@ import {
   renameSession,
   cleanupEmptySessions,
 } from "./api/client";
+import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import type { DesktopSessionSummary } from "@/lib/tauri";
 
 const sessionListKeys = {
@@ -56,19 +58,27 @@ export function SessionSidebar({
 
   // One-click cleanup for leftover empty "new conversation" sessions.
   // Preserves the session the user currently has active (if any).
+  //
+  // A5-Polish: replaced `window.alert` feedback with `sonner` toasts
+  // and `window.confirm` with the R1 `ConfirmDialog` primitive so the
+  // interaction matches the rest of the product instead of looking
+  // like a native OS alert.
+  const [cleanupConfirmOpen, setCleanupConfirmOpen] = useState(false);
   const cleanupMut = useMutation({
     mutationFn: () => cleanupEmptySessions(activeSessionId),
     onSuccess: (result) => {
       void queryClient.invalidateQueries({ queryKey: sessionListKeys.all });
       const count = result.deleted_count;
       if (count === 0) {
-        window.alert("没有可清理的空会话");
+        toast.info("没有可清理的空会话");
       } else {
-        window.alert(`已清理 ${count} 条空会话`);
+        toast.success(`已清理 ${count} 条空会话`);
       }
     },
     onError: (err) => {
-      window.alert(`清理失败: ${err instanceof Error ? err.message : String(err)}`);
+      toast.error(
+        `清理失败：${err instanceof Error ? err.message : String(err)}`,
+      );
     },
   });
 
@@ -95,11 +105,7 @@ export function SessionSidebar({
           </button>
           <button
             type="button"
-            onClick={() => {
-              if (window.confirm("清理所有空会话？当前激活的会话不会被删除。")) {
-                cleanupMut.mutate();
-              }
-            }}
+            onClick={() => setCleanupConfirmOpen(true)}
             disabled={cleanupMut.isPending}
             className="rounded-md p-1 text-sidebar-foreground transition-colors hover:bg-sidebar-accent disabled:opacity-40"
             title="清理空会话（保留当前会话）"
@@ -113,6 +119,18 @@ export function SessionSidebar({
           {/* Collapse is now handled by the shell sidebar */}
         </div>
       </div>
+
+      <ConfirmDialog
+        open={cleanupConfirmOpen}
+        onOpenChange={setCleanupConfirmOpen}
+        title="清理空会话"
+        description="清理所有没有发送过消息的空会话。当前正在使用的对话不会被删除。"
+        confirmLabel="清理"
+        onConfirm={() => {
+          cleanupMut.mutate();
+          setCleanupConfirmOpen(false);
+        }}
+      />
 
       {/* Session list */}
       <div className="min-h-0 flex-1 overflow-y-auto">
@@ -210,6 +228,10 @@ function SessionItem({
   const [isEditing, setIsEditing] = useState(false);
   const [editValue, setEditValue] = useState(session.title);
   const [showActions, setShowActions] = useState(false);
+  // A5-Polish — single-click delete on a hover-revealed icon is a
+  // footgun. Gate it behind the R1 ConfirmDialog so an accidental
+  // hover-click on the trash doesn't silently wipe a session.
+  const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
   const renameMut = useMutation({
@@ -224,6 +246,12 @@ function SessionItem({
     mutationFn: () => deleteSession(session.id),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: sessionListKeys.all });
+      toast.success("会话已删除");
+    },
+    onError: (err) => {
+      toast.error(
+        `删除失败：${err instanceof Error ? err.message : String(err)}`,
+      );
     },
   });
 
@@ -297,7 +325,7 @@ function SessionItem({
           <button
             onClick={(e) => {
               e.stopPropagation();
-              deleteMut.mutate();
+              setConfirmDeleteOpen(true);
             }}
             className="rounded p-0.5 text-muted-foreground hover:text-destructive"
             title="删除"
@@ -306,6 +334,19 @@ function SessionItem({
           </button>
         </div>
       )}
+
+      <ConfirmDialog
+        open={confirmDeleteOpen}
+        onOpenChange={setConfirmDeleteOpen}
+        title="删除这条对话？"
+        description={`删除后无法恢复。会话标题：「${session.title || "新对话"}」`}
+        confirmLabel="删除"
+        variant="destructive"
+        onConfirm={() => {
+          deleteMut.mutate();
+          setConfirmDeleteOpen(false);
+        }}
+      />
     </div>
   );
 }

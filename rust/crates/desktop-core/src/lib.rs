@@ -3966,25 +3966,126 @@ impl DesktopState {
         let state = self.clone();
         let turn_executor = Arc::clone(&self.turn_executor);
 
-        // Fix: OpenAiCompat providers (Kimi, DeepSeek, Qwen, etc.) need
-        // the OpenAI ChatCompletions format (/chat/completions), but the
-        // agentic loop only speaks Anthropic Messages API (/v1/messages).
-        // When we detect an OpenAiCompat provider, force the fallback path
-        // (execute_live_turn) which has the providers_override logic that
-        // builds the correct OpenAiCompatClient.
-        let runtime_client = match &runtime_client {
-            Ok(client) if client.provider_kind == DesktopManagedAuthProviderKind::OpenAiCompat => {
-                eprintln!(
-                    "[runtime] OpenAiCompat provider detected ({:?}), \
-                     routing through execute_live_turn for correct /chat/completions path",
-                    client.provider_id,
-                );
-                Err(DesktopStateError::ProviderNotFound(
-                    "openai_compat routed to execute_live_turn".into(),
-                ))
+        // A5.1 — OpenAiCompat providers (Kimi, DeepSeek, Qwen, etc.)
+        // take their own streaming path. Before A5.1 we forced them
+        // into `execute_live_turn` → vendored sync `run_turn`, which
+        // never emitted `TextDelta` events, so the UI showed "等一会
+        // 儿、整段落下" instead of real streaming. The new path below
+        // speaks OpenAI ChatCompletions with `stream: true` directly
+        // and broadcasts a `TextDelta` per incoming chunk.
+        let openai_compat_client: Option<DesktopManagedAuthRuntimeClient> =
+            match &runtime_client {
+                Ok(c)
+                    if c.provider_kind == DesktopManagedAuthProviderKind::OpenAiCompat =>
+                {
+                    Some(c.clone())
+                }
+                _ => None,
+            };
+
+        if let Some(oai_client) = openai_compat_client {
+            // Resolve a human-friendly model_label up-front so session
+            // metadata reflects the *actual* provider the user picked
+            // in Settings (pre-A5.1 every session was labeled "Opus 4.6"
+            // regardless of providers.json active = moonshot-kimi).
+            let friendly_label = friendly_openai_compat_label(
+                &oai_client.provider_id,
+                oai_client.default_model.as_deref(),
+            );
+            {
+                let mut store = self.store.write().await;
+                if let Some(record) = store.sessions.get_mut(&session_id) {
+                    record.metadata.model_label = friendly_label.clone();
+                }
             }
-            other => other.clone(),
-        };
+
+            // Flatten the current session messages into OpenAI chat
+            // format. A1/A2/A3 context framing is already applied by
+            // the system_prompt assembly below (see `system_prompt_text`).
+            let session_for_stream = session.clone();
+            let marker_for_openai = crate::ask_context::boundary_marker_for(effective_mode);
+            let bound_prefix_for_openai: Option<String> = bound_body
+                .as_ref()
+                .map(|(s, b)| crate::ask_context::binding::format_bound_source(s, b));
+            let system_prompt_text_openai =
+                build_system_prompt_for_openai_compat(
+                    &project_path,
+                    &bound_prefix_for_openai,
+                    marker_for_openai,
+                    has_enrichment.then(|| enriched.as_str()),
+                    auto_bound_source.as_ref(),
+                );
+
+            let http_client = self.http_client.clone();
+            let state = self.clone();
+            let sender_for_stream = sender.clone();
+            let session_id_for_stream = session_id.clone();
+            let cancel_token_for_stream = cancel_token.clone();
+            let model_for_stream = oai_client
+                .default_model
+                .clone()
+                .unwrap_or_else(|| "moonshot-v1-auto".to_string());
+            let user_message_text = message.clone();
+            let previous_count_for_stream = previous_message_count;
+            let friendly_label_for_stream = friendly_label;
+
+            tokio::spawn(async move {
+                // Flatten messages: existing history + the newly
+                // appended user message.
+                let mut msgs = openai_compat_streaming::messages_from_runtime_session(
+                    &session_for_stream,
+                );
+                msgs.push(openai_compat_streaming::OpenAiChatMessage {
+                    role: "user".to_string(),
+                    content: user_message_text,
+                });
+
+                let config = openai_compat_streaming::StreamingTurnConfig {
+                    base_url: oai_client.base_url.clone(),
+                    api_key: oai_client.bearer_token.clone(),
+                    model: model_for_stream,
+                    messages: msgs,
+                    system_prompt: Some(system_prompt_text_openai),
+                };
+
+                let result = openai_compat_streaming::run_streaming_turn(
+                    &http_client,
+                    config,
+                    &sender_for_stream,
+                    &session_id_for_stream,
+                    &cancel_token_for_stream,
+                )
+                .await;
+
+                // Persist the assistant reply (or a failure marker)
+                // into the session store and broadcast the final
+                // Message + Snapshot so the UI promotes the streaming
+                // buffer to a real assistant message.
+                state
+                    .finalize_openai_compat_turn(
+                        &session_id_for_stream,
+                        session_for_stream,
+                        previous_count_for_stream,
+                        result,
+                        sender_for_stream,
+                        friendly_label_for_stream,
+                    )
+                    .await;
+
+                // Cleanup: drop cancel token + permission gate entries
+                // so a stale gate from this turn doesn't block the
+                // next one. We mimic what `SessionCleanupGuard` does
+                // below in the agentic path.
+                if let Ok(mut tokens) = state.cancel_tokens.try_write() {
+                    tokens.remove(&session_id_for_stream);
+                }
+                if let Ok(mut gates) = state.permission_gates.try_write() {
+                    gates.remove(&session_id_for_stream);
+                }
+            });
+
+            return Ok(detail);
+        }
 
         match runtime_client {
             Ok(client) => {
@@ -4775,6 +4876,116 @@ impl DesktopState {
         };
 
         self.persist().await;
+        let _ = sender.send(DesktopSessionEvent::Snapshot { session: detail });
+    }
+
+    /// A5.1 — Finalize an OpenAI-compat streaming turn: persist the
+    /// accumulated assistant text into the session, emit a Message
+    /// event so the frontend promotes the streaming buffer to a
+    /// permanent bubble, and broadcast the final Snapshot.
+    ///
+    /// `previous_message_count` is the length of `session.messages`
+    /// BEFORE the user message for this turn was pushed. We broadcast
+    /// only new assistant-side messages; the user turn is already
+    /// carried in the POST /sessions/:id/messages response and does
+    /// not need SSE replay (see P1-1: replaying it produced a
+    /// duplicate bubble on the frontend).
+    async fn finalize_openai_compat_turn(
+        &self,
+        session_id: &str,
+        _session: RuntimeSession,
+        previous_message_count: usize,
+        result: Result<
+            (ConversationMessage, Option<String>),
+            String,
+        >,
+        sender: broadcast::Sender<DesktopSessionEvent>,
+        model_label_hint: String,
+    ) {
+        // Push the user's message if the caller didn't already (they
+        // didn't — `session` is the pre-turn clone).
+        // Note: the outer `append_user_message` already persisted the
+        // user message into the session at line 3757 via
+        // `record.session.messages.push(user_message.clone())` BEFORE
+        // cloning. Here we only need to add the assistant reply.
+
+        let (assistant_msg, upstream_model, error_text) = match result {
+            Ok((msg, model)) => (Some(msg), model, None),
+            Err(error) => {
+                eprintln!(
+                    "[openai-compat-stream] session={session_id} turn failed: {error}"
+                );
+                let err_msg = ConversationMessage {
+                    role: runtime::MessageRole::Assistant,
+                    blocks: vec![runtime::ContentBlock::Text {
+                        text: format!(
+                            "Desktop runtime couldn't stream this turn.\n\n{error}"
+                        ),
+                    }],
+                    usage: None,
+                };
+                (Some(err_msg), None, Some(error))
+            }
+        };
+
+        // Prefer the upstream-echoed model id (OpenAI's chunks carry
+        // `.model`) over the placeholder from providers.json.
+        let final_label = match (upstream_model, &error_text) {
+            (Some(m), None) => {
+                // Keep the human-friendly provider prefix, swap in the
+                // real model: e.g. "Moonshot (Kimi) · moonshot-v1-8k".
+                match model_label_hint.split_once(" · ") {
+                    Some((p, _)) => format!("{p} · {m}"),
+                    None => format!("{model_label_hint} · {m}"),
+                }
+            }
+            _ => model_label_hint,
+        };
+
+        let detail = {
+            let mut store = self.store.write().await;
+            let Some(record) = store.sessions.get_mut(session_id) else {
+                return;
+            };
+            let mut final_session = record.session.clone();
+            if let Some(msg) = assistant_msg.as_ref() {
+                final_session.push_message(msg.clone()).unwrap_or_default();
+            }
+            record.metadata.updated_at = unix_timestamp_millis();
+            record.metadata.bucket = DesktopSessionBucket::Today;
+            record.metadata.turn_state = DesktopTurnState::Idle;
+            record.metadata.model_label = final_label;
+            if record.metadata.lifecycle_status == DesktopLifecycleStatus::InProgress {
+                record.metadata.lifecycle_status = DesktopLifecycleStatus::NeedsReview;
+            }
+            record.session = final_session;
+            record.detail()
+        };
+
+        self.persist().await;
+
+        // Broadcast only new assistant-side messages (P1-1 fix).
+        // The user turn at index `previous_message_count` is already
+        // returned by POST /sessions/:id/messages, so re-broadcasting
+        // it via SSE would produce a duplicate bubble on the frontend.
+        // We skip one extra element past the user turn.
+        let store = self.store.read().await;
+        if let Some(record) = store.sessions.get(session_id) {
+            let tail = record
+                .session
+                .messages
+                .iter()
+                .skip(previous_message_count + 1)
+                .cloned()
+                .collect::<Vec<_>>();
+            drop(store);
+            for message in tail {
+                let _ = sender.send(DesktopSessionEvent::Message {
+                    session_id: session_id.to_string(),
+                    message: DesktopConversationMessage::from(&message),
+                });
+            }
+        }
         let _ = sender.send(DesktopSessionEvent::Snapshot { session: detail });
     }
 }
@@ -6919,6 +7130,72 @@ fn humanize_model_label(model: &str) -> String {
         "claude-sonnet-4-6" => "Sonnet 4.6".to_string(),
         _ => model.to_string(),
     }
+}
+
+/// A5.1 — derive a user-friendly session `model_label` for
+/// OpenAI-compat providers resolved from providers.json. Before A5.1
+/// every openai_compat session was labeled "Opus 4.6" because
+/// execute_live_turn stamped `humanize_model_label(DEFAULT_MODEL_ID)`
+/// regardless of the provider override. Now we read the provider_id
+/// (which `resolve_runtime_credentials` sets to
+/// "providers-json:<active_id>") and fall back to the model string.
+fn friendly_openai_compat_label(provider_id: &str, model: Option<&str>) -> String {
+    let active_id = provider_id
+        .strip_prefix("providers-json:")
+        .unwrap_or(provider_id);
+    let pretty_provider = match active_id {
+        "moonshot-kimi" => Some("Moonshot (Kimi)"),
+        "deepseek" => Some("DeepSeek"),
+        "qwen" | "qwen-code" => Some("Qwen"),
+        "glm" | "zhipu" => Some("智谱 GLM"),
+        "xai" | "grok" => Some("xAI Grok"),
+        _ => None,
+    };
+    match (pretty_provider, model) {
+        (Some(p), Some(m)) => format!("{p} · {m}"),
+        (Some(p), None) => p.to_string(),
+        (None, Some(m)) => m.to_string(),
+        (None, None) => active_id.to_string(),
+    }
+}
+
+/// A5.1 — Build a compact system prompt for the OpenAI-compat
+/// streaming path. We intentionally do NOT replay the full
+/// `load_system_prompt` block used by the Anthropic agentic loop —
+/// OpenAI-compat providers don't do tool use from the Ask page and
+/// the heavy system prompt noise regresses first-token latency. We
+/// do preserve the A1/A2/A3 context-basis framing (bound source
+/// prefix + mode marker + enrichment) because that's the part that
+/// shapes the LLM's answer for URL-carrying turns.
+fn build_system_prompt_for_openai_compat(
+    _project_path: &str,
+    bound_prefix: &Option<String>,
+    marker: Option<&'static str>,
+    enrichment: Option<&str>,
+    auto_bound_source: Option<&crate::ask_context::binding::SourceRef>,
+) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    parts.push(
+        "You are a helpful assistant. Answer in the same language the user \
+         writes in — default to Chinese when the user writes in Chinese. \
+         Be concise, use Markdown when helpful."
+            .to_string(),
+    );
+    if let Some(bind) = bound_prefix {
+        parts.push(bind.clone());
+    }
+    if let Some(m) = marker {
+        parts.push(m.to_string());
+    }
+    if let Some(content) = enrichment {
+        parts.push(content.to_string());
+    }
+    if bound_prefix.is_none() && auto_bound_source.is_some() {
+        parts.push(
+            crate::ask_context::binding::grounding_instruction_block().to_string(),
+        );
+    }
+    parts.join("\n\n")
 }
 
 fn build_customize_state(project_path: String) -> DesktopCustomizeState {

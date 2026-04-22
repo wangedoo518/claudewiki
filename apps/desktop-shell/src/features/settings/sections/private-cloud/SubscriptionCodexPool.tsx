@@ -27,6 +27,7 @@ import {
   type CodexAccountStatus,
 } from "../../api/private-cloud";
 import { SettingGroup, SettingRow } from "../../components/SettingGroup";
+import { StatCard } from "@/components/ds/StatCard";
 
 const brokerKeys = {
   status: () => ["broker", "status"] as const,
@@ -157,29 +158,34 @@ function StatusSnapshot({
   return (
     <div className="grid grid-cols-2 gap-2 md:grid-cols-4">
       <StatCard
+        layout="compact"
         icon={ServerCog}
         label="池大小"
         value={String(status.pool_size)}
       />
       <StatCard
+        layout="compact"
         icon={Shield}
         label="可用"
         value={String(status.fresh_count)}
         tint="var(--color-success)"
       />
       <StatCard
+        layout="compact"
         icon={AlertTriangle}
         label="即将过期"
         value={String(status.expiring_count)}
         tint="var(--color-warning)"
       />
       <StatCard
+        layout="compact"
         icon={AlertTriangle}
         label="已过期"
         value={String(status.expired_count)}
         tint="var(--color-error)"
       />
       <StatCard
+        layout="compact"
         icon={ServerCog}
         label="今日请求"
         value={status.requests_today.toLocaleString()}
@@ -192,33 +198,6 @@ function StatusSnapshot({
             {new Date(status.next_refresh_at_epoch * 1000).toISOString()}
           </div>
         )}
-      </div>
-    </div>
-  );
-}
-
-function StatCard({
-  icon: Icon,
-  label,
-  value,
-  tint,
-}: {
-  icon: typeof ServerCog;
-  label: string;
-  value: string;
-  tint?: string;
-}) {
-  return (
-    <div className="rounded-md border border-border bg-muted/10 px-3 py-2">
-      <div className="mb-1 flex items-center gap-1.5 text-caption text-muted-foreground">
-        <Icon className="size-3" style={tint ? { color: tint } : undefined} />
-        {label}
-      </div>
-      <div
-        className="text-subhead font-semibold tabular-nums"
-        style={tint ? { color: tint } : { color: "var(--color-foreground)" }}
-      >
-        {value}
       </div>
     </div>
   );

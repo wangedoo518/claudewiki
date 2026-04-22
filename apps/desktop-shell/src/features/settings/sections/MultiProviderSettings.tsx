@@ -29,6 +29,7 @@ import { cn } from "@/lib/utils";
 import {
   activateProvider,
   deleteProvider,
+  getSettings,
   listProviders,
   listProviderTemplates,
   testProvider,
@@ -67,12 +68,26 @@ export function MultiProviderSettings() {
     Record<string, ProviderTestResult>
   >({});
 
+  // P1-3 — canonical project_path plumbing. Must match the source of
+  // truth used by AskPage/ChatSidePanel so the Settings provider
+  // registry writes land in the same `.claw/providers.json` the Ask
+  // runtime reads. Without this, creating a provider in Settings
+  // appears to succeed but Ask keeps falling through to its empty
+  // current_dir() registry, and the header pill stays on "Opus 4.6".
+  const settingsQuery = useQuery({
+    queryKey: ["desktop", "settings"],
+    queryFn: getSettings,
+    staleTime: 5 * 60 * 1000,
+  });
+  const projectPath = settingsQuery.data?.settings?.project_path;
+
   const providersQuery = useQuery({
-    queryKey: ["providers", "list"],
-    queryFn: () => listProviders(),
+    queryKey: ["providers", "list", projectPath ?? ""],
+    queryFn: () => listProviders(projectPath),
     // Providers change infrequently; avoid refetching on every remount.
     // Mutations explicitly invalidate this key.
     staleTime: 30_000,
+    enabled: settingsQuery.isSuccess,
   });
 
   const templatesQuery = useQuery({
@@ -84,26 +99,32 @@ export function MultiProviderSettings() {
   });
 
   const activateMutation = useMutation({
-    mutationFn: (id: string) => activateProvider(id),
+    mutationFn: (id: string) => activateProvider(id, projectPath),
     onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: ["providers", "list"] });
+      await queryClient.invalidateQueries({
+        queryKey: ["providers", "list", projectPath ?? ""],
+      });
     },
     onError: (err) => setFlashError(errorMessage(err)),
   });
 
   const deleteMutation = useMutation({
-    mutationFn: (id: string) => deleteProvider(id),
+    mutationFn: (id: string) => deleteProvider(id, projectPath),
     onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: ["providers", "list"] });
+      await queryClient.invalidateQueries({
+        queryKey: ["providers", "list", projectPath ?? ""],
+      });
     },
     onError: (err) => setFlashError(errorMessage(err)),
   });
 
   const upsertMutation = useMutation({
     mutationFn: (request: Parameters<typeof upsertProvider>[0]) =>
-      upsertProvider(request),
+      upsertProvider({ ...request, project_path: projectPath }),
     onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: ["providers", "list"] });
+      await queryClient.invalidateQueries({
+        queryKey: ["providers", "list", projectPath ?? ""],
+      });
       setShowAddForm(false);
       setEditingProvider(null);
     },
@@ -111,7 +132,7 @@ export function MultiProviderSettings() {
   });
 
   const testMutation = useMutation({
-    mutationFn: (id: string) => testProvider(id),
+    mutationFn: (id: string) => testProvider(id, projectPath),
     onSuccess: (result, id) => {
       setTestResults((prev) => ({ ...prev, [id]: result }));
     },

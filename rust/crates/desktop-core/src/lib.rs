@@ -57,6 +57,11 @@ pub mod protocol_codegen;
 // generic compatible-gateway support. Users configure Anthropic-
 // compatible and OpenAI-compatible providers via the settings UI.
 pub mod providers_config;
+// A5.1 — OpenAI-compat ChatCompletions streaming path. Used when
+// providers.json active = openai_compat (Moonshot/Kimi/DeepSeek/Qwen/…)
+// so the Ask UI sees real `TextDelta` events instead of a single
+// "整段落下" Message event at the end of the turn.
+pub mod openai_compat_streaming;
 pub mod secure_storage;
 pub mod system_prompt;
 // M2 runtime prerequisite classifier. Turns raw stderr / IngestError

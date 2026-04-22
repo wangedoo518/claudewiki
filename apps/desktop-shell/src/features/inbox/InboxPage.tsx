@@ -2068,7 +2068,7 @@ function MaintainerErrorBanner({
     return (
       <FailureBanner
         severity="warning"
-        title="⚠️ 无法生成知识页面提案"
+        title="无法生成知识页面提案"
         description="大模型返回的内容格式异常，可能是网络中断或 API 超时。重试通常能解决。"
         technicalDetail={raw}
         actions={
@@ -2083,7 +2083,7 @@ function MaintainerErrorBanner({
     return (
       <FailureBanner
         severity="warning"
-        title="🔄 内容已更新"
+        title="内容已更新"
         description="这个 Wiki 页面在你生成提案后已被修改。请重新生成提案以合并最新内容。"
         technicalDetail={raw}
         actions={

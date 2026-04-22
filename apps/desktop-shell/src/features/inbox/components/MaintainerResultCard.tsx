@@ -147,7 +147,7 @@ function classifyMaintainerError(raw: string): MaintainerErrorCopy {
   if (/invalid\s+json|BadJson|failed\s+to\s+parse\s+json/i.test(text)) {
     return {
       kind: "bad_json",
-      title: "⚠️ 无法生成知识页面提案",
+      title: "无法生成知识页面提案",
       description:
         "大模型返回的内容格式异常，可能是网络中断或 API 超时。重试通常能解决。",
       retryLabel: "重试",
@@ -160,7 +160,7 @@ function classifyMaintainerError(raw: string): MaintainerErrorCopy {
   ) {
     return {
       kind: "concurrent_edit",
-      title: "🔄 内容已更新",
+      title: "内容已更新",
       description:
         "这个 Wiki 页面在你生成提案后已被修改。请重新生成提案以合并最新内容。",
       retryLabel: "重新生成提案",

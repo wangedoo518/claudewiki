@@ -227,21 +227,26 @@ export function WeChatBridgePage() {
   const bridgeHealth = bridgeHealthQuery.data;
 
   return (
-    <div className="flex h-full flex-col overflow-hidden">
-      {/* Hero — DS1-C reframed as user onboarding.
-          Pre-DS1 the hero subtitle was technical runtime jargon
-          ("iLink 登录 · 长轮询 · 文本自动入 ~/.clawwiki/raw/"). The
-          v2 design language wants the default layer to answer
-          "我现在该怎么接微信？" — so the subtitle now describes the
-          outcome in plain Chinese, and the raw control ("配置群组") is
-          tucked behind the 高级信息 panel below. */}
-      <div className="shrink-0 border-b border-border/50 px-6 py-5">
-        <h1 className="text-lg text-foreground">微信接入</h1>
-        <p
-          className="mt-1 text-muted-foreground"
-          style={{ fontSize: 13, lineHeight: 1.6 }}
+    <div className="ds-canvas flex h-full flex-col overflow-hidden">
+      {/* DS1.1 Hero — editorial onboarding layout.
+          Follows `ClawWiki Design System/ui_kits/desktop-shell-v2/Connect.jsx`:
+          a small `section-label` overline, a serif h1 in Chinese, then
+          a plain-Chinese explanation of what happens. No iLink / long
+          polling / raw path / pipeline wording at the default layer. */}
+      <div className="mx-auto w-full max-w-[760px] shrink-0 px-6 pt-10 pb-4">
+        <div
+          className="text-[11px] font-medium uppercase tracking-[0.08em] text-muted-foreground/70"
         >
-          把微信当成外脑入口 —— 转发文章、语音、图片到绑定的小号，ClawWiki 会自动接收并整理进知识库。
+          连接外脑 · 微信
+        </div>
+        <h1
+          className="mt-1 text-[28px] leading-tight text-foreground"
+          style={{ fontFamily: "var(--font-serif, \"Lora\", Georgia, serif)", fontWeight: 500, letterSpacing: "-0.2px" }}
+        >
+          让微信里的内容自动流进来
+        </h1>
+        <p className="mt-3 text-[14px] leading-[1.7] text-muted-foreground">
+          用一个专属小号当作"外脑入口"。看到值得收藏的文章、语音、图片，转发给这个小号，ClawWiki 会自动接收、整理并归档。
         </p>
       </div>
 
@@ -496,117 +501,77 @@ function OnboardingSteps({
   onStartBind: () => void;
   bindPending: boolean;
 }) {
-  const steps: ReadonlyArray<{ n: number; title: string; desc: string }> = [
+  type StepState = "done" | "active" | "pending";
+  interface Step {
+    n: number;
+    title: string;
+    desc: string;
+    state: StepState;
+  }
+  const steps: ReadonlyArray<Step> = [
     {
       n: 1,
-      title: "连接微信",
-      desc: "用主号扫码，把一个专属小号绑到 ClawWiki 做外脑入口。",
+      title: "扫码绑定微信小号",
+      desc: "用你的主号扫一下，就能和外脑小号建立连接。",
+      state: hasConnectedAccount ? "done" : "active",
     },
     {
       n: 2,
-      title: "转发一条内容",
-      desc: "任意公众号文章、语音、图片，转发给这个小号即可。",
+      title: "转发一条内容试试",
+      desc: "任何一篇公众号文章、一段语音、一张图片都行。",
+      state: hasConnectedAccount ? "active" : "pending",
     },
     {
       n: 3,
       title: "在待整理里查看",
-      desc: "通常几秒内到达，可以直接在待整理中审阅、归档到知识库。",
+      desc: "通常几秒内到达，可以直接审阅、归档进知识库。",
+      state: "pending",
     },
   ];
 
   return (
-    <section className="shrink-0 border-b border-border/50 px-6 py-5">
-      <div className="mb-4 flex items-center justify-between gap-4">
-        <div>
-          <h2
-            className="uppercase tracking-widest text-muted-foreground/60"
-            style={{ fontSize: 11 }}
-          >
-            三步接入
-          </h2>
-          <p
-            className="mt-1 text-muted-foreground/70"
-            style={{ fontSize: 12 }}
-          >
-            {hasConnectedAccount
-              ? "已绑定至少一个小号；可直接转发内容验证。"
-              : "还没有绑定的微信小号，从第一步开始即可。"}
-          </p>
-        </div>
-        {!hasConnectedAccount && (
-          <button
-            type="button"
-            onClick={onStartBind}
-            disabled={bindPending}
-            className="inline-flex items-center gap-1.5 rounded-md bg-primary px-4 py-2 text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"
-            style={{ fontSize: 13, fontWeight: 500 }}
-          >
-            {bindPending ? (
-              <Loader2 className="size-3 animate-spin" />
-            ) : (
-              <QrCode className="size-3" />
-            )}
-            开始扫码绑定
-          </button>
-        )}
-      </div>
-      <ol
-        className="grid gap-3 sm:grid-cols-3"
-        aria-label="微信接入的三步流程"
+    <section className="mx-auto w-full max-w-[760px] shrink-0 px-6 pb-6">
+      <div
+        className="rounded-[14px] border bg-card px-6 py-2 shadow-warm-ring"
+        style={{ borderColor: "var(--color-border)" }}
       >
-        {steps.map((step) => {
-          const done = hasConnectedAccount && step.n === 1;
-          return (
-            <li
-              key={step.n}
-              className="rounded-xl border border-border/50 bg-card px-4 py-3 shadow-warm-ring"
-              style={
-                done
-                  ? { borderLeft: "3px solid var(--color-success)" }
-                  : step.n === 1
-                    ? { borderLeft: "3px solid var(--claude-orange)" }
-                    : undefined
-              }
-            >
-              <div className="flex items-center gap-2">
-                <span
-                  className="inline-flex size-5 items-center justify-center rounded-full text-[11px] font-semibold tabular-nums"
-                  style={
-                    done
-                      ? {
-                          backgroundColor: "var(--color-success)",
-                          color: "white",
-                        }
-                      : step.n === 1
-                        ? {
-                            backgroundColor: "var(--claude-orange)",
-                            color: "white",
-                          }
-                        : {
-                            backgroundColor: "var(--muted, #e8e6dc)",
-                            color: "var(--color-foreground)",
-                          }
-                  }
+        {steps.map((step) => (
+          <div key={step.n} className="ds-step-row" data-state={step.state}>
+            <div className="ds-step-n">
+              {step.state === "done" ? (
+                <CheckCircle2 className="size-3.5" strokeWidth={2} />
+              ) : (
+                step.n
+              )}
+            </div>
+            <div className="min-w-0 flex-1">
+              <div className="ds-step-title">{step.title}</div>
+              <p className="ds-step-desc">{step.desc}</p>
+              {step.state === "active" && step.n === 1 && (
+                <button
+                  type="button"
+                  onClick={onStartBind}
+                  disabled={bindPending}
+                  className="mt-3 inline-flex items-center gap-1.5 rounded-md bg-primary px-4 py-2 text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"
+                  style={{ fontSize: 13, fontWeight: 500 }}
                 >
-                  {done ? <CheckCircle2 className="size-3" /> : step.n}
-                </span>
-                <span
-                  className="font-medium text-foreground"
-                  style={{ fontSize: 13 }}
-                >
-                  {step.title}
-                </span>
-              </div>
-              <p
-                className="mt-2 text-muted-foreground/80"
-                style={{ fontSize: 12, lineHeight: 1.6 }}
-              >
-                {step.desc}
-              </p>
-            </li>
-          );
-        })}
-      </ol>
+                  {bindPending ? (
+                    <Loader2 className="size-3 animate-spin" strokeWidth={1.5} />
+                  ) : (
+                    <QrCode className="size-3" strokeWidth={1.5} />
+                  )}
+                  开始扫码绑定
+                </button>
+              )}
+              {step.state === "active" && step.n === 2 && (
+                <p className="mt-2 text-[11.5px] text-muted-foreground/70">
+                  已绑定小号，转发一条内容试试。
+                </p>
+              )}
+            </div>
+          </div>
+        ))}
+      </div>
     </section>
   );
 }

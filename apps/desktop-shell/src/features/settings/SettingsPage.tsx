@@ -1,23 +1,57 @@
-import { useState, useEffect } from "react";
-import { useQuery } from "@tanstack/react-query";
+/**
+ * SettingsPage — DS1.4 · editorial settings center.
+ *
+ * IA mapping (pre-DS1.4 → DS1.4):
+ *
+ *   general          ─┐
+ *   shortcuts        ─┴→  外观与快捷键       (appearance)
+ *
+ *   provider         ─┐
+ *   multi-provider   ─┤
+ *   codex-pool       ─┴→  账户与模型          (account-model)
+ *
+ *   wechat           ──→  微信接入            (wechat)
+ *
+ *   permissions      ──→  权限与安全          (security)
+ *
+ *   storage          ─┐
+ *   data             ─┤
+ *   about            ─┴→  数据与备份          (data-backup)
+ *
+ *   mcp              ──→  高级                (advanced)
+ *
+ * Deep-link aliases: legacy `?tab=` query values are routed to the
+ * new group and, where a group contains multiple old sections, scroll
+ * the right pane to the relevant card. Nothing old gets removed.
+ *
+ * Visual contract:
+ *   - serif h1 "设置" + caption at top (editorial header)
+ *   - 176 px left nav + flexible content (max 860 px wide), LEFT-aligned
+ *   - Each section renders inside `.ds-settings-card`; cards stack with
+ *     12 px gap. No more mx-auto max-w-3xl island.
+ *   - Existing section components (GeneralSettings / ProviderSettings /
+ *     WeChatSettings / McpSettings / …) are mounted verbatim inside
+ *     the new shell — DS1.4 is a wrapper pass, not a business rewrite.
+ *     The one exception is PermissionSettings, where the English
+ *     "Permission Mode / Runtime value" copy was user-visible noise
+ *     and gets localised in a separate edit.
+ */
+
+import { useCallback, useEffect, useMemo } from "react";
 import { useTranslation } from "react-i18next";
+import { useQuery } from "@tanstack/react-query";
+import { useSearchParams } from "react-router-dom";
 import {
-  Settings,
-  Key,
-  ServerCog,
+  Cpu,
   MessageCircle,
-  Plug,
-  Shield,
-  Keyboard,
+  ShieldCheck,
+  Palette,
   Database,
-  HardDrive,
-  Info,
+  Wrench,
   Loader2,
+  type LucideIcon,
 } from "lucide-react";
-import { ScrollArea } from "@/components/ui/scroll-area";
-import { Separator } from "@/components/ui/separator";
-import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { cn } from "@/lib/utils";
+
 import { GeneralSettings } from "./sections/GeneralSettings";
 import { ProviderSettings } from "./sections/ProviderSettings";
 import { MultiProviderSettings } from "./sections/MultiProviderSettings";
@@ -40,85 +74,145 @@ import {
 } from "@/lib/tauri";
 import { useSettingsStore } from "@/state/settings-store";
 
-type SettingsSection =
-  | "general"
-  | "provider"
-  | "multi-provider"
-  | "codex-pool"
-  | "wechat"
-  | "mcp"
-  | "permissions"
-  | "shortcuts"
-  | "storage"
-  | "data"
-  | "about";
+/* ─── Group taxonomy ──────────────────────────────────────────── */
 
-interface MenuItem {
-  id: SettingsSection;
-  i18nKey: string;
-  icon: typeof Settings;
-  labelOverride?: string;
+type GroupId =
+  | "account-model"
+  | "wechat"
+  | "security"
+  | "appearance"
+  | "data-backup"
+  | "advanced";
+
+interface GroupMeta {
+  id: GroupId;
+  label: string;
+  caption: string;
+  icon: LucideIcon;
 }
 
-const MENU_ITEMS: MenuItem[] = [
-  { id: "general", i18nKey: "settings.general", icon: Settings },
-  { id: "provider", i18nKey: "settings.provider", icon: Key },
+const GROUPS: readonly GroupMeta[] = [
   {
-    id: "multi-provider",
-    i18nKey: "settings.multiProvider",
-    icon: ServerCog,
-    labelOverride: "LLM Gateway",
+    id: "account-model",
+    label: "账户与模型",
+    caption: "选择 Ask 默认使用的模型服务。连接后 ClawWiki 用这个模型回答问题和整理内容。",
+    icon: Cpu,
   },
-  // S2: Codex pool read-only panel. The broker lives in the Rust
-  // process (canonical §9.2); this entry is the only user-facing
-  // surface — there is no provider picker, no API-key paste form.
-  {
-    id: "codex-pool",
-    i18nKey: "settings.codexPool",
-    icon: ServerCog,
-    labelOverride: "订阅池",
-  },
-  // Phase 6C: WeChat account management (list + QR login + delete).
-  // Sits between multi-provider (backend config) and MCP (tool config)
-  // because it's a per-user "which channels do you talk through" setting.
   {
     id: "wechat",
-    i18nKey: "settings.wechat",
+    label: "微信接入",
+    caption: "管理已绑定的微信小号。第一次接入请从「微信接入」页开始。",
     icon: MessageCircle,
-    labelOverride: "WeChat 账号",
   },
-  { id: "mcp", i18nKey: "settings.mcp", icon: Plug },
-  { id: "permissions", i18nKey: "settings.permissions", icon: Shield },
-  { id: "shortcuts", i18nKey: "settings.shortcuts", icon: Keyboard },
   {
-    id: "storage",
-    i18nKey: "settings.storage",
-    icon: HardDrive,
-    labelOverride: "数据存储",
+    id: "security",
+    label: "权限与安全",
+    caption: "决定执行工具和修改文件前是否需要你确认。灰度测试建议保持「需要确认」。",
+    icon: ShieldCheck,
   },
-  { id: "data", i18nKey: "settings.data", icon: Database },
-  { id: "about", i18nKey: "settings.about", icon: Info },
+  {
+    id: "appearance",
+    label: "外观与快捷键",
+    caption: "调整主题、字号、界面语言，以及常用快捷键。",
+    icon: Palette,
+  },
+  {
+    id: "data-backup",
+    label: "数据与备份",
+    caption: "查看本地知识库位置，导出或备份你的数据。",
+    icon: Database,
+  },
+  {
+    id: "advanced",
+    label: "高级",
+    caption: "工具插件、模型网关、运行路径等给工程用户的细节。多数人可忽略。",
+    icon: Wrench,
+  },
 ];
 
-export function SettingsPage() {
-  const [active, setActive] = useState<SettingsSection>("general");
-  const { t, i18n } = useTranslation();
+/**
+ * Map a legacy `?tab=` value to its new group + optional anchor. When
+ * a link from an old surface lands here we still honour it.
+ */
+function aliasLegacyTab(legacy: string | null): {
+  group: GroupId;
+  anchor: string | null;
+} {
+  switch (legacy) {
+    case "general":
+    case "shortcuts":
+    case "appearance":
+      return { group: "appearance", anchor: legacy === "shortcuts" ? "shortcuts" : null };
+    case "provider":
+    case "multi-provider":
+    case "codex-pool":
+    case "account-model":
+      return { group: "account-model", anchor: legacy };
+    case "wechat":
+      return { group: "wechat", anchor: null };
+    case "permissions":
+    case "security":
+      return { group: "security", anchor: null };
+    case "storage":
+    case "data":
+    case "about":
+    case "data-backup":
+      return { group: "data-backup", anchor: legacy === "about" ? "about" : null };
+    case "mcp":
+    case "advanced":
+      return { group: "advanced", anchor: null };
+    default:
+      return { group: "account-model", anchor: null };
+  }
+}
 
+/* ─── Page component ─────────────────────────────────────────── */
+
+export function SettingsPage() {
+  const [searchParams, setSearchParams] = useSearchParams();
   const language = useSettingsStore((state) => state.language);
+  const { i18n } = useTranslation();
+
+  // Seed default group from legacy `?tab=` alias so deep-links keep
+  // working. When the URL has no tab query, default to 账户与模型.
+  const initial = useMemo(
+    () => aliasLegacyTab(searchParams.get("tab")),
+    [searchParams],
+  );
+  const activeGroup: GroupId = initial.group;
+  const anchor = initial.anchor;
+
+  const setGroup = useCallback(
+    (next: GroupId) => {
+      const params = new URLSearchParams(searchParams);
+      if (next === "account-model") {
+        params.delete("tab");
+      } else {
+        params.set("tab", next);
+      }
+      setSearchParams(params, { replace: true });
+    },
+    [searchParams, setSearchParams],
+  );
+
+  // Keep i18n in sync with the user-preferred language (pre-DS1.4
+  // behaviour: Settings was often the first page users land on, and
+  // if they'd changed the language persisted in the store we want it
+  // reflected everywhere on load).
   useEffect(() => {
     void i18n.changeLanguage(language);
   }, [language, i18n]);
 
+  // Shared backend data — fetched once per page load. Individual
+  // sections read the slices they need.
   const bootstrapQuery = useQuery({
     queryKey: settingsKeys.bootstrap(),
     queryFn: getBootstrap,
   });
-
   const settingsQuery = useQuery({
     queryKey: settingsKeys.settings(),
     queryFn: getSettings,
   });
-
   const customizeQuery = useQuery({
     queryKey: settingsKeys.customize(),
     queryFn: getCustomize,
@@ -126,17 +220,7 @@ export function SettingsPage() {
 
   const privateCloudEnabled =
     bootstrapQuery.data?.private_cloud_enabled === true;
-  const menuItems = MENU_ITEMS.filter(
-    (item) => privateCloudEnabled || item.id !== "codex-pool"
-  );
 
-  useEffect(() => {
-    if (!privateCloudEnabled && active === "codex-pool") {
-      setActive("general");
-    }
-  }, [active, privateCloudEnabled]);
-
-  // Treat error states as "loaded with null data" — pages have fallback values
   const isLoading =
     (bootstrapQuery.isLoading && !bootstrapQuery.isError) ||
     (settingsQuery.isLoading && !settingsQuery.isError) ||
@@ -144,175 +228,267 @@ export function SettingsPage() {
   const error = extractErrorMessage(
     bootstrapQuery.error,
     settingsQuery.error,
-    customizeQuery.error
+    customizeQuery.error,
   );
 
+  const currentMeta = GROUPS.find((g) => g.id === activeGroup) ?? GROUPS[0];
+
   return (
-    <Tabs
-      value={active}
-      onValueChange={(v) => setActive(v as SettingsSection)}
-      orientation="vertical"
-      className="flex h-full"
-    >
-      {/* Left rail — static title + Separator sit OUTSIDE TabsList
-          so the ARIA tablist contains only role="tab" elements.
-          TabsList gets keyboard arrow-key nav + focus-visible ring. */}
-      <div className="flex w-[200px] shrink-0 flex-col border-r border-border/50">
-        <div className="px-4 py-3">
-          <h2 className="uppercase tracking-widest text-muted-foreground/60" style={{ fontSize: 11 }}>{t("settings.title")}</h2>
+    <div className="ds-settings-shell ds-canvas">
+      <header className="ds-settings-header">
+        <h1 className="ds-settings-title">设置</h1>
+        <p className="ds-settings-subtitle">
+          调整模型、权限、微信接入和本地数据。
+        </p>
+      </header>
+
+      <div className="ds-settings-layout">
+        <nav className="ds-settings-nav" aria-label="设置分组">
+          {GROUPS.map((g) => {
+            const Icon = g.icon;
+            return (
+              <button
+                key={g.id}
+                type="button"
+                onClick={() => setGroup(g.id)}
+                className="ds-settings-nav-item"
+                data-active={g.id === activeGroup || undefined}
+                aria-current={g.id === activeGroup ? "page" : undefined}
+              >
+                <Icon
+                  className="size-3.5 shrink-0"
+                  strokeWidth={1.5}
+                  aria-hidden="true"
+                />
+                <span>{g.label}</span>
+              </button>
+            );
+          })}
+        </nav>
+
+        <div className="ds-settings-content">
+          <div className="ds-settings-content-inner">
+            <div className="ds-settings-section-head">
+              <h2 className="ds-settings-section-h">{currentMeta.label}</h2>
+              <p className="ds-settings-section-help">{currentMeta.caption}</p>
+            </div>
+
+            <GroupBody
+              group={activeGroup}
+              anchor={anchor}
+              privateCloudEnabled={privateCloudEnabled}
+              isLoading={isLoading}
+              bootstrap={bootstrapQuery.data}
+              settings={settingsQuery.data?.settings ?? null}
+              customize={customizeQuery.data?.customize ?? null}
+              error={error}
+            />
+          </div>
         </div>
-        <Separator className="opacity-50" />
-        <TabsList
-          className={cn(
-            "flex h-auto flex-1 flex-col items-stretch justify-start",
-            "rounded-none bg-transparent px-1.5 py-1.5",
-          )}
-        >
-          {menuItems.map((item) => (
-            <TabsTrigger
-              key={item.id}
-              value={item.id}
-              id={`settings-tab-${item.id}`}
-              aria-controls={`settings-panel-${item.id}`}
-              className={cn(
-                "flex w-full items-center justify-start gap-2 rounded-none px-3 py-1.5",
-                "h-auto flex-none text-sm font-normal",
-                "border-l-[3px] border-l-transparent",
-                "data-[state=active]:border-l-primary data-[state=active]:bg-transparent",
-                "data-[state=active]:text-foreground data-[state=active]:font-medium",
-                "data-[state=active]:shadow-none",
-                "text-muted-foreground hover:text-foreground transition-colors",
-              )}
-              style={{ fontSize: 13 }}
-            >
-              <item.icon className="size-3.5" />
-              {item.labelOverride ?? t(item.i18nKey)}
-            </TabsTrigger>
-          ))}
-        </TabsList>
       </div>
-
-      {/* Right content panel — manually driven by `active` so only the
-          visible section mounts (11 sections include heavy React Query
-          hooks; mounting all would be wasteful). */}
-      <ScrollArea className="flex-1">
-        <div
-          role="tabpanel"
-          id={`settings-panel-${active}`}
-          aria-labelledby={`settings-tab-${active}`}
-          className={cn(
-            "px-6 py-4",
-            active === "provider" ? "max-w-none px-5" : "mx-auto max-w-3xl"
-          )}
-        >
-          <h2 className="mb-4 text-lg text-foreground">
-            {(() => {
-              const current =
-                menuItems.find((m) => m.id === active) ?? menuItems[0];
-              return current?.labelOverride ?? t(current?.i18nKey ?? "");
-            })()}
-          </h2>
-
-          <SettingsContent
-            section={active}
-            isLoading={isLoading}
-            bootstrap={bootstrapQuery.data}
-            settings={settingsQuery.data?.settings ?? null}
-            customize={customizeQuery.data?.customize ?? null}
-            error={error}
-          />
-        </div>
-      </ScrollArea>
-    </Tabs>
-  );
-}
-
-/** Loading placeholder for sections that depend on backend data */
-function SectionLoading() {
-  const { t } = useTranslation();
-  return (
-    <div className="flex items-center gap-2 rounded-md border border-border/40 px-4 py-3 text-muted-foreground/60" style={{ fontSize: 13 }}>
-      <Loader2 className="size-4 animate-spin" />
-      <span>{t("settings.loading")}</span>
     </div>
   );
 }
 
-function SettingsContent({
-  section,
+/* ─── Group body — stacks the relevant existing sections ─────── */
+
+function GroupBody({
+  group,
+  anchor,
+  privateCloudEnabled,
   isLoading,
   bootstrap,
   settings,
   customize,
   error,
 }: {
-  section: SettingsSection;
+  group: GroupId;
+  anchor: string | null;
+  privateCloudEnabled: boolean;
   isLoading: boolean;
   bootstrap: DesktopBootstrap | undefined;
   settings: DesktopSettingsState | null;
   customize: DesktopCustomizeState | null;
   error?: string;
 }) {
-  // GeneralSettings and ShortcutsSettings use Redux / static data — no backend needed
-  if (section === "general") return <GeneralSettings />;
-  if (section === "shortcuts") return <ShortcutsSettings />;
-  // S2 Codex pool has its own React Query hooks (broker status +
-  // account list + clear mutation) and is not blocked by bootstrap.
-  if (section === "codex-pool" && !bootstrap?.private_cloud_enabled) {
+  // Scroll to anchor when the user arrives with a legacy `?tab=` alias.
+  useEffect(() => {
+    if (!anchor) return;
+    const el = document.getElementById(`ds-settings-anchor-${anchor}`);
+    if (el) {
+      el.scrollIntoView({ behavior: "smooth", block: "start" });
+    }
+  }, [anchor]);
+
+  if (group === "appearance") {
     return (
-      <div className="rounded-md border border-border/40 px-4 py-3 text-muted-foreground/70" style={{ fontSize: 13 }}>
-        当前构建未启用私有订阅池能力。公开版本默认使用 LLM Gateway 配置。
-      </div>
+      <>
+        <SettingsCard
+          title="外观"
+          help="调整主题、字号，以及界面语言。"
+          anchorId="appearance"
+        >
+          <GeneralSettings />
+        </SettingsCard>
+        <SettingsCard
+          title="快捷键"
+          help="在 Ask 对话中生效的键位。"
+          anchorId="shortcuts"
+        >
+          <ShortcutsSettings />
+        </SettingsCard>
+      </>
     );
   }
-  if (section === "codex-pool") return <SubscriptionCodexPool />;
-  if (section === "multi-provider") return <MultiProviderSettings />;
-  // Same story for WeChat accounts — fully self-contained React Query +
-  // polling, never blocked on bootstrap/settings/customize.
-  if (section === "wechat") return <WeChatSettings />;
 
-  // Other sections need backend data
-  if (isLoading) return <SectionLoading />;
-
-  switch (section) {
-    case "provider":
-      return (
-        <ProviderSettings
-          customize={customize}
-          error={error}
-        />
-      );
-    case "mcp":
-      return <McpSettings customize={customize} error={error} />;
-    case "permissions":
-      return <PermissionSettings customize={customize} error={error} />;
-    case "storage":
-      return <StorageSettings settings={settings} error={error} />;
-    case "data":
-      return <DataSettings settings={settings} error={error} />;
-    case "about":
-      return (
-        <AboutSection
-          productName={bootstrap?.product_name}
-          error={error}
-          settings={settings}
-        />
-      );
-    default:
-      return (
-        <ComingSoon />
-      );
+  if (group === "account-model") {
+    if (isLoading) return <SectionLoading />;
+    return (
+      <>
+        <SettingsCard
+          title="OpenAI · OAuth 登录"
+          help="Ask 默认使用的模型服务。登录后 ClawWiki 会把凭据写入本地配置。"
+          anchorId="provider"
+        >
+          <ProviderSettings customize={customize} error={error} />
+        </SettingsCard>
+        <SettingsCard
+          title="更多模型服务"
+          help="接入 Moonshot、Qwen、DeepSeek 等兼容 OpenAI 接口的服务，管理多个 provider。"
+          anchorId="multi-provider"
+        >
+          <MultiProviderSettings />
+        </SettingsCard>
+        {privateCloudEnabled && (
+          <SettingsCard
+            title="私有订阅池"
+            help="私有部署下的 Codex 订阅凭据池。普通版本不显示。"
+            anchorId="codex-pool"
+          >
+            <SubscriptionCodexPool />
+          </SettingsCard>
+        )}
+      </>
+    );
   }
+
+  if (group === "wechat") {
+    return (
+      <SettingsCard
+        title="已绑定的微信小号"
+        help="管理已经接入的外脑小号。第一次接入请从侧边「微信接入」开始。"
+        anchorId="wechat"
+      >
+        <WeChatSettings />
+      </SettingsCard>
+    );
+  }
+
+  if (group === "security") {
+    if (isLoading) return <SectionLoading />;
+    return (
+      <SettingsCard
+        title="权限模式"
+        help="决定执行工具和修改文件前是否需要你确认。"
+        anchorId="permissions"
+      >
+        <PermissionSettings customize={customize} error={error} />
+      </SettingsCard>
+    );
+  }
+
+  if (group === "data-backup") {
+    if (isLoading) return <SectionLoading />;
+    return (
+      <>
+        <SettingsCard
+          title="知识库位置"
+          help="桌面端当前使用的本地知识库目录和配置目录。"
+          anchorId="data"
+        >
+          <DataSettings settings={settings} error={error} />
+        </SettingsCard>
+        <SettingsCard
+          title="存储位置细节"
+          help="运行时汇报的其他存储路径，包含对话存档与 OAuth 凭据。"
+          anchorId="storage"
+        >
+          <StorageSettings settings={settings} error={error} />
+        </SettingsCard>
+        <SettingsCard
+          title="关于 ClawWiki"
+          help="当前版本与运行态基础信息。"
+          anchorId="about"
+        >
+          <AboutSection
+            productName={bootstrap?.product_name}
+            error={error}
+            settings={settings}
+          />
+        </SettingsCard>
+      </>
+    );
+  }
+
+  if (group === "advanced") {
+    if (isLoading) return <SectionLoading />;
+    return (
+      <>
+        <SettingsCard
+          title="工具插件"
+          help="让 ClawWiki 调用外部工具。多数用户不需要配置。技术名称：MCP。"
+          anchorId="mcp"
+        >
+          <McpSettings customize={customize} error={error} />
+        </SettingsCard>
+      </>
+    );
+  }
+
+  return null;
 }
 
-function ComingSoon() {
-  const { t } = useTranslation();
+/* ─── Card wrapper — DS1.4 editorial card for a section ─────── */
+
+function SettingsCard({
+  title,
+  help,
+  anchorId,
+  children,
+}: {
+  title: string;
+  help: string;
+  anchorId: string;
+  children: React.ReactNode;
+}) {
   return (
-    <div className="py-8 text-center text-body-sm text-muted-foreground">
-      {t("settings.comingSoon")}
+    <section
+      id={`ds-settings-anchor-${anchorId}`}
+      className="ds-settings-card"
+    >
+      <header className="ds-settings-card-header">
+        <div>
+          <div className="ds-settings-card-title">{title}</div>
+          <div className="ds-settings-card-help">{help}</div>
+        </div>
+      </header>
+      <div>{children}</div>
+    </section>
+  );
+}
+
+/* ─── Loading skeleton ───────────────────────────────────────── */
+
+function SectionLoading() {
+  return (
+    <div className="flex items-center gap-2 rounded-md border border-border/40 px-4 py-3 text-muted-foreground/60" style={{ fontSize: 13 }}>
+      <Loader2 className="size-4 animate-spin" strokeWidth={1.5} />
+      <span>加载中…</span>
     </div>
   );
 }
+
+/* ─── Helpers ────────────────────────────────────────────────── */
 
 function extractErrorMessage(...errors: Array<unknown>): string | undefined {
   for (const error of errors) {

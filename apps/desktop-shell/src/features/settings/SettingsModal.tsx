@@ -24,7 +24,7 @@ export function SettingsModal() {
           {/* Header */}
           <div className="flex h-12 shrink-0 items-center justify-between border-b border-[var(--color-border)] px-4">
             <Dialog.Title className="text-[14px] font-semibold text-[var(--color-foreground)]">
-              Settings
+              设置
             </Dialog.Title>
             <Dialog.Close className="rounded-md p-1 text-[var(--color-muted-foreground)] hover:bg-[var(--color-accent)] hover:text-[var(--color-foreground)]">
               <X className="size-4" />

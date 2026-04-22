@@ -9,6 +9,21 @@ interface PermissionSettingsProps {
   error?: string;
 }
 
+/**
+ * PermissionSettings — DS1.4 localised copy.
+ *
+ * Pre-DS1.4 this surface leaked three English strings into the
+ * default layer:
+ *   - "Permission Mode"
+ *   - "Controls how tool execution permissions are handled"
+ *   - "Runtime value: Danger full access"
+ *
+ * The first two became plain Chinese. The third (the raw runtime
+ * value from `customize.permission_mode`) is a debug value; DS1.4
+ * keeps it, but only inside a collapsed `<details>` block so
+ *灰度测试 users don't see "Danger full access" as the dominant
+ * headline of their permissions page.
+ */
 export function PermissionSettings({
   customize,
   error,
@@ -19,8 +34,8 @@ export function PermissionSettings({
   return (
     <div className="space-y-4">
       <SettingGroup
-        title="Permission Mode"
-        description="Controls how tool execution permissions are handled"
+        title="权限模式"
+        description="决定执行工具和修改文件前是否需要你确认。灰度测试建议保持「需要确认」。"
       >
         <div className="space-y-2">
           {PERMISSION_MODES.map((mode) => {
@@ -57,14 +72,17 @@ export function PermissionSettings({
           })}
         </div>
         {customize?.permission_mode && (
-          <div className="text-caption text-muted-foreground">
-            Runtime value: {customize.permission_mode}
-          </div>
+          <details className="ds-settings-advanced">
+            <summary>技术详情</summary>
+            <div className="ds-settings-advanced-body">
+              runtime permission_mode = {customize.permission_mode}
+            </div>
+          </details>
         )}
       </SettingGroup>
 
       {error && (
-        <SettingGroup title="Warnings">
+        <SettingGroup title="警告">
           <div className="text-caption text-muted-foreground">{error}</div>
         </SettingGroup>
       )}

@@ -3741,7 +3741,17 @@ impl DesktopState {
             ) {
                 record.metadata.lifecycle_status = DesktopLifecycleStatus::InProgress;
             }
-            if record.metadata.title == "New session" {
+            // A5-Polish: derive a real title from the user's first
+            // message when the session still carries one of the
+            // well-known default placeholders. Pre-fix, only the
+            // backend-authored "New session" triggered this; the
+            // frontend's useAskSession creates sessions with
+            // "Ask · new conversation" (see apps/desktop-shell/src/
+            // features/ask/useAskSession.ts), so those sessions
+            // never got a meaningful title even after the user sent
+            // real content. The sidebar ended up full of identical
+            // "Ask · new conversation" rows.
+            if is_default_session_title(&record.metadata.title) {
                 record.metadata.title = session_title_from_message(&message);
             }
             record.session.messages.push(user_message.clone());
@@ -7954,6 +7964,80 @@ fn normalize_session_title(title: &str) -> String {
 
 fn session_title_from_message(message: &str) -> String {
     normalize_session_title(&truncate_title(message))
+}
+
+/// Titles the desktop runtime or the frontend stamps on a freshly
+/// created session before the user sends anything. When we see any
+/// of these on `append_user_message`, we replace them with a real
+/// title derived from the first message.
+///
+/// Recognition strategy:
+///   1. Exact-match a short whitelist of backend-authored / translated
+///      placeholders (`New session` / `新会话` / `新对话`).
+///   2. Structural match for the frontend default emitted by
+///      `useAskSession.ts`: `"Ask <SEP> new conversation"` where
+///      `<SEP>` is any single non-alphanumeric character. This is
+///      how we catch both the canonical U+00B7 middle-dot variant
+///      (what the frontend ships) and the U+003F ASCII-question-mark
+///      variant that older Windows persist paths produced by stripping
+///      the multi-byte char. A further variant (em-dash, bullet, …)
+///      would auto-qualify without another code change.
+///
+/// The alphanumeric check defends against a user intentionally naming
+/// a session "Ask a new conversation" — we only accept separators
+/// that clearly look like decorative characters.
+fn is_default_session_title(title: &str) -> bool {
+    let t = title.trim();
+    if matches!(t, "New session" | "新会话" | "新对话") {
+        return true;
+    }
+    if !t.starts_with("Ask ") {
+        return false;
+    }
+    let lower = t.to_lowercase();
+    if !lower.ends_with(" new conversation") {
+        return false;
+    }
+    // Slice middle bytes: `t[4 .. len-17]`. `"Ask "` is 4 ASCII bytes
+    // and `" new conversation"` is 17 ASCII bytes, so both endpoints
+    // land on UTF-8 char boundaries — anything in the middle (ASCII
+    // or multi-byte) is safe to re-scan as chars.
+    let middle_bytes = match t.len().checked_sub("Ask ".len() + " new conversation".len())
+    {
+        Some(n) if n > 0 => &t["Ask ".len()..t.len() - " new conversation".len()],
+        _ => return false,
+    };
+    let mut chars = middle_bytes.chars();
+    let Some(sep) = chars.next() else { return false };
+    if chars.next().is_some() {
+        return false;
+    }
+    !sep.is_alphanumeric()
+}
+
+#[cfg(test)]
+#[test]
+fn default_session_title_recognizes_real_variants() {
+    // Exact matches.
+    assert!(is_default_session_title("New session"));
+    assert!(is_default_session_title("新会话"));
+    assert!(is_default_session_title("新对话"));
+    // Frontend-emitted default (U+00B7 middle dot).
+    assert!(is_default_session_title("Ask · new conversation"));
+    // Windows persist-roundtrip-corrupted variant (U+003F '?').
+    assert!(is_default_session_title("Ask ? new conversation"));
+    // Case insensitivity on the "new conversation" suffix.
+    assert!(is_default_session_title("Ask · New conversation"));
+    // Another plausible corruption (em dash) should also match
+    // without a whitelist edit.
+    assert!(is_default_session_title("Ask — new conversation"));
+    // A user-typed real title must NOT be silently overwritten.
+    assert!(!is_default_session_title("Ask a new conversation"));
+    assert!(!is_default_session_title("Ask about the deploy"));
+    assert!(!is_default_session_title("random title"));
+    // Explicit empty / unrelated.
+    assert!(!is_default_session_title(""));
+    assert!(!is_default_session_title("Ask"));
 }
 
 fn truncate_title(message: &str) -> String {

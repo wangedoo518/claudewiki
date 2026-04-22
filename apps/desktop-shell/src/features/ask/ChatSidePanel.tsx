@@ -24,7 +24,11 @@ import { useStreamingStore } from "@/state/streaming-store";
 import { useAskSessionContext } from "./AskSessionContext";
 import { useAskSSE } from "./useAskSSE";
 import { AskWorkbench } from "./AskWorkbench";
-import { listProviders, activateProvider } from "@/features/settings/api/client";
+import {
+  activateProvider,
+  getSettings,
+  listProviders,
+} from "@/features/settings/api/client";
 
 export function ChatSidePanel() {
   const collapsed = useSettingsStore((s) => s.chatPanelCollapsed);
@@ -89,9 +93,20 @@ function ChatSidePanelBody() {
   const streamingContent = useStreamingStore((s) => s.streamingContent);
   const showLoadingFallback = isTurnActive && !streamingContent;
 
+  // A5.2 — mirror AskPage: fetch canonical project_path from settings
+  // and scope the providers query by it. Uses the shared query cache so
+  // if AskPage is already mounted this resolves instantly.
+  const settingsQuery = useQuery({
+    queryKey: ["desktop", "settings"],
+    queryFn: getSettings,
+    staleTime: 5 * 60 * 1000,
+  });
+  const projectPath = settingsQuery.data?.settings?.project_path;
+
   const providersQuery = useQuery({
-    queryKey: ["desktop", "providers"],
-    queryFn: () => listProviders(),
+    queryKey: ["desktop", "providers", projectPath ?? ""],
+    queryFn: () => listProviders(projectPath),
+    enabled: !!projectPath,
     staleTime: 30_000,
   });
   const queryClient = useQueryClient();
@@ -99,12 +114,19 @@ function ChatSidePanelBody() {
   const activeProvider = providersQuery.data
     ? providersQuery.data.providers.find((p) => p.id === providersQuery.data.active)
     : null;
+  const providersResolvedEmpty =
+    providersQuery.isSuccess &&
+    providersQuery.data.providers.length === 0;
   const realModelLabel = useMemo(() => {
     if (activeProvider) {
       return activeProvider.display_name || activeProvider.model || activeProvider.id;
     }
+    // A5.2 — see AskPage.tsx fallback ladder comment.
+    if (providersResolvedEmpty && session?.model_label === "Opus 4.6") {
+      return "模型未解析";
+    }
     return session?.model_label;
-  }, [activeProvider, session?.model_label]);
+  }, [activeProvider, providersResolvedEmpty, session?.model_label]);
 
   const providerOptions = useMemo(
     () =>
@@ -117,16 +139,19 @@ function ChatSidePanelBody() {
     [providersQuery.data],
   );
 
+  // P1-2 — scope activateProvider by projectPath, same as AskPage.
+  // Without this the activation silently targets the wrong provider
+  // registry and the header pill never updates.
   const handleSwitchProvider = useCallback(
     async (id: string) => {
       try {
-        await activateProvider(id);
+        await activateProvider(id, projectPath);
         void queryClient.invalidateQueries({ queryKey: ["desktop", "providers"] });
       } catch (err) {
         console.error("[chat-side-panel] switch provider failed:", err);
       }
     },
-    [queryClient],
+    [queryClient, projectPath],
   );
 
   return (

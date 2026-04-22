@@ -40,6 +40,14 @@ import {
   createSession,
   getSession,
 } from "./api/client";
+// A5.2 — pull the canonical project path from `/api/desktop/settings` so
+// the backend's providers.json lookup (scoped by project_path) resolves
+// against the same directory the user's settings UI already points to.
+// Without this, new sessions inherit `default_project_path()` (OnceLock
+// cwd), which on the gray build is the outer repo root and therefore
+// never contains `.claw/providers.json` — so `model_label` stays on the
+// "Opus 4.6" placeholder forever. See corrections.jsonl 2026-04-21.
+import { getSettings } from "@/features/settings/api/client";
 import type {
   ContextMode,
   DesktopSessionDetail,
@@ -168,8 +176,31 @@ export function useAskSession(): UseAskSessionResult {
           console.warn("[ask] stored session not found, recreating", err);
         }
       }
+      // A5.2 — resolve the canonical project_path before creating.
+      // `ensureQueryData` hits the shared ["desktop","settings"] cache
+      // that AskPage / ChatSidePanel / SettingsPage already populate,
+      // so in the happy path this is a cache read, not a network call.
+      // If the settings fetch fails we degrade to omitting `project_path`
+      // (same as pre-A5.2 behavior) rather than blocking the user's
+      // first send — the model_label regression is strictly worse than
+      // keeping Ask usable.
+      let projectPath: string | undefined;
+      try {
+        const settingsRes = await queryClient.ensureQueryData({
+          queryKey: ["desktop", "settings"],
+          queryFn: getSettings,
+          staleTime: 5 * 60 * 1000,
+        });
+        projectPath = settingsRes.settings?.project_path || undefined;
+      } catch (err) {
+        console.warn(
+          "[ask] settings fetch failed; creating session without project_path",
+          err,
+        );
+      }
       const created = await createSession({
         title: "Ask · new conversation",
+        ...(projectPath ? { project_path: projectPath } : {}),
       });
       return created.session;
     },

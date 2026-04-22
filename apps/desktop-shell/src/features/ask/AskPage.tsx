@@ -11,7 +11,11 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { AskWorkbench } from "./AskWorkbench";
 import { useAskSessionContext } from "./AskSessionContext";
 import { useAskSSE } from "./useAskSSE";
-import { listProviders, activateProvider } from "@/features/settings/api/client";
+import {
+  activateProvider,
+  getSettings,
+  listProviders,
+} from "@/features/settings/api/client";
 
 export function AskPage() {
   const {
@@ -29,22 +33,58 @@ export function AskPage() {
   // Wire SSE subscription for real-time streaming + permission requests
   useAskSSE(sessionId, isTurnActive);
 
-  // Read the real active provider model name from providers API
+  // A5.2 — resolve canonical project_path so the providers registry
+  // query targets the directory that actually contains
+  // `.claw/providers.json`. Without this the backend falls back to
+  // `std::env::current_dir()` (outer repo root on the gray build) and
+  // returns `{active:"",providers:[]}`, leaving `model_label` stuck on
+  // the "Opus 4.6" placeholder.
+  const settingsQuery = useQuery({
+    queryKey: ["desktop", "settings"],
+    queryFn: getSettings,
+    staleTime: 5 * 60 * 1000,
+  });
+  const projectPath = settingsQuery.data?.settings?.project_path;
+
+  // Read the real active provider model name from providers API —
+  // scoped by projectPath. The query is `enabled` only after settings
+  // resolve so we don't waste a round-trip on the known-empty fallback.
   const providersQuery = useQuery({
-    queryKey: ["desktop", "providers"],
-    queryFn: () => listProviders(),
+    queryKey: ["desktop", "providers", projectPath ?? ""],
+    queryFn: () => listProviders(projectPath),
+    enabled: !!projectPath,
     staleTime: 30_000,
   });
 
   const queryClient = useQueryClient();
 
-  // Derive real model label from active provider
+  // Derive real model label from active provider.
+  // Fallback ladder (A5.2 truth-aware):
+  //   1. resolved activeProvider → its display_name / model / id
+  //   2. providers list is empty AND session's label is the known
+  //      "Opus 4.6" placeholder → show "模型未解析" (honest: we
+  //      couldn't resolve a provider, so don't pretend Opus is active)
+  //   3. anything else → session.model_label (may still be a real
+  //      backend-reported label for legitimately Anthropic-native setups)
   const activeProvider = providersQuery.data
     ? providersQuery.data.providers.find((p) => p.id === providersQuery.data.active)
     : null;
+  const providersResolvedEmpty =
+    providersQuery.isSuccess &&
+    providersQuery.data.providers.length === 0;
   const realModelLabel = activeProvider
     ? (activeProvider.display_name || activeProvider.model || activeProvider.id)
-    : session?.model_label;
+    : providersResolvedEmpty && session?.model_label === "Opus 4.6"
+      ? "模型未解析"
+      : session?.model_label;
+
+  // P1-2 fallback signal: the header-level banner should surface any
+  // failure to resolve a provider. Either settings errored entirely or
+  // the providers list resolved empty and the session's label is still
+  // the known "Opus 4.6" placeholder.
+  const settingsUnready =
+    settingsQuery.isError ||
+    (providersResolvedEmpty && session?.model_label === "Opus 4.6");
 
   // Build provider options for model selector
   const providerOptions = (providersQuery.data?.providers ?? []).map((p) => ({
@@ -54,14 +94,19 @@ export function AskPage() {
     isActive: p.id === providersQuery.data?.active,
   }));
 
+  // P1-2: activateProvider must scope by canonical projectPath. Pre-fix
+  // this silently fell back to the backend's current_dir() provider
+  // registry — the activation succeeded against the wrong registry and
+  // the header pill kept showing stale state. Passing projectPath here
+  // closes the loop with the same truth source as listProviders above.
   const handleSwitchProvider = useCallback(async (id: string) => {
     try {
-      await activateProvider(id);
+      await activateProvider(id, projectPath);
       void queryClient.invalidateQueries({ queryKey: ["desktop", "providers"] });
     } catch (err) {
       console.error("[ask] failed to switch provider:", err);
     }
-  }, [queryClient]);
+  }, [queryClient, projectPath]);
 
   // Main content area (workbench or loading/error states)
   let content: React.ReactNode;
@@ -115,6 +160,7 @@ export function AskPage() {
         providers={providerOptions}
         onSwitchProvider={handleSwitchProvider}
         onEnsureAndBind={onEnsureAndBind}
+        settingsUnready={settingsUnready}
       />
     );
   }

@@ -1676,6 +1676,90 @@ fn determine_category(_proposal: &WikiPageProposal) -> String {
     "concept".to_string()
 }
 
+/// Build the absorb system prompt per `01-skill-engine.md §5.1`
+/// L1039-1060. The 7 absorb rules (anti-cramming / anti-thinning /
+/// topic-not-diary / encyclopedic tone / 200-word body cap / 15-word
+/// quote cap / strict-JSON output) are **verbatim** from the §5.1
+/// pseudocode — per commander's Drift-1 decision, the pseudocode's
+/// inline rule block is the single source of truth; the higher-level
+/// "设计哲学" prose is meta-layer and not piped into the LLM prompt.
+///
+/// The prompt is assembled as:
+///   {claude_md}\n\n## 当前 Wiki 目录\n\n{index_content}\n\n## 吸收规则\n\n{7 rules}
+///
+/// `claude_md` is read from the wiki root's `schema/CLAUDE.md` — the
+/// human-curated maintainer-rules document. Absent file → empty head
+/// (absorb still proceeds with the 7 rules alone).
+fn build_absorb_system_prompt(
+    paths: &wiki_store::WikiPaths,
+    index_content: &str,
+) -> String {
+    let claude_md =
+        std::fs::read_to_string(&paths.schema_claude_md).unwrap_or_default();
+    format!(
+        "{claude_md}\n\n\
+         ## 当前 Wiki 目录\n\n{index_content}\n\n\
+         ## 吸收规则\n\n\
+         1. 如果 raw entry 的核心概念在 Wiki 中已有对应页面, 返回该页面的 slug 和合并后的 body。\n\
+         2. 如果是全新概念, 创建新页面。宁可创建新页面也不要把不相关的内容塞进已有页面 (anti-cramming)。\n\
+         3. 如果更新已有页面, 合并后的内容必须比更新前更丰富 (anti-thinning)。严禁产生残桩。\n\
+         4. 按主题组织内容, 不要按时间排列。不要写成日记体。\n\
+         5. 百科全书语气: 平实、事实、中立。归因优于断言。\n\
+         6. 每篇 body 不超过 200 词。引用不超过 15 个连续词。\n\
+         7. 返回 STRICT JSON, 格式同 WikiPageProposal。"
+    )
+}
+
+/// Build the absorb `MessageRequest` — index-aware system prompt +
+/// user message with the raw entry content. Called by `absorb_batch`'s
+/// step 3c loop body.
+///
+/// Oversize bodies (> 50 kB) are truncated to 10 kB to cap per-turn
+/// token spend — the maintainer only needs a representative slice to
+/// produce a summary, not the full web-page dump. Mirrors §5.1
+/// `build_absorb_user_prompt` L1062-1087.
+fn build_absorb_request(
+    entry: &wiki_store::RawEntry,
+    body: &str,
+    paths: &wiki_store::WikiPaths,
+    index_content: &str,
+) -> MessageRequest {
+    let system = build_absorb_system_prompt(paths, index_content);
+    let truncated = if body.len() > 50_000 {
+        &body[..10_000]
+    } else {
+        body
+    };
+    let user_text = format!(
+        "Raw entry:\n\
+         - id: {id}\n\
+         - filename: {filename}\n\
+         - source: {source}\n\
+         - ingested_at: {ingested_at}\n\
+         \n\
+         Body:\n\
+         {truncated}\n\
+         \n\
+         产出 wiki 页面 JSON proposal。JSON only, source_raw_id = {id}。",
+        id = entry.id,
+        filename = entry.filename,
+        source = entry.source,
+        ingested_at = entry.ingested_at,
+    );
+    MessageRequest {
+        model: crate::prompt::MAINTAINER_MODEL.to_string(),
+        max_tokens: crate::prompt::MAX_OUTPUT_TOKENS,
+        system: Some(system),
+        messages: vec![api::InputMessage {
+            role: "user".to_string(),
+            content: vec![api::InputContentBlock::Text { text: user_text }],
+        }],
+        tools: None,
+        tool_choice: None,
+        stream: false,
+    }
+}
+
 /// Batch-absorb raw entries into wiki pages.
 ///
 /// Follows the algorithm in `01-skill-engine.md §5.1` exactly:
@@ -1766,7 +1850,7 @@ pub async fn absorb_batch(
         processed_in_batch += 1;
 
         // 3a: Read raw entry content
-        let (_entry, _body) = match wiki_store::read_raw_entry(paths, *id) {
+        let (entry, body) = match wiki_store::read_raw_entry(paths, *id) {
             Ok(pair) => pair,
             Err(e) => {
                 result.failed += 1;
@@ -1786,17 +1870,60 @@ pub async fn absorb_batch(
             }
         };
 
-        // 3b: Read index.md for context (used by future LLM-based merge)
-        let _index_content = std::fs::read_to_string(
+        // 3b: Read wiki/index.md as LLM context per §5.1 L696-702.
+        // Missing index is non-fatal: absorb falls back to an empty
+        // list and the maintainer creates pages from scratch — same
+        // semantics as a fresh wiki root.
+        let index_content = std::fs::read_to_string(
             paths.wiki.join(wiki_store::WIKI_INDEX_FILENAME),
         )
         .unwrap_or_default();
 
-        // 3c+d: Build prompt and call LLM via propose_for_raw_entry
-        let proposal = match propose_for_raw_entry(paths, *id, broker).await {
-            Ok(p) => p,
-            Err(e) => {
-                // LLM failure → skip this entry, continue batch
+        // 3c: Build SKILL prompt (system with index + 7 rules, user
+        //     with raw body) per §5.1 L704-713.
+        // 3d: Call LLM with **one retry on broker error** per §5.1
+        //     L715-741. Parse failures do NOT retry (per §5.1 L744-764
+        //     "JSON 解析失败 -> 记录预览, 跳过, 继续"): invalid JSON
+        //     from a model is deterministic and retrying would waste
+        //     tokens.
+        let response = {
+            let request = build_absorb_request(&entry, &body, paths, &index_content);
+            match broker.chat_completion(request).await {
+                Ok(resp) => resp,
+                Err(first_err) => {
+                    let retry_request = build_absorb_request(&entry, &body, paths, &index_content);
+                    match broker.chat_completion(retry_request).await {
+                        Ok(resp) => resp,
+                        Err(retry_err) => {
+                            result.failed += 1;
+                            let _ = progress_tx
+                                .send(AbsorbProgressEvent {
+                                    task_id: task_id.clone(),
+                                    processed: result.created + result.updated + result.skipped + result.failed,
+                                    total,
+                                    current_entry_id: *id,
+                                    action: "skip".to_string(),
+                                    page_slug: None,
+                                    page_title: None,
+                                    error: Some(format!(
+                                        "LLM 调用失败 (已重试): {first_err} / {retry_err}"
+                                    )),
+                                })
+                                .await;
+                            continue;
+                        }
+                    }
+                }
+            }
+        };
+
+        // 3e: Extract the first text block + parse as WikiPageProposal.
+        //     Reuses the same tolerant parser that propose_for_raw_entry
+        //     uses (strips ```json fences, validates slug/title/body,
+        //     forces source_raw_id to the current entry id).
+        let raw_text = match extract_first_text(&response) {
+            Some(t) => t,
+            None => {
                 result.failed += 1;
                 let _ = progress_tx
                     .send(AbsorbProgressEvent {
@@ -1807,7 +1934,26 @@ pub async fn absorb_batch(
                         action: "skip".to_string(),
                         page_slug: None,
                         page_title: None,
-                        error: Some(format!("LLM 调用或解析失败: {e}")),
+                        error: Some("LLM 响应无文本块".to_string()),
+                    })
+                    .await;
+                continue;
+            }
+        };
+        let proposal = match parse_proposal(&raw_text, *id) {
+            Ok(p) => p,
+            Err(e) => {
+                result.failed += 1;
+                let _ = progress_tx
+                    .send(AbsorbProgressEvent {
+                        task_id: task_id.clone(),
+                        processed: result.created + result.updated + result.skipped + result.failed,
+                        total,
+                        current_entry_id: *id,
+                        action: "skip".to_string(),
+                        page_slug: None,
+                        page_title: None,
+                        error: Some(format!("LLM 响应解析失败: {e}")),
                     })
                     .await;
                 continue;

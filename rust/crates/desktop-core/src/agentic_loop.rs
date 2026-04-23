@@ -979,7 +979,23 @@ async fn parse_sse_stream(
             }
             next = stream.next() => match next {
                 Some(r) => r,
-                None => break, // Stream ended cleanly.
+                None => {
+                    // Distinguish "stream closed normally" (we saw the
+                    // terminal `message_stop` / `error` event, or a
+                    // `[DONE]` sentinel from a compat proxy) from
+                    // "socket FIN before terminal event" (TCP drop,
+                    // upstream 499, proxy hiccup, etc.). The former
+                    // is a clean completion; the latter must be
+                    // surfaced to the caller so it doesn't persist a
+                    // half-built assistant message as finished.
+                    if stream_finished {
+                        break;
+                    } else {
+                        return Err(
+                            "stream truncated before terminal event".to_string(),
+                        );
+                    }
+                }
             }
         };
         let chunk = chunk_result.map_err(|e| format!("SSE stream error: {e}"))?;

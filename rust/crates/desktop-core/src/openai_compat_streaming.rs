@@ -129,11 +129,17 @@ pub async fn run_streaming_turn(
     let mut accumulated = String::new();
     let mut upstream_model: Option<String> = None;
     let mut delta_count: usize = 0;
+    // Track whether we observed a terminal event ([DONE] sentinel).
+    // Socket FIN without a prior terminal event means the upstream
+    // dropped us mid-response (TCP drop, provider 499, proxy hiccup)
+    // and must be surfaced as `Err` so callers don't persist a
+    // half-built assistant message as a finished reply.
+    let mut saw_terminal = false;
 
     let mut stream = response.bytes_stream();
     let mut buffer: Vec<u8> = Vec::new();
 
-    loop {
+    'outer: loop {
         let chunk_result = tokio::select! {
             biased;
             _ = cancel_token.cancelled() => {
@@ -141,7 +147,17 @@ pub async fn run_streaming_turn(
             }
             next = stream.next() => match next {
                 Some(r) => r,
-                None => break, // Stream ended.
+                None => {
+                    // Stream source exhausted. Clean termination only
+                    // if we already observed the terminal sentinel.
+                    if saw_terminal {
+                        break 'outer;
+                    } else {
+                        return Err(
+                            "stream truncated before terminal event".to_string(),
+                        );
+                    }
+                }
             }
         };
         let chunk = chunk_result.map_err(|e| format!("SSE stream error: {e}"))?;
@@ -155,6 +171,7 @@ pub async fn run_streaming_turn(
                 continue;
             };
             if data == "[DONE]" {
+                saw_terminal = true;
                 break;
             }
             let event: Value = match serde_json::from_str(data) {
@@ -191,6 +208,14 @@ pub async fn run_streaming_turn(
                     content: content.to_string(),
                 });
             }
+        }
+
+        // Once we've seen the terminal sentinel, exit immediately
+        // rather than awaiting an optional socket FIN. Mirrors the
+        // "semantic end-of-stream wins" design from parse_sse_stream
+        // in agentic_loop.rs and keeps happy-path latency unchanged.
+        if saw_terminal {
+            break 'outer;
         }
     }
 

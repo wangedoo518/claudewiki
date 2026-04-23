@@ -83,6 +83,7 @@ pub mod wechat_kefu;
 // so desktop-server's wiki routes can pass the process-global broker
 // straight into propose_for_raw_entry.
 pub mod wiki_maintainer_adapter;
+pub mod skill_router;
 
 pub use ask_context::binding::{SessionSourceBinding, SourceRef};
 pub use ask_context::{ContextBasis, ContextMode};

@@ -30,7 +30,8 @@
 //!  - No session state is touched here. The caller owns the session
 //!    store update + `Message` / `Snapshot` broadcasts.
 
-use std::time::Duration;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use runtime::{ContentBlock, ConversationMessage, MessageRole};
 use serde::Serialize;
@@ -55,6 +56,11 @@ pub struct StreamingTurnConfig {
     pub messages: Vec<OpenAiChatMessage>,
     /// Optional system prompt; prepended as a `{role:"system"}` entry.
     pub system_prompt: Option<String>,
+    /// P1-1: Throttled (5s) callback invoked during stream to bump session
+    /// updated_at. Prevents frontend isStale false-positives on long
+    /// single responses (>30s Opus thinking, upstream slow-downs).
+    /// Not required for correctness; finalize still sets updated_at.
+    pub on_stream_tick: Option<Arc<dyn Fn() + Send + Sync>>,
 }
 
 /// Run one streaming OpenAI-compat ChatCompletions turn.
@@ -136,6 +142,11 @@ pub async fn run_streaming_turn(
     // half-built assistant message as a finished reply.
     let mut saw_terminal = false;
 
+    // P1-1: throttle stream-tick invocations to once per 5s. Seed so
+    // the first delta fires a tick immediately — this keeps updated_at
+    // fresh from the very start of a long response.
+    let mut last_tick_at: Instant = Instant::now() - Duration::from_secs(5);
+
     let mut stream = response.bytes_stream();
     let mut buffer: Vec<u8> = Vec::new();
 
@@ -207,6 +218,14 @@ pub async fn run_streaming_turn(
                     session_id: session_id.to_string(),
                     content: content.to_string(),
                 });
+                // P1-1: throttled tick — bumps session.updated_at at
+                // most every 5s while the stream produces text deltas.
+                if let Some(cb) = &config.on_stream_tick {
+                    if last_tick_at.elapsed() >= Duration::from_secs(5) {
+                        cb();
+                        last_tick_at = Instant::now();
+                    }
+                }
             }
         }
 

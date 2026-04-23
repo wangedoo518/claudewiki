@@ -4153,12 +4153,32 @@ impl DesktopState {
                     content: user_message_text,
                 });
 
+                // P1-1: throttled session.updated_at bump so long
+                // streams don't trip the frontend isStale soft-recovery
+                // (30s threshold). The closure uses try_write so stream
+                // ticks never block on a write lock — if we can't get
+                // the lock this cycle, we'll bump on the next tick.
+                let state_for_tick = state.clone();
+                let session_id_for_tick = session_id_for_stream.clone();
+                let on_stream_tick: Arc<dyn Fn() + Send + Sync> =
+                    Arc::new(move || {
+                        if let Ok(mut store) = state_for_tick.store.try_write() {
+                            if let Some(record) =
+                                store.sessions.get_mut(&session_id_for_tick)
+                            {
+                                record.metadata.updated_at =
+                                    unix_timestamp_millis();
+                            }
+                        }
+                    });
+
                 let config = openai_compat_streaming::StreamingTurnConfig {
                     base_url: oai_client.base_url.clone(),
                     api_key: oai_client.bearer_token.clone(),
                     model: model_for_stream,
                     messages: msgs,
                     system_prompt: Some(system_prompt_text_openai),
+                    on_stream_tick: Some(on_stream_tick),
                 };
 
                 let result = openai_compat_streaming::run_streaming_turn(
@@ -4397,6 +4417,25 @@ impl DesktopState {
                         });
                     });
 
+                // P1-1: throttled session.updated_at bump so long
+                // streams don't trip the frontend isStale soft-recovery
+                // (30s threshold). The closure uses try_write so stream
+                // ticks never block on a write lock — if we can't get
+                // the lock this cycle, we'll bump on the next tick.
+                let tick_state = state.clone();
+                let tick_session_id = session_id.clone();
+                let on_stream_tick: Arc<dyn Fn() + Send + Sync> =
+                    Arc::new(move || {
+                        if let Ok(mut store) = tick_state.store.try_write() {
+                            if let Some(record) =
+                                store.sessions.get_mut(&tick_session_id)
+                            {
+                                record.metadata.updated_at =
+                                    unix_timestamp_millis();
+                            }
+                        }
+                    });
+
                 let config = agentic_loop::AgenticLoopConfig {
                     bridge_base_url,
                     bearer_token: client.bearer_token,
@@ -4405,6 +4444,7 @@ impl DesktopState {
                     system_prompt: Some(system_prompt_text),
                     bypass_permissions,
                     on_iteration_complete: Some(on_iteration_complete),
+                    on_stream_tick: Some(on_stream_tick),
                     mcp_servers: Vec::new(), // legacy field, unused now
                     hooks: hooks_config,
                     http_client: self.http_client.clone(),

@@ -6,7 +6,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use reqwest::Response;
 use runtime::{
@@ -306,6 +306,11 @@ pub struct AgenticLoopConfig {
     /// Optional callback invoked after each loop iteration with the
     /// current session state, for incremental persistence.
     pub on_iteration_complete: Option<Arc<dyn Fn(&RuntimeSession) + Send + Sync>>,
+    /// P1-1: Throttled (5s) callback invoked during stream to bump session
+    /// updated_at. Prevents frontend isStale false-positives on long
+    /// single responses (>30s Opus thinking, upstream slow-downs).
+    /// Not required for correctness; finalize still sets updated_at.
+    pub on_stream_tick: Option<Arc<dyn Fn() + Send + Sync>>,
     /// MCP servers to connect at loop startup.
     pub mcp_servers: Vec<McpServerEntry>,
     /// Hook configuration for PreToolUse/PostToolUse lifecycle hooks.
@@ -478,6 +483,7 @@ pub async fn run_agentic_loop(
             &event_sender,
             &session_id,
             &cancel_token,
+            config.on_stream_tick.as_ref(),
         )
         .await;
 
@@ -875,6 +881,7 @@ async fn call_llm_api_streaming(
     event_sender: &broadcast::Sender<DesktopSessionEvent>,
     session_id: &str,
     cancel_token: &CancellationToken,
+    on_stream_tick: Option<&Arc<dyn Fn() + Send + Sync>>,
 ) -> Result<(ConversationMessage, Option<String>, Option<String>), String> {
     let url = format!("{bridge_base_url}/v1/messages");
 
@@ -918,7 +925,7 @@ async fn call_llm_api_streaming(
         .to_string();
 
     if content_type.contains("text/event-stream") {
-        parse_sse_stream(response, event_sender, session_id, cancel_token).await
+        parse_sse_stream(response, event_sender, session_id, cancel_token, on_stream_tick).await
     } else {
         // Fallback: non-streaming JSON response (upstream didn't support streaming).
         let body_future = response.json::<Value>();
@@ -949,6 +956,7 @@ async fn parse_sse_stream(
     event_sender: &broadcast::Sender<DesktopSessionEvent>,
     session_id: &str,
     cancel_token: &CancellationToken,
+    on_stream_tick: Option<&Arc<dyn Fn() + Send + Sync>>,
 ) -> Result<(ConversationMessage, Option<String>, Option<String>), String> {
     use futures_util::StreamExt;
 
@@ -960,6 +968,11 @@ async fn parse_sse_stream(
     let mut text_blocks: HashMap<usize, String> = HashMap::new();
     let mut tool_blocks: HashMap<usize, ToolBlockAccumulator> = HashMap::new();
     let mut block_types: HashMap<usize, String> = HashMap::new(); // index → "text" | "tool_use"
+
+    // P1-1: throttle stream-tick invocations to once per 5s. Seed so
+    // the first delta fires a tick immediately — this keeps updated_at
+    // fresh from the very start of a long response.
+    let mut last_tick_at: Instant = Instant::now() - Duration::from_secs(5);
 
     let mut stream = response.bytes_stream();
     // Use a byte buffer to avoid corrupting multi-byte UTF-8 characters
@@ -1095,6 +1108,18 @@ async fn parse_sse_stream(
                                                 content: text.to_string(),
                                             },
                                         );
+                                        // P1-1: throttled tick — bumps
+                                        // session.updated_at at most
+                                        // every 5s while the stream
+                                        // produces text deltas.
+                                        if let Some(cb) = on_stream_tick {
+                                            if last_tick_at.elapsed()
+                                                >= Duration::from_secs(5)
+                                            {
+                                                cb();
+                                                last_tick_at = Instant::now();
+                                            }
+                                        }
                                     }
                                 }
                                 "input_json_delta" => {
@@ -1880,7 +1905,7 @@ mod sse_completion_tests {
 
         let (message, stop_reason, model_label) = timeout(
             Duration::from_secs(1),
-            parse_sse_stream(response, &tx, "desktop-session-test", &cancel_token),
+            parse_sse_stream(response, &tx, "desktop-session-test", &cancel_token, None),
         )
         .await
         .expect("parser should finish without waiting for socket close")

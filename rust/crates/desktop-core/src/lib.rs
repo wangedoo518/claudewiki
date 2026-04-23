@@ -4716,6 +4716,33 @@ impl DesktopState {
         ))
     }
 
+    /// Fan-out a session-agnostic event (e.g. `AbsorbProgress`,
+    /// `AbsorbComplete`) to every live session's broadcast channel.
+    /// Each active SSE subscriber (one per session via
+    /// `stream_session_events`) then receives the event regardless of
+    /// which session the client happened to open — matching the §2.1
+    /// spec line "SSE 事件 (通过 `/api/desktop/sessions/{id}/events`)".
+    ///
+    /// Session-scoped events (Snapshot / Message / PermissionRequest /
+    /// TextDelta) do NOT use this helper — they're sent to a single
+    /// session's sender via the session record directly, since those
+    /// events carry an explicit `session_id`.
+    ///
+    /// Backpressure: each send is `broadcast::Sender::send` which
+    /// returns `Err(SendError)` when there are zero receivers — we
+    /// silently drop in that case (no connected SSE client on that
+    /// session). Slow receivers eventually see `Lagged` in their recv
+    /// loop (handled by `stream_session_events`).
+    pub async fn broadcast_session_event(&self, event: DesktopSessionEvent) {
+        let store = self.store.read().await;
+        for record in store.sessions.values() {
+            // Cloning the event per session is O(n) but the event
+            // payload is small (progress / complete counters); for
+            // realistic session counts (<20) this is negligible.
+            let _ = record.events.send(event.clone());
+        }
+    }
+
     async fn persist(&self) {
         let Some(persistence) = &self.persistence else {
             return;

@@ -6119,104 +6119,272 @@ async fn delete_wiki_raw_handler(
 // v2 SKILL engine handlers (technical-design.md §2.1–§2.9, §4.4)
 // ═══════════════════════════════════════════════════════════════════════
 
-/// Global flag: at most one absorb_batch may run at a time (§2.1: 409).
-static ABSORB_RUNNING: std::sync::atomic::AtomicBool =
-    std::sync::atomic::AtomicBool::new(false);
-
 // ── §2.1 POST /api/wiki/absorb ─────────────────────────────────────
 
 #[derive(Deserialize)]
 struct AbsorbRequest {
     entry_ids: Option<Vec<u32>>,
+    date_range: Option<AbsorbDateRange>,
+}
+
+#[derive(Deserialize)]
+struct AbsorbDateRange {
+    from: String, // ISO date YYYY-MM-DD, inclusive
+    to: String,   // ISO date YYYY-MM-DD, inclusive
 }
 
 /// POST /api/wiki/absorb — trigger batch absorb (202 Accepted).
-/// Spawns absorb_batch in background; returns task_id immediately.
-/// Returns 409 if another absorb is already running.
+///
+/// Per technical-design.md §2.1:
+/// - Spawns `absorb_batch` in a background tokio task
+/// - Returns `202 Accepted` + `{task_id, status: "started", total_entries}`
+/// - Progress streams via `DesktopSessionEvent::AbsorbProgress` SSE events
+///   broadcast to every session subscribed at
+///   `/api/desktop/sessions/{id}/events`
+/// - Final `DesktopSessionEvent::AbsorbComplete` on task end
+///
+/// Error code matrix (§2.1 table):
+///   400 `INVALID_DATE_RANGE`    — malformed / from > to
+///   404 `ENTRIES_NOT_FOUND`     — any id in `entry_ids` missing on disk
+///   409 `ABSORB_IN_PROGRESS`    — TaskManager kind slot taken
+///   503 `BROKER_UNAVAILABLE`    — reserved for future broker probe
 async fn absorb_handler(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
     Json(body): Json<AbsorbRequest>,
-) -> Result<Json<serde_json::Value>, ApiError> {
-    use std::sync::atomic::Ordering;
-
-    // Concurrency guard: only one absorb at a time.
-    if ABSORB_RUNNING.swap(true, Ordering::SeqCst) {
-        return Err((
-            StatusCode::CONFLICT,
-            Json(ErrorResponse {
-                error: "ABSORB_IN_PROGRESS".to_string(),
-            }),
-        ));
-    }
-
+) -> Result<(StatusCode, Json<serde_json::Value>), ApiError> {
     let paths = resolve_wiki_root_for_handler()?;
 
-    // Resolve entry_ids: explicit list or all un-absorbed raw entries.
-    let entry_ids = match body.entry_ids {
-        Some(ids) => ids,
-        None => {
-            let raws = wiki_store::list_raw_entries(&paths).map_err(|e| {
-                ABSORB_RUNNING.store(false, Ordering::SeqCst);
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(ErrorResponse {
-                        error: format!("list_raw_entries failed: {e}"),
-                    }),
-                )
-            })?;
-            raws.iter()
-                .filter(|r| !wiki_store::is_entry_absorbed(&paths, r.id))
-                .map(|r| r.id)
-                .collect()
+    // ── 400 INVALID_DATE_RANGE (format + ordering checks) ──
+    if let Some(range) = &body.date_range {
+        if !is_valid_iso_date(&range.from) || !is_valid_iso_date(&range.to) {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: "INVALID_DATE_RANGE".to_string(),
+                }),
+            ));
         }
+        // YYYY-MM-DD lexicographic compare == chronological compare.
+        if range.from.as_str() > range.to.as_str() {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: "INVALID_DATE_RANGE".to_string(),
+                }),
+            ));
+        }
+    }
+
+    // Load raw entries once — used by both entry_ids existence check
+    // and date-range filtering.
+    let raws = wiki_store::list_raw_entries(&paths).map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("list_raw_entries failed: {e}"),
+            }),
+        )
+    })?;
+
+    // ── Resolve entry_ids ──
+    //
+    // §2.1 spec: `entry_ids` and `date_range` are mutually exclusive
+    // (entry_ids wins when both are provided). Neither → absorb all
+    // un-absorbed raw entries.
+    let entry_ids: Vec<u32> = if let Some(ids) = body.entry_ids {
+        // 404 ENTRIES_NOT_FOUND
+        let existing: std::collections::HashSet<u32> =
+            raws.iter().map(|r| r.id).collect();
+        let missing: Vec<u32> = ids
+            .iter()
+            .copied()
+            .filter(|id| !existing.contains(id))
+            .collect();
+        if !missing.is_empty() {
+            return Err((
+                StatusCode::NOT_FOUND,
+                Json(ErrorResponse {
+                    error: format!("ENTRIES_NOT_FOUND: {missing:?}"),
+                }),
+            ));
+        }
+        ids
+    } else if let Some(range) = &body.date_range {
+        raws.iter()
+            .filter(|r| {
+                r.date.as_str() >= range.from.as_str()
+                    && r.date.as_str() <= range.to.as_str()
+            })
+            .filter(|r| !wiki_store::is_entry_absorbed(&paths, r.id))
+            .map(|r| r.id)
+            .collect()
+    } else {
+        raws.iter()
+            .filter(|r| !wiki_store::is_entry_absorbed(&paths, r.id))
+            .map(|r| r.id)
+            .collect()
     };
 
     let total = entry_ids.len();
-    let task_id = format!(
-        "absorb-{}-{:04x}",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs(),
-        rand_u16()
-    );
 
-    // Spawn background task.
-    // Guard struct ensures ABSORB_RUNNING is reset even if the task panics.
-    struct AbsorbGuard;
-    impl Drop for AbsorbGuard {
-        fn drop(&mut self) {
-            ABSORB_RUNNING.store(false, std::sync::atomic::Ordering::SeqCst);
-        }
-    }
-
-    let task_id_clone = task_id.clone();
+    // ── 503 BROKER_UNAVAILABLE reserved ──
+    //
+    // TODO(Sprint 1-B.1+1): wire a codex_broker health probe here.
+    // Currently `BrokerAdapter::from_global()` does not fail because
+    // the broker is installed at app boot; a failed install panics
+    // before any HTTP request reaches this handler. Leaving the error
+    // code in the doc comment so the frontend knows to render the
+    // "设置未就绪" banner once this probe exists.
     let adapter = desktop_core::wiki_maintainer_adapter::BrokerAdapter::from_global();
+
+    // ── 409 ABSORB_IN_PROGRESS (TaskManager per-kind gate) ──
+    let desktop_state = state.desktop().clone();
+    let (task_id, cancel_token) = match desktop_state
+        .task_manager()
+        .register("absorb")
+        .await
+    {
+        Ok(pair) => pair,
+        Err(_) => {
+            return Err((
+                StatusCode::CONFLICT,
+                Json(ErrorResponse {
+                    error: "ABSORB_IN_PROGRESS".to_string(),
+                }),
+            ));
+        }
+    };
+
+    // ── SSE bridge: mpsc → broadcast fan-out ──
+    //
+    // `absorb_batch` takes a `Sender<AbsorbProgressEvent>` for its
+    // per-entry progress channel. This forwarder wraps each received
+    // event as `DesktopSessionEvent::AbsorbProgress(ev)` and fans it
+    // out to every session's broadcast sender via
+    // `DesktopState::broadcast_session_event`. Every SSE client
+    // subscribed to `/api/desktop/sessions/{id}/events` then receives
+    // the event regardless of which session they opened — matching
+    // §2.1 "SSE 事件 (通过 /api/desktop/sessions/{id}/events)".
+    let (tx, mut rx) =
+        tokio::sync::mpsc::channel::<wiki_maintainer::AbsorbProgressEvent>(64);
+    let bridge_state = desktop_state.clone();
     tokio::spawn(async move {
-        let _guard = AbsorbGuard;
-        let (tx, mut _rx) = tokio::sync::mpsc::channel(64);
-        let cancel = tokio_util::sync::CancellationToken::new();
-        let _result =
-            wiki_maintainer::absorb_batch(&paths, entry_ids, &adapter, tx, task_id_clone.clone(), cancel).await;
-        log::info!("[absorb] task {} completed", task_id_clone);
-        // _guard dropped here → ABSORB_RUNNING = false
+        while let Some(ev) = rx.recv().await {
+            bridge_state
+                .broadcast_session_event(DesktopSessionEvent::AbsorbProgress(ev))
+                .await;
+        }
     });
 
-    Ok(Json(serde_json::json!({
-        "task_id": task_id,
-        "status": "started",
-        "total_entries": total,
-    })))
+    // ── Spawn absorb_batch ──
+    //
+    // On task end (success, error, cancel) emit `AbsorbComplete` + call
+    // `task_manager.complete(&task_id)` to free the "absorb" kind slot.
+    let task_id_for_batch = task_id.clone();
+    let task_id_for_complete = task_id.clone();
+    let task_id_for_response = task_id.clone();
+    let complete_state = desktop_state.clone();
+    let paths_for_spawn = paths.clone();
+    tokio::spawn(async move {
+        let result = wiki_maintainer::absorb_batch(
+            &paths_for_spawn,
+            entry_ids,
+            &adapter,
+            tx,
+            task_id_for_batch,
+            cancel_token,
+        )
+        .await;
+
+        match result {
+            Ok(r) => {
+                complete_state
+                    .broadcast_session_event(DesktopSessionEvent::AbsorbComplete {
+                        task_id: task_id_for_complete.clone(),
+                        created: r.created,
+                        updated: r.updated,
+                        skipped: r.skipped,
+                        failed: r.failed,
+                        duration_ms: r.duration_ms,
+                    })
+                    .await;
+                log::info!(
+                    "[absorb] task {} completed (created={} updated={} skipped={} failed={} ms={})",
+                    task_id_for_complete,
+                    r.created,
+                    r.updated,
+                    r.skipped,
+                    r.failed,
+                    r.duration_ms,
+                );
+            }
+            Err(e) => {
+                log::warn!(
+                    "[absorb] task {} errored: {e}",
+                    task_id_for_complete
+                );
+                // Still emit AbsorbComplete so the UI tears down the
+                // progress UI; mark the whole batch as one failed.
+                complete_state
+                    .broadcast_session_event(DesktopSessionEvent::AbsorbComplete {
+                        task_id: task_id_for_complete.clone(),
+                        created: 0,
+                        updated: 0,
+                        skipped: 0,
+                        failed: 1,
+                        duration_ms: 0,
+                    })
+                    .await;
+            }
+        }
+
+        // Free the kind slot for the next /api/wiki/absorb request.
+        complete_state
+            .task_manager()
+            .complete(&task_id_for_complete)
+            .await;
+    });
+
+    // ── 202 Accepted ──
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(serde_json::json!({
+            "task_id": task_id_for_response,
+            "status": "started",
+            "total_entries": total,
+        })),
+    ))
 }
 
-/// Quick pseudo-random u16 for task_id suffix (no crypto needed).
-fn rand_u16() -> u16 {
-    use std::time::SystemTime;
-    let t = SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .unwrap_or_default()
-        .subsec_nanos();
-    (t & 0xFFFF) as u16
+/// Minimal ISO date validator: `YYYY-MM-DD` with ASCII-digit cells.
+/// Returns false for any length / separator / digit-range violation.
+/// Does NOT validate month-specific day caps (§2.1's INVALID_DATE_RANGE
+/// check is intentionally shape-only; semantic validity is the
+/// responsibility of whoever populates `raw entry.date`).
+fn is_valid_iso_date(s: &str) -> bool {
+    let bytes = s.as_bytes();
+    if bytes.len() != 10 {
+        return false;
+    }
+    if bytes[4] != b'-' || bytes[7] != b'-' {
+        return false;
+    }
+    for &b in &bytes[..4] {
+        if !b.is_ascii_digit() {
+            return false;
+        }
+    }
+    for &b in &bytes[5..7] {
+        if !b.is_ascii_digit() {
+            return false;
+        }
+    }
+    for &b in &bytes[8..10] {
+        if !b.is_ascii_digit() {
+            return false;
+        }
+    }
+    true
 }
 
 // ── §2.2 POST /api/wiki/query ───────────────────────────────────────

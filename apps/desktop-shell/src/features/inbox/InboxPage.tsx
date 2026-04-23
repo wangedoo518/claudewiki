@@ -20,7 +20,6 @@ import {
   CheckCircle2,
   XCircle,
   AlertCircle,
-  Clock,
   FileText,
   ArrowRight,
   Sparkles,
@@ -30,7 +29,6 @@ import {
   Square,
   X,
   HelpCircle,
-  Users,
 } from "lucide-react";
 import { Link, useNavigate } from "react-router-dom";
 import {
@@ -64,16 +62,15 @@ import {
 } from "@/components/deep-link";
 import { EmptyState } from "@/components/ui/empty-state";
 import { FailureBanner } from "@/components/ui/failure-banner";
-import { InfoTooltip } from "@/components/ui/info-tooltip";
 import { IngestDecisionBadge } from "@/features/inbox/components/IngestDecisionBadge";
 import { URLTrackBadge } from "@/features/inbox/components/URLTrackBadge";
 import { BodyPreviewPanel } from "@/features/inbox/components/BodyPreviewPanel";
 import { MaintainActionRadio } from "@/features/inbox/components/MaintainActionRadio";
 import { MaintainerResultCard } from "@/features/inbox/components/MaintainerResultCard";
 import { WikiPageDiffPreview } from "@/features/inbox/components/WikiPageDiffPreview";
-import { RecommendedActionBadge } from "@/features/inbox/components/RecommendedActionBadge";
 import { QueueGroupHeader } from "@/features/inbox/components/QueueGroupHeader";
 import { BatchActionsToolbar } from "@/features/inbox/components/BatchActionsToolbar";
+import { InboxRow } from "@/components/ds/InboxRow";
 import {
   CombinedPreviewDialog,
   type CombinedApplyResponse,
@@ -81,7 +78,6 @@ import {
 import { TargetCandidatePicker } from "@/features/inbox/components/TargetCandidatePicker";
 import { DuplicateGuardBanner } from "@/features/inbox/components/DuplicateGuardBanner";
 import { DuplicateGuardDialog } from "@/features/inbox/components/DuplicateGuardDialog";
-import { SharedTargetBadge } from "@/features/inbox/components/SharedTargetBadge";
 import { InboxLineageSummary } from "@/features/inbox/components/InboxLineageSummary";
 import {
   computeQueueIntelligence,
@@ -108,7 +104,7 @@ import {
 } from "@/features/wiki/navigate-helpers";
 
 /** InboxEntry enriched with the queue-intelligence envelope + decision. */
-type IntelligentEntry = InboxEntry & {
+export type IntelligentEntry = InboxEntry & {
   intelligence: QueueIntelligence;
   decision: IngestDecision | null;
 };
@@ -116,16 +112,6 @@ type IntelligentEntry = InboxEntry & {
 const inboxKeys = {
   list: () => ["wiki", "inbox", "list"] as const,
 };
-
-/** 翻译 inbox entry kind */
-function translateKind(kind: string): string {
-  const map: Record<string, string> = {
-    "new-raw": "新素材",
-    "stale": "待更新",
-    "conflict": "冲突",
-  };
-  return map[kind] ?? kind;
-}
 
 /** 翻译 inbox entry status */
 function translateStatus(status: string): string {
@@ -653,6 +639,19 @@ function EntryList({
   // MUST be called before any early-return — Rules of Hooks.
   const groups = useMemo(() => groupAndSortByAction(entries), [entries]);
 
+  // DS2.x-A — reject handler lifted from the inline row markup so
+  // `<InboxRow>` only receives a parameterless `onReject` thunk. The
+  // optimistic `queryClient.invalidateQueries` mirrors the behaviour
+  // that shipped in the pre-migration row.
+  const handleReject = useCallback(
+    (id: number) => {
+      void resolveInboxEntry(id, "reject").then(() => {
+        void queryClient.invalidateQueries({ queryKey: inboxKeys.list() });
+      });
+    },
+    [queryClient],
+  );
+
   if (isLoading) {
     return (
       <div className="flex-1 px-3 py-6 text-center text-caption text-muted-foreground">
@@ -730,154 +729,27 @@ function EntryList({
               onSelectAll={() => onBulkSelect(groupIds, true)}
               onDeselectAll={() => onBulkSelect(groupIds, false)}
             />
-            {group.entries.map((entry) => {
-              const isActive = !batchMode && entry.id === selectedId;
-              const isChecked = selectedIds.has(entry.id);
-              return (
-                <li
-                  key={entry.id}
-                  id={`inbox-task-${entry.id}`}
-                  className="border-b border-border/20 last:border-b-0"
-                >
-                  <div
-                    role="button"
-                    tabIndex={0}
-                    title={translateKind(entry.kind)}
-                    onClick={() => {
-                      if (batchMode) {
-                        onToggleSelect(entry.id);
-                      } else {
-                        onSelect(entry.id);
-                      }
-                    }}
-                    onKeyDown={(ev) => {
-                      if (ev.key === "Enter" || ev.key === " ") {
-                        ev.preventDefault();
-                        if (batchMode) onToggleSelect(entry.id);
-                        else onSelect(entry.id);
-                      }
-                    }}
-                    className={
-                      "flex w-full cursor-pointer items-start gap-2 px-3 py-2 text-left transition-colors hover:bg-accent/50 " +
-                      (isActive
-                        ? "bg-accent border-l-[3px] border-primary"
-                        : "border-l-[3px] border-l-transparent")
-                    }
-                  >
-                    {batchMode ? (
-                      <input
-                        type="checkbox"
-                        checked={isChecked}
-                        onClick={(ev) => ev.stopPropagation()}
-                        onChange={() => onToggleSelect(entry.id)}
-                        className="mt-1 size-3.5 shrink-0 cursor-pointer accent-primary"
-                        aria-label={`选中任务 #${entry.id}`}
-                      />
-                    ) : (
-                      <StatusIcon status={entry.status} />
-                    )}
-                    <div className="min-w-0 flex-1">
-                      <div className="flex items-center gap-1.5">
-                        <IngestDecisionBadge
-                          decision={entry.decision}
-                          compact
-                        />
-                        <span
-                          className="flex-1 truncate text-foreground"
-                          style={{
-                            fontSize: 12,
-                            fontWeight: isActive ? 500 : 400,
-                          }}
-                        >
-                          {entry.title.replace(/^New raw entry/, "新素材")}
-                        </span>
-                      </div>
-                      <div className="mt-0.5 flex flex-wrap items-center gap-1">
-                        <RecommendedActionBadge
-                          action={entry.intelligence.recommended_action}
-                          compact
-                        />
-                        {/* Q2 — shared-target cohort indicator. Only
-                            renders when ≥ 2 entries target the same slug. */}
-                        {(() => {
-                          const slug =
-                            entry.intelligence.target_candidate?.slug;
-                          if (!slug) return null;
-                          const count = sharedTargetCounts.get(slug) ?? 0;
-                          return (
-                            <SharedTargetBadge slug={slug} count={count} />
-                          );
-                        })()}
-                        {entry.intelligence.cohort_raw_id != null && (
-                          <span
-                            className="inline-flex items-center gap-0.5 rounded-full border border-border/40 px-1.5 py-0.5 text-muted-foreground/70"
-                            style={{ fontSize: 10 }}
-                            title={`同 raw #${String(entry.intelligence.cohort_raw_id).padStart(5, "0")} 还有其他任务`}
-                          >
-                            <Users className="size-2.5" aria-hidden />
-                            同源
-                          </span>
-                        )}
-                        {entry.intelligence.why_long ? (
-                          <InfoTooltip side="right">
-                            <div
-                              className="space-y-1"
-                              style={{ fontSize: 11, lineHeight: 1.5 }}
-                            >
-                              <div className="font-medium text-foreground">
-                                {entry.intelligence.why}
-                              </div>
-                              <div className="text-muted-foreground/80">
-                                {entry.intelligence.why_long}
-                              </div>
-                            </div>
-                          </InfoTooltip>
-                        ) : null}
-                        {/* DS1.5 — kind dropped from inline row; the
-                            RecommendedActionBadge + SharedTargetBadge
-                            already carry the semantic weight. Kind
-                            still surfaces via the row's native hover
-                            `title` attribute (added on the outer row
-                            container) so power users can inspect. */}
-                      </div>
-                      <div
-                        className="mt-0.5 truncate text-muted-foreground/50"
-                        style={{ fontSize: 10 }}
-                      >
-                        {entry.description}
-                      </div>
-                      <div
-                        className="mt-0.5 flex items-center gap-1 text-muted-foreground/40"
-                        style={{ fontSize: 10 }}
-                      >
-                        <Clock className="size-2.5" />
-                        {formatRelative(entry.created_at)}
-                      </div>
-                    </div>
-                    {!batchMode && entry.status === "pending" && (
-                      <button
-                        type="button"
-                        className="shrink-0 rounded p-0.5 text-muted-foreground/30 transition-colors hover:text-destructive"
-                        onClick={(ev) => {
-                          ev.stopPropagation();
-                          void resolveInboxEntry(entry.id, "reject").then(
-                            () => {
-                              void queryClient.invalidateQueries({
-                                queryKey: inboxKeys.list(),
-                              });
-                            },
-                          );
-                        }}
-                        title="删除"
-                        aria-label="删除任务"
-                      >
-                        <XCircle className="size-3" />
-                      </button>
-                    )}
-                  </div>
-                </li>
-              );
-            })}
+            {group.entries.map((entry) => (
+              <InboxRow
+                key={entry.id}
+                entry={entry}
+                batchMode={batchMode}
+                selected={selectedIds.has(entry.id)}
+                active={!batchMode && entry.id === selectedId}
+                sharedTargetCount={
+                  sharedTargetCounts.get(
+                    entry.intelligence.target_candidate?.slug ?? "",
+                  ) ?? 0
+                }
+                onToggleSelect={() => onToggleSelect(entry.id)}
+                onSelect={() => onSelect(entry.id)}
+                onReject={
+                  entry.status === "pending"
+                    ? () => handleReject(entry.id)
+                    : undefined
+                }
+              />
+            ))}
           </div>
         );
       })}
@@ -2004,18 +1876,6 @@ function EntryPlaceholder() {
       </div>
     </div>
   );
-}
-
-/* ─── Time formatting ──────────────────────────────────────────── */
-
-function formatRelative(iso: string): string {
-  const then = Date.parse(iso);
-  if (Number.isNaN(then)) return iso;
-  const deltaSecs = Math.max(0, Math.floor((Date.now() - then) / 1000));
-  if (deltaSecs < 60) return `${deltaSecs}秒前`;
-  if (deltaSecs < 3600) return `${Math.floor(deltaSecs / 60)}分钟前`;
-  if (deltaSecs < 86_400) return `${Math.floor(deltaSecs / 3600)}小时前`;
-  return `${Math.floor(deltaSecs / 86_400)}天前`;
 }
 
 /* ─── Maintainer error banner (R1 trust layer) ─────────────────── */

@@ -158,7 +158,7 @@ export const AskMarkdown = memo(function AskMarkdown({
           return (
             <a
               href={href}
-              className="text-[color:var(--color-label-you,rgb(37,99,235))] underline decoration-[color:var(--color-label-you,rgb(37,99,235))]/30 hover:decoration-[color:var(--color-label-you,rgb(37,99,235))]"
+              className="text-[color:var(--color-label-you)] underline decoration-[color:var(--color-label-you)]/30 hover:decoration-[color:var(--color-label-you)]"
               target="_blank"
               rel="noopener noreferrer"
             >

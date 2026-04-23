@@ -40,6 +40,16 @@
   --color-warning: oklch(0.68 0.115 79);                    /* = DS --warning #c09640; 13 active files */
   --color-permission: oklch(0.50 0.17 294);                 /* = DS --permission #8855cc; permission dialog accent */
   --color-fast-mode: oklch(0.68 0.115 79);                  /* alias → warning; MCP tool badge fallback */
+
+  /* Pattern C tokens — Batch-C follow-up. "You" label + code diff viewer.
+     `--color-label-you` aliases to `--claude-blue` (Focus Blue family) so
+     both light & dark ride the existing override. The 4 diff tokens are
+     independent — word-level vs line-bg needs two L tiers per hue. */
+  --color-label-you: var(--claude-blue);                    /* alias → Focus Blue */
+  --color-diff-added-word:   oklch(0.56 0.14 150);          /* GitHub green-700 family (word-level FG) */
+  --color-diff-added:        oklch(0.85 0.12 150);          /* GitHub green-200 family (line-bg) */
+  --color-diff-removed-word: oklch(0.54 0.18 25);           /* GitHub red-700 family (word-level FG) */
+  --color-diff-removed:      oklch(0.85 0.09 20);           /* GitHub red-200 family (line-bg) */
   --color-border: oklch(0.9485 0.0109 95.2);                /* Border Cream #f0eee6 */
   --color-input: oklch(0.9237 0.0135 97.5);                 /* Border Warm #e8e6dc */
   --color-ring: oklch(0.6634 0.1531 248.9);                 /* Focus Blue (cool, only here) */
@@ -191,6 +201,15 @@
     --color-warning: oklch(0.75 0.115 79);                    /* dark-mode readable version of DS --warning (#c09640); hue/chroma match light, lightness +0.07 */
     --color-permission: oklch(0.65 0.17 294);                 /* dark-mode readable version of DS --permission (#8855cc); hue/chroma match light, lightness +0.15 */
     --color-fast-mode: oklch(0.75 0.115 79);                  /* alias → warning (dark-readable) */
+
+    /* Pattern C tokens — dark override. Word-level FG lightens (better
+       contrast on dark bg); line-bg darkens + reduces chroma (low-burn
+       green/red wash behind code lines). */
+    --color-label-you: var(--claude-blue);                    /* alias → Focus Blue (dark) */
+    --color-diff-added-word:   oklch(0.72 0.14 150);          /* brighter green for dark FG */
+    --color-diff-added:        oklch(0.35 0.08 150);          /* dark line-bg: low L, mid chroma */
+    --color-diff-removed-word: oklch(0.68 0.18 25);           /* brighter red for dark FG */
+    --color-diff-removed:      oklch(0.35 0.10 20);           /* dark line-bg: low L, mid chroma */
     --color-border: oklch(0.3085 0.0035 106.6);               /* gentle depth */
     --color-input: oklch(0.3590 0.0051 106.6);
     --color-ring: oklch(0.6634 0.1531 248.9);                 /* Focus Blue */

@@ -653,9 +653,9 @@ function DiffDisplay({ content }: { content: string }) {
       {content.split("\n").map((line, i) => {
         let lineClass = "text-foreground/80";
         if (line.startsWith("+") && !line.startsWith("+++")) {
-          lineClass = "text-[color:var(--color-diff-added-word,rgb(47,157,68))] bg-[color:var(--color-diff-added,rgb(105,219,124))]/15";
+          lineClass = "text-[color:var(--color-diff-added-word)] bg-[color:var(--color-diff-added)]/15";
         } else if (line.startsWith("-") && !line.startsWith("---")) {
-          lineClass = "text-[color:var(--color-diff-removed-word,rgb(209,69,75))] bg-[color:var(--color-diff-removed,rgb(255,168,180))]/15";
+          lineClass = "text-[color:var(--color-diff-removed-word)] bg-[color:var(--color-diff-removed)]/15";
         } else if (line.startsWith("@@")) {
           lineClass = "text-[color:var(--claude-blue)]";
         } else if (line.startsWith("---") || line.startsWith("+++")) {

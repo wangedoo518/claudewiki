@@ -1152,6 +1152,96 @@ struct DesktopDispatchStore {
     items: HashMap<String, DispatchItemMetadata>,
 }
 
+/// Best-effort per-spawn cleanup guard for turn-executing tokio tasks.
+///
+/// Each of the three spawn paths that drives a turn (agentic loop at
+/// `lib.rs` ≈L4319, OpenAI-compat streaming at ≈L4042, vendored
+/// synchronous fallback at ≈L4442) constructs one of these at the top
+/// of its `tokio::spawn` closure and flips `fired = true` only after
+/// the normal finalize path has succeeded. If the spawned future
+/// panics, is cancelled, or otherwise bypasses the finalize block,
+/// `drop` runs and performs the minimum cleanup needed to keep the
+/// session from getting stuck in `Running`:
+///
+///   1. `try_write` on `permission_gates` / `cancel_tokens` /
+///      `store.sessions` to drop stale per-turn state and reset
+///      `turn_state` to `Idle`. `try_write` (not `write().await`) is
+///      deliberate — `Drop` is sync, and if a writer already holds
+///      the lock (e.g. a concurrent shutdown) we don't want to panic
+///      on blocking; the startup reconciliation pass will recover.
+///   2. A best-effort `DesktopSessionEvent::Snapshot` broadcast so
+///      SSE subscribers (the frontend) see the `Idle` state
+///      immediately instead of waiting on the 30-second `isStale`
+///      bandaid. If the `try_read` or the send fails we silently
+///      drop the broadcast — the frontend's existing staleness
+///      check is still a correctness safety net.
+///
+/// Broadcasting a Snapshot on drop is cheap (tokio `broadcast::send`
+/// is non-blocking and returns `Err` when there are no receivers),
+/// and the Snapshot variant already encodes the full `DesktopSessionDetail`
+/// so subscribers reconcile fully without needing a follow-up GET.
+struct SessionCleanupGuard {
+    state: DesktopState,
+    session_id: SessionId,
+    sender: broadcast::Sender<DesktopSessionEvent>,
+    /// Set to `true` by the spawn closure after the happy-path finalize
+    /// has completed. When `true`, `drop` is a no-op. When `false` (the
+    /// closure unwound early), `drop` performs the recovery cleanup +
+    /// terminal Snapshot broadcast described above.
+    fired: bool,
+}
+
+impl SessionCleanupGuard {
+    fn new(
+        state: DesktopState,
+        session_id: SessionId,
+        sender: broadcast::Sender<DesktopSessionEvent>,
+    ) -> Self {
+        Self {
+            state,
+            session_id,
+            sender,
+            fired: false,
+        }
+    }
+}
+
+impl Drop for SessionCleanupGuard {
+    fn drop(&mut self) {
+        if self.fired {
+            return;
+        }
+        // Sync try_write — will not block if a writer is already holding
+        // the lock (which can happen on shutdown). If any try_write
+        // fails, the session may be left in Running state but will be
+        // reconciled at next startup (see `with_executor`).
+        if let Ok(mut gates) = self.state.permission_gates.try_write() {
+            gates.remove(&self.session_id);
+        }
+        if let Ok(mut tokens) = self.state.cancel_tokens.try_write() {
+            tokens.remove(&self.session_id);
+        }
+        if let Ok(mut store) = self.state.store.try_write() {
+            if let Some(record) = store.sessions.get_mut(&self.session_id) {
+                record.metadata.turn_state = DesktopTurnState::Idle;
+            }
+        }
+        // P0-3: best-effort terminal Snapshot so SSE subscribers can
+        // recover without waiting on the 30-second `isStale` bandaid.
+        // We use `try_read` (non-blocking) and ignore all failures —
+        // every error path here has a fallback (startup reconcile +
+        // client-side staleness check), so a missed broadcast only
+        // delays recovery, never corrupts state.
+        if let Ok(store) = self.state.store.try_read() {
+            if let Some(record) = store.sessions.get(&self.session_id) {
+                let _ = self.sender.send(DesktopSessionEvent::Snapshot {
+                    session: record.detail(),
+                });
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 struct DesktopTurnRequest {
     message: String,
@@ -4040,6 +4130,19 @@ impl DesktopState {
             let friendly_label_for_stream = friendly_label;
 
             tokio::spawn(async move {
+                // P0-1: guard this path the same way the agentic spawn
+                // is guarded. If `run_streaming_turn` or
+                // `finalize_openai_compat_turn` panics / unwinds before
+                // the post-finalize cleanup runs, the guard's Drop
+                // resets `turn_state` to Idle and broadcasts a
+                // terminal Snapshot so SSE subscribers recover
+                // immediately.
+                let mut guard = SessionCleanupGuard::new(
+                    state.clone(),
+                    session_id_for_stream.clone(),
+                    sender_for_stream.clone(),
+                );
+
                 // Flatten messages: existing history + the newly
                 // appended user message.
                 let mut msgs = openai_compat_streaming::messages_from_runtime_session(
@@ -4092,6 +4195,11 @@ impl DesktopState {
                 if let Ok(mut gates) = state.permission_gates.try_write() {
                     gates.remove(&session_id_for_stream);
                 }
+
+                // Finalize + cleanup succeeded: suppress the guard's
+                // terminal Snapshot + state reset. The guard's Drop
+                // only runs if this block is bypassed by an unwind.
+                guard.fired = true;
             });
 
             return Ok(detail);
@@ -4317,46 +4425,20 @@ impl DesktopState {
                 session_for_loop.messages.push(user_message);
 
                 tokio::spawn(async move {
-                    // Drop guard: best-effort synchronous cleanup using
-                    // try_write so we don't deadlock if the runtime is
-                    // shutting down. If try_write fails, the startup
-                    // reconciliation pass (see with_executor) will reset
-                    // any stuck session state on the next launch.
-                    struct SessionCleanupGuard {
-                        state: DesktopState,
-                        session_id: SessionId,
-                        fired: bool,
-                    }
-                    impl Drop for SessionCleanupGuard {
-                        fn drop(&mut self) {
-                            if self.fired {
-                                return;
-                            }
-                            // Sync try_write — will not block if a writer
-                            // is already holding the lock (which can happen
-                            // on shutdown).
-                            if let Ok(mut gates) = self.state.permission_gates.try_write() {
-                                gates.remove(&self.session_id);
-                            }
-                            if let Ok(mut tokens) = self.state.cancel_tokens.try_write() {
-                                tokens.remove(&self.session_id);
-                            }
-                            if let Ok(mut store) = self.state.store.try_write() {
-                                if let Some(record) = store.sessions.get_mut(&self.session_id) {
-                                    record.metadata.turn_state = DesktopTurnState::Idle;
-                                }
-                            }
-                            // If any try_write fails, the session may be
-                            // left in Running state but will be reconciled
-                            // at next startup.
-                        }
-                    }
-
-                    let mut guard = SessionCleanupGuard {
-                        state: state.clone(),
-                        session_id: session_id.clone(),
-                        fired: false,
-                    };
+                    // Drop guard (hoisted to module scope as
+                    // `SessionCleanupGuard`): best-effort synchronous
+                    // cleanup using try_write so we don't deadlock if
+                    // the runtime is shutting down, plus a terminal
+                    // Snapshot broadcast so SSE subscribers can recover
+                    // immediately if this task unwinds before finalize
+                    // runs. If try_write fails, the startup reconciliation
+                    // pass (see with_executor) will reset any stuck
+                    // session state on the next launch.
+                    let mut guard = SessionCleanupGuard::new(
+                        state.clone(),
+                        session_id.clone(),
+                        sender.clone(),
+                    );
 
                     let result = agentic_loop::run_agentic_loop(
                         session_for_loop,
@@ -4439,7 +4521,22 @@ impl DesktopState {
                 } else {
                     fallback_url_context
                 };
+                // P0-2: the fallback spawn had no drop guard either —
+                // if `run_background_turn`'s outer async chain unwinds
+                // the session stays stuck in `Running`. Clone the
+                // pieces the guard needs here (before `session_id`
+                // moves into the method call) and capture a sender
+                // for the terminal Snapshot broadcast.
+                let guard_state = state.clone();
+                let guard_session_id = session_id.clone();
+                let guard_sender = sender.clone();
                 tokio::spawn(async move {
+                    let mut guard = SessionCleanupGuard::new(
+                        guard_state,
+                        guard_session_id,
+                        guard_sender,
+                    );
+
                     // Pass original message to turn executor (not enriched).
                     // Enriched content travels inside the request struct so
                     // execute_live_turn can inject it into the system prompt
@@ -4457,6 +4554,11 @@ impl DesktopState {
                             turn_executor,
                         )
                         .await;
+
+                    // `run_background_turn` finished normally (it already
+                    // resets `turn_state` to Idle and broadcasts a
+                    // Snapshot). Suppress the guard's recovery path.
+                    guard.fired = true;
                 });
             }
         }

@@ -4,11 +4,12 @@ use std::time::Duration;
 
 use async_stream::stream;
 use axum::extract::{DefaultBodyLimit, Path, Query, State};
-use axum::http::{Method, StatusCode};
+use axum::http::{HeaderMap, Method, StatusCode};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::IntoResponse;
 use axum::routing::{delete, get, post};
 use axum::{Json, Router};
+use tokio_util::sync::CancellationToken;
 use desktop_core::{
     AppendDesktopMessageRequest, CreateDesktopDispatchItemRequest,
     CreateDesktopScheduledTaskRequest, CreateDesktopSessionRequest, DesktopBootstrap,
@@ -27,7 +28,6 @@ use tower_http::cors::{Any, CorsLayer};
 // `/api/desktop/code-tools/*` routes. ClawWiki canonical §11.1 cut #3
 // — there is no /code page, no CLI launcher, no claude-bridge proxy.
 
-#[cfg(feature = "private-cloud")]
 use std::sync::Arc;
 
 #[derive(Clone)]
@@ -44,6 +44,17 @@ pub struct AppState {
     // and can trigger an immediate refetch, replacing the 30s polling
     // interval with sub-second reactivity (canonical §2: "3 秒内").
     inbox_notify: tokio::sync::broadcast::Sender<()>,
+    // Graceful-shutdown plumbing. The /internal/shutdown route verifies
+    // the header token matches `shutdown_token` and, on success, calls
+    // `shutdown_cancel.cancel()` which trips the `with_graceful_shutdown`
+    // future inside `serve_with_shutdown`, letting axum finish in-flight
+    // requests and drop tasks (so `SessionCleanupGuard::drop` actually
+    // runs instead of the old "window close = force-kill child" path).
+    //
+    // Both fields are `Arc`-wrapped because AppState is `Clone` and we
+    // want every cloned copy to see the same token + cancel source.
+    shutdown_token: Arc<String>,
+    shutdown_cancel: CancellationToken,
 }
 
 #[cfg(feature = "private-cloud")]
@@ -84,6 +95,11 @@ impl Default for AppState {
             #[cfg(feature = "private-cloud")]
             broker: build_default_broker(),
             inbox_notify,
+            // Default token: every Default instance gets a fresh random
+            // value. Primarily used by the test TestServer; production
+            // callers go through `new()` or `new_with_shutdown()`.
+            shutdown_token: Arc::new(uuid::Uuid::new_v4().to_string()),
+            shutdown_cancel: CancellationToken::new(),
         }
     }
 }
@@ -91,6 +107,20 @@ impl Default for AppState {
 impl AppState {
     #[must_use]
     pub fn new(desktop: DesktopState) -> Self {
+        Self::new_with_shutdown(desktop, uuid::Uuid::new_v4().to_string(), CancellationToken::new())
+    }
+
+    /// Build an `AppState` that shares an externally-owned cancellation
+    /// token + shutdown token. The caller keeps a clone of both: the
+    /// token so it can `cancel()` on signal reception, and the secret
+    /// string so the Tauri shell can authenticate its own shutdown
+    /// POST without leaking the credential through a config file.
+    #[must_use]
+    pub fn new_with_shutdown(
+        desktop: DesktopState,
+        shutdown_token: String,
+        shutdown_cancel: CancellationToken,
+    ) -> Self {
         let (inbox_notify, _) = tokio::sync::broadcast::channel(16);
         install_inbox_notify(inbox_notify.clone());
         #[cfg(feature = "private-cloud")]
@@ -102,12 +132,21 @@ impl AppState {
             #[cfg(feature = "private-cloud")]
             broker,
             inbox_notify,
+            shutdown_token: Arc::new(shutdown_token),
+            shutdown_cancel,
         }
     }
 
     #[must_use]
     pub fn desktop(&self) -> &DesktopState {
         &self.desktop
+    }
+
+    /// Expose the cancel token so the binary can wire up OS-signal
+    /// handlers (Ctrl-C / SIGTERM) without duplicating the plumbing.
+    #[must_use]
+    pub fn shutdown_cancel(&self) -> CancellationToken {
+        self.shutdown_cancel.clone()
     }
 
     #[cfg(feature = "private-cloud")]
@@ -735,9 +774,43 @@ pub fn app(state: AppState) -> Router {
         .route("/api/desktop/wechat-kefu/pipeline/start", post(start_kefu_pipeline_handler))
         .route("/api/desktop/wechat-kefu/pipeline/status", get(kefu_pipeline_status_handler))
         .route("/api/desktop/wechat-kefu/pipeline/cancel", post(cancel_kefu_pipeline_handler))
+        // ── Graceful shutdown (internal, Tauri-shell only) ─────────
+        // POST /internal/shutdown with header `X-Shutdown-Token:
+        // <secret>` trips the cancellation token wired into
+        // `axum::serve().with_graceful_shutdown(...)`. The secret is
+        // injected into the spawned child's env by the Tauri parent
+        // (and known only to that pair) so no other local process can
+        // steer the child. 401 if the header is missing/wrong.
+        .route("/internal/shutdown", post(shutdown_handler))
         .layer(DefaultBodyLimit::max(MAX_REQUEST_BODY_BYTES))
         .layer(cors)
         .with_state(state)
+}
+
+/// Internal handler for `POST /internal/shutdown`. Auth-gated by a
+/// per-process secret (the `X-Shutdown-Token` HTTP header) that the
+/// Tauri parent supplies when spawning the child. Success flips the
+/// cancel token; `axum::serve()` then drains in-flight requests and
+/// returns, which lets Drop impls (incl. `SessionCleanupGuard::drop`)
+/// run as the runtime tears down spawned tasks.
+///
+/// We treat an already-cancelled token as idempotent success — racing
+/// a window-close against a Ctrl-C must not panic.
+async fn shutdown_handler(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    let provided = headers
+        .get("x-shutdown-token")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    // Constant-time-ish comparison: both strings short and lengths
+    // cheap to mismatch on, so byte-wise eq is fine here.
+    if provided.is_empty() || provided != state.shutdown_token.as_str() {
+        return (StatusCode::UNAUTHORIZED, "shutdown token missing or invalid").into_response();
+    }
+    state.shutdown_cancel.cancel();
+    (StatusCode::ACCEPTED, "shutdown signalled").into_response()
 }
 
 async fn health() -> Json<HealthResponse> {
@@ -4547,8 +4620,40 @@ async fn broker_status_handler(
 
 
 pub async fn serve(state: AppState, address: SocketAddr) -> std::io::Result<()> {
+    // The graceful-shutdown future fires when the cancel token owned
+    // by `state` is tripped. Tests build a plain `AppState::default()`
+    // and never cancel, so this degrades to the prior "run until
+    // aborted" behaviour for them.
+    let cancel = state.shutdown_cancel.clone();
+    serve_with_shutdown(state, address, cancel).await
+}
+
+/// Binary entry-point variant. Callers own the cancel token so they
+/// can flip it from OS signal handlers. The `state` passed in MUST
+/// have been constructed via `AppState::new_with_shutdown(..)` with
+/// the same `cancel` — the `/internal/shutdown` HTTP route reads
+/// `state.shutdown_cancel` and fires the same clone.
+///
+/// After `axum::serve` returns (either cancelled or error), we drop
+/// the state explicitly. That's what lets owned spawn handles inside
+/// `DesktopState` finalize — without the drop, the state would linger
+/// in this function's frame until the binary's main() returns, and
+/// `SessionCleanupGuard::drop` would never have a chance to run.
+pub async fn serve_with_shutdown(
+    state: AppState,
+    address: SocketAddr,
+    cancel: CancellationToken,
+) -> std::io::Result<()> {
     let listener = tokio::net::TcpListener::bind(address).await?;
-    axum::serve(listener, app(state)).await
+    let shutdown_signal = async move { cancel.cancelled().await };
+    let result = axum::serve(listener, app(state))
+        .with_graceful_shutdown(shutdown_signal)
+        .await;
+    // `axum::serve` already dropped its own copy of `state` when the
+    // graceful-shutdown future resolved; here we've got nothing else
+    // to drop explicitly, but the bind-site in `main.rs` is free to
+    // drop any owned `DesktopState` clone after we return.
+    result
 }
 
 #[cfg(test)]

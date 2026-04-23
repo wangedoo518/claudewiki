@@ -23,7 +23,34 @@ const CLAUDE_CODE_CLI_TOOL: &str = "claude-code";
 const OPENAI_CODEX_CLI_TOOL: &str = "openai-codex";
 const CODEX_OPENAI_PROVIDER_ID: &str = "codex-openai";
 const QWEN_CODE_PROVIDER_ID: &str = "qwen-code";
+/// Max time we wait for the desktop-server to honour a graceful
+/// shutdown POST before we fall through to `Child::kill`. Tuned small
+/// because the window-close path is user-visible: if the server is
+/// genuinely wedged, force-killing still beats making the user stare
+/// at an unresponsive desktop.
+const SHUTDOWN_POST_TIMEOUT: Duration = Duration::from_millis(1_500);
+/// Max time we wait for the child process to actually exit after the
+/// POST succeeds. `SessionCleanupGuard::drop` + axum graceful drain
+/// typically finish in well under a second; this bound is a backstop.
+const SHUTDOWN_WAIT_TIMEOUT: Duration = Duration::from_secs(3);
 type DesktopServerHandle = Arc<Mutex<Option<Child>>>;
+
+/// Shared per-session secret the Tauri parent and desktop-server child
+/// use to authenticate the `POST /internal/shutdown` call. Generated
+/// once at `main()` startup, injected into the child via env var
+/// (`OCL_SHUTDOWN_TOKEN`), and stashed in Tauri's managed state so the
+/// window-close / exit-requested handlers can read it back.
+#[derive(Clone)]
+struct ShutdownToken(Arc<String>);
+
+impl ShutdownToken {
+    fn new() -> Self {
+        Self(Arc::new(uuid::Uuid::new_v4().to_string()))
+    }
+    fn as_str(&self) -> &str {
+        self.0.as_str()
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Shared types (mirrored in TypeScript)
@@ -82,8 +109,11 @@ fn desktop_api_base() -> String {
 }
 
 #[tauri::command]
-fn desktop_server_ensure(handle: State<'_, DesktopServerHandle>) -> Result<String, String> {
-    ensure_desktop_server(handle.inner())?;
+fn desktop_server_ensure(
+    handle: State<'_, DesktopServerHandle>,
+    token: State<'_, ShutdownToken>,
+) -> Result<String, String> {
+    ensure_desktop_server(handle.inner(), token.inner())?;
     Ok(desired_desktop_api_base())
 }
 
@@ -423,6 +453,7 @@ async fn code_tools_get_available_terminals() -> Result<Vec<CodeToolsTerminalCon
 #[tauri::command]
 async fn code_tools_run(
     handle: State<'_, DesktopServerHandle>,
+    token: State<'_, ShutdownToken>,
     payload: CodeToolsRunPayload,
 ) -> Result<CodeToolRunResult, String> {
     let directory = PathBuf::from(&payload.directory);
@@ -442,7 +473,7 @@ async fn code_tools_run(
         });
     }
 
-    ensure_desktop_server(handle.inner())?;
+    ensure_desktop_server(handle.inner(), token.inner())?;
 
     let package_name = package_name_for_cli(&payload.cli_tool)?;
     let desktop_api_base = desired_desktop_api_base();
@@ -999,7 +1030,7 @@ fn desktop_server_binary_candidates(workspace_dir: &Path) -> Vec<PathBuf> {
     candidates
 }
 
-fn spawn_desktop_server_process(address: &str) -> Result<Child, String> {
+fn spawn_desktop_server_process(address: &str, shutdown_token: &str) -> Result<Child, String> {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let workspace_dir = manifest_dir.join("../../../rust");
     eprintln!("starting desktop-server for address {address}");
@@ -1029,6 +1060,11 @@ fn spawn_desktop_server_process(address: &str) -> Result<Child, String> {
 
     command
         .env("OPEN_CLAUDE_CODE_DESKTOP_ADDR", address)
+        // Graceful-shutdown auth token: only this Tauri parent knows
+        // it, so only this parent can hit POST /internal/shutdown.
+        // Any re-spawn during `ensure_desktop_server` rotations picks
+        // up the same token via this env var.
+        .env("OCL_SHUTDOWN_TOKEN", shutdown_token)
         .stdin(Stdio::null());
 
     if cfg!(debug_assertions) {
@@ -1105,7 +1141,10 @@ fn shutdown_desktop_server(handle: &DesktopServerHandle) {
     }
 }
 
-fn ensure_desktop_server(handle: &DesktopServerHandle) -> Result<(), String> {
+fn ensure_desktop_server(
+    handle: &DesktopServerHandle,
+    shutdown_token: &ShutdownToken,
+) -> Result<(), String> {
     if env::var_os("OPEN_CLAUDE_CODE_DESKTOP_API_BASE").is_some() {
         return Ok(());
     }
@@ -1140,7 +1179,7 @@ fn ensure_desktop_server(handle: &DesktopServerHandle) -> Result<(), String> {
         std::thread::sleep(Duration::from_millis(250));
     }
 
-    let child = spawn_desktop_server_process(&address)?;
+    let child = spawn_desktop_server_process(&address, shutdown_token.as_str())?;
     {
         let mut guard = handle.lock().expect("desktop server lock poisoned");
         *guard = Some(child);
@@ -1163,20 +1202,147 @@ fn ensure_desktop_server(handle: &DesktopServerHandle) -> Result<(), String> {
     ))
 }
 
+/// Try a graceful shutdown of the desktop-server child: POST
+/// `/internal/shutdown` with the shared token; if it lands, wait up
+/// to `SHUTDOWN_WAIT_TIMEOUT` for the child to actually exit; if
+/// anything fails along the way, fall back to the pre-existing
+/// `Child::kill` path. This is the new entry point on window close,
+/// so it has to be robust and never hang the UI.
+///
+/// Runs synchronously on whatever thread Tauri hands us — we use
+/// `reqwest::blocking` for that reason. The request has a 1.5s
+/// connect+request timeout; the subsequent wait loop polls
+/// `Child::try_wait` every 50ms.
+fn graceful_shutdown_desktop_server(
+    handle: &DesktopServerHandle,
+    shutdown_token: &ShutdownToken,
+) {
+    // If we don't own the child (user launched with
+    // `OPEN_CLAUDE_CODE_DESKTOP_API_BASE` pointing at an external
+    // server), there's nothing to shut down here.
+    let have_child = handle
+        .lock()
+        .expect("desktop server lock poisoned")
+        .is_some();
+    if !have_child {
+        return;
+    }
+
+    let address = desired_desktop_server_addr();
+    let url = format!("http://{address}/internal/shutdown");
+
+    eprintln!("[shutdown] POST {url} (graceful)");
+    let client_result = reqwest::blocking::Client::builder()
+        .timeout(SHUTDOWN_POST_TIMEOUT)
+        .build();
+    let post_ok = match client_result {
+        Ok(client) => match client
+            .post(&url)
+            .header("X-Shutdown-Token", shutdown_token.as_str())
+            .send()
+        {
+            Ok(resp) => {
+                let status = resp.status();
+                if status.is_success() {
+                    eprintln!("[shutdown] server accepted graceful shutdown ({status})");
+                    true
+                } else {
+                    eprintln!(
+                        "[shutdown] server refused graceful shutdown ({status}); falling back to kill"
+                    );
+                    false
+                }
+            }
+            Err(err) => {
+                eprintln!("[shutdown] graceful POST failed ({err}); falling back to kill");
+                false
+            }
+        },
+        Err(err) => {
+            eprintln!("[shutdown] could not build http client ({err}); falling back to kill");
+            false
+        }
+    };
+
+    if post_ok {
+        // Wait for the child to actually exit so SessionCleanupGuard
+        // drops + the axum drain both complete before we force-kill.
+        let deadline = Instant::now() + SHUTDOWN_WAIT_TIMEOUT;
+        loop {
+            // Hold the lock only for the try_wait call, not across
+            // the sleep.
+            let exited = {
+                let mut guard = handle.lock().expect("desktop server lock poisoned");
+                match guard.as_mut() {
+                    Some(child) => matches!(child.try_wait(), Ok(Some(_))),
+                    None => true, // someone else took it — treat as exited
+                }
+            };
+            if exited {
+                eprintln!("[shutdown] child exited cleanly");
+                // Reap: take the child out of the Option so Drop runs.
+                let _ = handle.lock().expect("desktop server lock poisoned").take();
+                return;
+            }
+            if Instant::now() >= deadline {
+                eprintln!(
+                    "[shutdown] child did not exit within {:?} after graceful POST; killing",
+                    SHUTDOWN_WAIT_TIMEOUT
+                );
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+
+    // Fallback: the pre-existing force-kill path. This is the same
+    // behaviour we had before the graceful-shutdown work landed, so
+    // nothing regresses if the new path is unavailable.
+    shutdown_desktop_server(handle);
+}
+
 // ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
 
 fn main() {
     let desktop_server = Arc::new(Mutex::new(None));
-    if let Err(error) = ensure_desktop_server(&desktop_server) {
+    // Fresh per-launch secret. Both the Tauri parent (this process)
+    // and the spawned desktop-server child need the same value — the
+    // child reads it from its env, we keep a clone in managed state
+    // so window-close handlers can read it back.
+    let shutdown_token = ShutdownToken::new();
+    if let Err(error) = ensure_desktop_server(&desktop_server, &shutdown_token) {
         eprintln!("failed to ensure desktop-server: {error}");
     }
+
+    // Clones captured by the window-close / exit-requested closures.
+    // These can't use Tauri's `State<'_, ...>` extractor because
+    // `RunEvent` callbacks receive an `AppHandle`, not a command
+    // context, so we pre-clone and move directly.
+    let desktop_server_for_window = Arc::clone(&desktop_server);
+    let token_for_window = shutdown_token.clone();
+    let desktop_server_for_exit = Arc::clone(&desktop_server);
+    let token_for_exit = shutdown_token.clone();
 
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(Arc::clone(&desktop_server))
+        .manage(shutdown_token.clone())
         .manage(PipelineStore::new())
+        // Window-close path. Fires when the user clicks the red
+        // X / presses Alt-F4 / closes the last window on macOS.
+        // We let Tauri proceed with the close AND fire a graceful
+        // shutdown of the child in parallel — the child's drain
+        // runs while the window teardown animation plays, which
+        // masks the ~50-500ms tail latency from the user.
+        //
+        // Tauri 2: `on_window_event` takes an `FnMut(&Window, &WindowEvent)`.
+        .on_window_event(move |_window, event| {
+            if let tauri::WindowEvent::CloseRequested { .. } = event {
+                graceful_shutdown_desktop_server(&desktop_server_for_window, &token_for_window);
+            }
+        })
         .invoke_handler(tauri::generate_handler![
             desktop_api_base,
             desktop_server_ensure,
@@ -1195,6 +1361,17 @@ fn main() {
             code_tools_get_available_terminals,
             code_tools_run,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running OpenClaudeCode desktop shell");
+        .build(tauri::generate_context!())
+        .expect("error while building OpenClaudeCode desktop shell")
+        .run(move |_app_handle, event| {
+            // macOS Cmd-Q and the "all windows closed" path go here
+            // instead of (or in addition to) on_window_event. Handle
+            // it idempotently — graceful_shutdown_desktop_server
+            // takes the child out of the Option on success, so the
+            // window-close variant above will be a no-op if the exit
+            // path fired first (or vice versa).
+            if let tauri::RunEvent::ExitRequested { .. } = event {
+                graceful_shutdown_desktop_server(&desktop_server_for_exit, &token_for_exit);
+            }
+        });
 }

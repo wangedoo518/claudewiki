@@ -593,6 +593,7 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tower-http",
+ "uuid",
  "wiki_ingest",
  "wiki_maintainer",
  "wiki_patrol",

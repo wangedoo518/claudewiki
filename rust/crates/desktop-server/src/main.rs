@@ -8,7 +8,8 @@ use desktop_core::wechat_ilink::{
     types::{WeixinAccountData, DEFAULT_BASE_URL},
 };
 use desktop_core::DesktopState;
-use desktop_server::{serve, AppState};
+use desktop_server::{serve_with_shutdown, AppState};
+use tokio_util::sync::CancellationToken;
 
 const DEFAULT_ADDRESS: &str = "127.0.0.1:4357";
 
@@ -106,7 +107,70 @@ async fn run_server() -> Result<(), Box<dyn std::error::Error>> {
     // Channel B: auto-start kefu monitor if configured
     state.auto_start_kefu_monitor().await;
 
-    serve(AppState::new(state), address).await?;
+    // ── Graceful shutdown wire-up (Sprint: Tauri graceful shutdown) ──
+    //
+    // Three sources can trip `cancel`:
+    //   1. Ctrl-C  — always on.
+    //   2. SIGTERM — Unix only (Windows has no SIGTERM proper; the
+    //      Tauri parent uses the HTTP path below instead).
+    //   3. POST /internal/shutdown — the Tauri shell hits this on
+    //      window-close / Cmd-Q / app-exit-requested. Auth-gated by
+    //      a per-process secret (the `OCL_SHUTDOWN_TOKEN` env var).
+    //
+    // Without this, `axum::serve()` would block forever and a
+    // window-close would fall back to `Child::kill`, which force-aborts
+    // every tokio task and so `SessionCleanupGuard::drop` (landed in
+    // commit 3085a1e) never runs. Then sessions leak in the `Running`
+    // state until the next launch's startup reconcile cleans them up.
+    let cancel = CancellationToken::new();
+
+    // Read the auth token from the spawn env if the Tauri shell
+    // provided one; otherwise fabricate one so the handler still has a
+    // valid credential to compare against (standalone `cargo run -p
+    // desktop-server` runs with no Tauri parent and no client that
+    // needs the route).
+    let shutdown_token = env::var("OCL_SHUTDOWN_TOKEN")
+        .unwrap_or_else(|_| uuid::Uuid::new_v4().to_string());
+
+    // Ctrl-C handler. `ctrl_c()` completes on the first Ctrl-C and
+    // the spawned task exits; a second Ctrl-C would be handled by the
+    // default behavior (immediate termination).
+    {
+        let cancel = cancel.clone();
+        tokio::spawn(async move {
+            if let Err(err) = tokio::signal::ctrl_c().await {
+                eprintln!("[shutdown] ctrl_c listener error: {err}");
+                return;
+            }
+            eprintln!("[shutdown] Ctrl-C received → signalling graceful shutdown");
+            cancel.cancel();
+        });
+    }
+
+    // SIGTERM handler. Only compile this on Unix — on Windows the
+    // `tokio::signal::unix` module does not exist.
+    #[cfg(unix)]
+    {
+        let cancel = cancel.clone();
+        tokio::spawn(async move {
+            use tokio::signal::unix::{signal, SignalKind};
+            let mut term = match signal(SignalKind::terminate()) {
+                Ok(s) => s,
+                Err(err) => {
+                    eprintln!("[shutdown] SIGTERM listener setup failed: {err}");
+                    return;
+                }
+            };
+            if term.recv().await.is_some() {
+                eprintln!("[shutdown] SIGTERM received → signalling graceful shutdown");
+                cancel.cancel();
+            }
+        });
+    }
+
+    let state = AppState::new_with_shutdown(state, shutdown_token, cancel.clone());
+    serve_with_shutdown(state, address, cancel).await?;
+    eprintln!("[shutdown] axum::serve returned — process exiting cleanly");
     Ok(())
 }
 

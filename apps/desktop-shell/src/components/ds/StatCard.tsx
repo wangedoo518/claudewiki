@@ -136,9 +136,15 @@ function CompactStat({
       : tone === "ok"
         ? "var(--color-success)"
         : "var(--color-foreground)");
+  // Dark-mode contrast boost for tinted / toned values. Default foreground
+  // already clears AA against `dark:bg-card`; semantic colours (error /
+  // success) and consumer-supplied tints (e.g. Codex pool's red/amber/green)
+  // sit below 4.5:1 on the dark card and need a lift. The filter is inert
+  // in light mode.
+  const hasColoredValue = Boolean(tint) || tone === "warn" || tone === "ok";
   return (
-    <div className="rounded-md border border-border bg-muted/10 px-3 py-2">
-      <div className="mb-1 flex items-center gap-1.5 text-caption text-muted-foreground">
+    <div className="rounded-md border border-border bg-muted/10 px-3 py-2 dark:border-input dark:bg-card">
+      <div className="mb-1 flex items-center gap-1.5 text-caption text-muted-foreground dark:text-foreground/80">
         <Icon
           className="size-3"
           style={tint ? { color: tint } : undefined}
@@ -146,13 +152,16 @@ function CompactStat({
         {label}
       </div>
       <div
-        className="text-subhead font-semibold tabular-nums"
+        className={
+          "text-subhead font-semibold tabular-nums" +
+          (hasColoredValue ? " dark:brightness-[1.3]" : "")
+        }
         style={{ color: valueColor }}
       >
         {value}
       </div>
       {hint && (
-        <div className="mt-0.5 text-caption text-muted-foreground/60">
+        <div className="mt-0.5 text-caption text-muted-foreground/60 dark:text-muted-foreground/80">
           {hint}
         </div>
       )}

@@ -7528,6 +7528,171 @@ mod tests {
         assert!(index.is_empty());
     }
 
+    // ── Sprint 1-A gap-closure tests (worksheet §"单元测试" matrix) ──
+    //
+    // These cover the explicit four scenarios from the sprint worksheet
+    // that weren't yet in the preceding absorb_log / backlinks suite:
+    //   1. concurrent append_absorb_log (ABSORB_LOG_GUARD correctness)
+    //   2. circular wikilinks (A→B + B→A)
+    //   3. orphan pages (no inbound → must not appear as key)
+    //   4. unknown / invalid target slugs (current behaviour: preserved)
+
+    #[test]
+    fn append_absorb_log_thread_safe() {
+        // Spin 10 threads each appending one entry; ABSORB_LOG_GUARD
+        // must serialize the load→push→save cycle so no entry is lost.
+        let tmp = tempdir().unwrap();
+        init_wiki(tmp.path()).unwrap();
+        let paths = WikiPaths::resolve(tmp.path());
+        let paths_arc = std::sync::Arc::new(paths);
+
+        let mut handles = Vec::new();
+        for i in 1u32..=10 {
+            let paths = std::sync::Arc::clone(&paths_arc);
+            handles.push(std::thread::spawn(move || {
+                let entry = AbsorbLogEntry {
+                    entry_id: i,
+                    timestamp: format!("2026-04-14T10:00:{i:02}Z"),
+                    action: "create".to_string(),
+                    page_slug: Some(format!("page-{i}")),
+                    page_title: None,
+                    page_category: None,
+                };
+                append_absorb_log(paths.as_ref(), entry).unwrap();
+            }));
+        }
+        for h in handles {
+            h.join().unwrap();
+        }
+
+        let log = list_absorb_log(paths_arc.as_ref()).unwrap();
+        assert_eq!(log.len(), 10, "expected 10 entries, got {}", log.len());
+        let mut ids: Vec<u32> = log.iter().map(|e| e.entry_id).collect();
+        ids.sort_unstable();
+        assert_eq!(ids, (1u32..=10).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn build_backlinks_index_circular_links() {
+        // page-a → page-b AND page-b → page-a. Both slugs should
+        // appear as keys, each with the other as a backlink.
+        let tmp = tempdir().unwrap();
+        init_wiki(tmp.path()).unwrap();
+        let paths = WikiPaths::resolve(tmp.path());
+
+        write_wiki_page_in_category(
+            &paths,
+            "concept",
+            "page-a",
+            "Page A",
+            "Summary A",
+            "# Page A\n\nRefers to [Page B](concepts/page-b.md).",
+            Some(1),
+        )
+        .unwrap();
+        write_wiki_page_in_category(
+            &paths,
+            "concept",
+            "page-b",
+            "Page B",
+            "Summary B",
+            "# Page B\n\nRefers to [Page A](concepts/page-a.md).",
+            Some(2),
+        )
+        .unwrap();
+
+        let index = build_backlinks_index(&paths).unwrap();
+        assert_eq!(index.len(), 2, "both slugs must be keys; got {index:?}");
+        assert_eq!(index.get("page-a").unwrap(), &vec!["page-b".to_string()]);
+        assert_eq!(index.get("page-b").unwrap(), &vec!["page-a".to_string()]);
+    }
+
+    #[test]
+    fn build_backlinks_index_excludes_orphan_pages() {
+        // Three pages: page-orphan (no inbound, no outbound),
+        // page-source (→ page-target), page-target (no outbound).
+        // Index must contain page-target but NOT page-orphan as a key
+        // (per §3.6 spec: "无入链的页面不出现在 index 中").
+        let tmp = tempdir().unwrap();
+        init_wiki(tmp.path()).unwrap();
+        let paths = WikiPaths::resolve(tmp.path());
+
+        write_wiki_page_in_category(
+            &paths,
+            "concept",
+            "page-orphan",
+            "Orphan",
+            "Standalone",
+            "# Orphan\n\nNo links in or out.",
+            Some(1),
+        )
+        .unwrap();
+        write_wiki_page_in_category(
+            &paths,
+            "concept",
+            "page-source",
+            "Source",
+            "Links outward",
+            "# Source\n\nSee [Target](concepts/page-target.md).",
+            Some(2),
+        )
+        .unwrap();
+        write_wiki_page_in_category(
+            &paths,
+            "concept",
+            "page-target",
+            "Target",
+            "Receives one backlink",
+            "# Target\n\nEnd of the chain.",
+            Some(3),
+        )
+        .unwrap();
+
+        let index = build_backlinks_index(&paths).unwrap();
+        assert!(
+            !index.contains_key("page-orphan"),
+            "orphan page must not appear as an index key"
+        );
+        assert!(
+            !index.contains_key("page-source"),
+            "outbound-only page must not appear as an index key"
+        );
+        let target_refs = index
+            .get("page-target")
+            .expect("page-target must have a backlink entry");
+        assert_eq!(target_refs, &vec!["page-source".to_string()]);
+    }
+
+    #[test]
+    fn build_backlinks_index_preserves_unknown_targets() {
+        // `extract_internal_links` parses `[text](concepts/SLUG.md)`
+        // lexically — it does NOT check that SLUG exists on disk.
+        // `build_backlinks_index` therefore records the target slug
+        // verbatim even when no page with that slug exists. This
+        // matches the §4.1 contract (pure parse, no existence check)
+        // and lets patrol-type callers surface dangling links later.
+        let tmp = tempdir().unwrap();
+        init_wiki(tmp.path()).unwrap();
+        let paths = WikiPaths::resolve(tmp.path());
+
+        write_wiki_page_in_category(
+            &paths,
+            "concept",
+            "page-a",
+            "Has Dangling Link",
+            "Summary",
+            "# A\n\nSee [Ghost](concepts/nonexistent-slug.md).",
+            Some(1),
+        )
+        .unwrap();
+
+        let index = build_backlinks_index(&paths).unwrap();
+        let refs = index
+            .get("nonexistent-slug")
+            .expect("unknown target should still be keyed in the index");
+        assert_eq!(refs, &vec!["page-a".to_string()]);
+    }
+
     // ── v2 validate_frontmatter tests ───────────────────────────
 
     #[test]

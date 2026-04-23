@@ -1467,6 +1467,17 @@ pub struct DesktopState {
     kefu_callback_tx: Arc<RwLock<Option<tokio::sync::mpsc::Sender<wechat_kefu::CallbackEvent>>>>,
     kefu_pipeline_state: Arc<RwLock<Option<tokio::sync::watch::Receiver<wechat_kefu::PipelineState>>>>,
     kefu_pipeline_cancel: Arc<RwLock<Option<CancellationToken>>>,
+
+    /// Server-level shutdown cancellation token. Injected by
+    /// `desktop-server::main` at startup via `set_shutdown_cancel`
+    /// **before** any monitor spawn, so tokens derived by
+    /// `monitor_cancel_token()` are child tokens of this one. When the
+    /// server starts a graceful shutdown (Ctrl-C / SIGTERM / Tauri
+    /// window-close), cancelling this token cascades to every WeChat
+    /// monitor (iLink + kefu) and the kefu pipeline — the monitors
+    /// already `tokio::select!` on their `cancel`, so graceful stop is
+    /// automatic. Stays `None` in unit tests / `DesktopState::new()`.
+    shutdown_cancel: Arc<RwLock<Option<CancellationToken>>>,
 }
 
 /// Handle to a running WeChat iLink monitor. Held inside
@@ -1647,6 +1658,31 @@ impl DesktopState {
             kefu_callback_tx: Arc::new(RwLock::new(None)),
             kefu_pipeline_state: Arc::new(RwLock::new(None)),
             kefu_pipeline_cancel: Arc::new(RwLock::new(None)),
+            shutdown_cancel: Arc::new(RwLock::new(None)),
+        }
+    }
+
+    /// Inject the server-level shutdown cancellation token. Call this
+    /// once, **before** `spawn_wechat_monitors_for_all_accounts` /
+    /// `auto_start_kefu_monitor` / `start_kefu_pipeline`, so the
+    /// monitor-scoped tokens are children of it and cascade on shutdown.
+    /// Safe to call on a test-only `DesktopState::new()` but it won't
+    /// do anything useful unless monitors are also spawned.
+    pub async fn set_shutdown_cancel(&self, cancel: CancellationToken) {
+        *self.shutdown_cancel.write().await = Some(cancel);
+    }
+
+    /// Derive a new `CancellationToken` for a monitor-scoped task.
+    ///
+    /// If `set_shutdown_cancel` was called at startup, returns a
+    /// `child_token()` so a server-shutdown cancel cascades. Otherwise
+    /// returns an isolated root token (tests, or standalone uses that
+    /// never wire shutdown) — callers' existing cancel() semantics are
+    /// preserved either way.
+    async fn monitor_cancel_token(&self) -> CancellationToken {
+        match self.shutdown_cancel.read().await.as_ref() {
+            Some(parent) => parent.child_token(),
+            None => CancellationToken::new(),
         }
     }
 
@@ -5469,7 +5505,10 @@ impl DesktopState {
 
         let client = IlinkClient::new(base_url, token)
             .map_err(|e| format!("IlinkClient::new failed: {e}"))?;
-        let cancel = tokio_util::sync::CancellationToken::new();
+        // Batch-C §3: derive from server shutdown_cancel so graceful
+        // shutdown cascades. Falls back to a root token when the server
+        // didn't inject one (tests / standalone use).
+        let cancel = self.monitor_cancel_token().await;
         let (status_tx, status_rx) =
             tokio::sync::watch::channel(MonitorStatus::default());
 
@@ -5702,7 +5741,8 @@ impl DesktopState {
             .ok_or_else(|| "no open_kfid — create account first".to_string())?;
 
         let client = wechat_kefu::KefuClient::new(&config.corpid, &config.secret);
-        let cancel = tokio_util::sync::CancellationToken::new();
+        // Batch-C §3: shutdown-cascaded child token (see monitor_cancel_token docs).
+        let cancel = self.monitor_cancel_token().await;
         let (status_tx, status_rx) =
             tokio::sync::watch::channel(wechat_ilink::MonitorStatus::default());
 
@@ -5825,7 +5865,8 @@ impl DesktopState {
             eprintln!("[kefu pipeline] cancelled previous run before restart");
         }
 
-        let cancel = CancellationToken::new();
+        // Batch-C §3: shutdown-cascaded child token (see monitor_cancel_token docs).
+        let cancel = self.monitor_cancel_token().await;
         let (mut pipeline, state_rx) =
             wechat_kefu::pipeline::KefuPipeline::new(cancel.clone());
 

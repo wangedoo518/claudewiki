@@ -98,15 +98,6 @@ async fn run_server() -> Result<(), Box<dyn std::error::Error>> {
     // so messages received via WeChat appear in the desktop UI in real time.
     let state = DesktopState::live();
 
-    // Spawn the WeChat iLink long-poll monitor(s) for every persisted account
-    // before we start the HTTP server. Handles are now stored inside
-    // DesktopState so HTTP routes can cancel them dynamically when the user
-    // deletes a WeChat account from the frontend (Phase 6C).
-    state.spawn_wechat_monitors_for_all_accounts().await;
-
-    // Channel B: auto-start kefu monitor if configured
-    state.auto_start_kefu_monitor().await;
-
     // ── Graceful shutdown wire-up (Sprint: Tauri graceful shutdown) ──
     //
     // Three sources can trip `cancel`:
@@ -123,6 +114,22 @@ async fn run_server() -> Result<(), Box<dyn std::error::Error>> {
     // commit 3085a1e) never runs. Then sessions leak in the `Running`
     // state until the next launch's startup reconcile cleans them up.
     let cancel = CancellationToken::new();
+
+    // Batch-C §3: inject the shutdown cancel into DesktopState BEFORE
+    // spawning WeChat monitors, so every monitor's internal cancel token
+    // is a child of this one. A graceful shutdown cancel then cascades
+    // automatically — each monitor's existing `tokio::select!` on its
+    // own `cancel` picks up the cascade without any extra branch.
+    state.set_shutdown_cancel(cancel.clone()).await;
+
+    // Spawn the WeChat iLink long-poll monitor(s) for every persisted account
+    // before we start the HTTP server. Handles are now stored inside
+    // DesktopState so HTTP routes can cancel them dynamically when the user
+    // deletes a WeChat account from the frontend (Phase 6C).
+    state.spawn_wechat_monitors_for_all_accounts().await;
+
+    // Channel B: auto-start kefu monitor if configured
+    state.auto_start_kefu_monitor().await;
 
     // Read the auth token from the spawn env if the Tauri shell
     // provided one; otherwise fabricate one so the handler still has a

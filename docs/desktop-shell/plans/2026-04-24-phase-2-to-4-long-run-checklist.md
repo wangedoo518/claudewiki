@@ -5,6 +5,7 @@ status: active
 owner: desktop-shell
 last_verified: 2026-04-24
 related:
+  - docs/desktop-shell/plans/2026-04-24-phase-2-closure.md
   - docs/desktop-shell/plans/2026-04-24-phase-2-readiness-audit.md
   - docs/desktop-shell/architecture/overview.md
   - rust/README.md
@@ -52,15 +53,21 @@ missing.
 - [x] Verify provider fallback with a real `BrokerAdapter -> query_wiki` smoke.
 - [x] Replace AbsorbTrigger completion polling with SSE/store updates.
 - [x] Move Ask query source DTOs out of `features/ingest`.
-- [ ] Add or confirm HTTP-level `/api/wiki/query` smoke once standalone server
+- [x] Add or confirm HTTP-level `/api/wiki/query` smoke once standalone server
   startup is decoupled from WeChat monitor readiness.
-- [ ] Add a mock/handler E2E for Kefu `?` query reply with sources.
-- [ ] Add a mock/handler E2E for URL/text ingest -> conflict notification.
-- [ ] Confirm empty-wiki query returns a friendly UI error in Ask.
-- [ ] Confirm `query_done.sources` renders and opens the matching Wiki tab.
-- [ ] Close UX backlog item 11: Wiki file tree keyboard up/down navigation.
-- [ ] Close UX backlog item 12: Wiki article `confidence` and `last_verified`
+- [x] Add a mock/handler E2E for Kefu `?` query reply with sources.
+- [x] Add a mock/handler E2E for URL/text ingest -> conflict notification.
+- [x] Confirm empty-wiki query returns a friendly UI error in Ask.
+- [x] Confirm `query_done.sources` renders and opens the matching Wiki tab.
+- [x] Close UX backlog item 11: Wiki file tree keyboard up/down navigation.
+- [x] Close UX backlog item 12: Wiki article `confidence` and `last_verified`
   display.
+- [x] Close update-branch LLM merge and W2 proposal/apply HTTP smoke.
+- [x] Close bidirectional link visibility for frontend wikilinks.
+
+Phase 2 status: closed at code-readiness level. The only residual is live
+enterprise WeChat/device E2E, tracked as an environment validation item rather
+than an application-code blocker.
 
 ## Phase 2.5: Architecture Debt Slice
 
@@ -130,4 +137,4 @@ missing.
 - [x] Then Wiki repository extraction from `features/ingest/persist.ts`.
 - [x] Then Rust route assembly split into domain route modules.
 - [ ] Next: handler-body split for `desktop-server/src/lib.rs` after Phase 2
-  readiness remains green.
+  closure remains green.

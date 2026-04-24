@@ -186,18 +186,18 @@ but are worth tracking so Phase 2 picks them up together.
 
 | 编号 | 类型 | 状态 | Target |
 |------|------|------|--------|
-| 1 · LLM merge | spec behaviour | 🟡 Phase 2 | deferred |
-| 2 · bidirectional links | spec behaviour | 🟡 Phase 2 | deferred |
-| 3 · LLM conflict → Inbox | spec behaviour | 🟡 Phase 2 | deferred |
+| 1 · LLM merge | spec behaviour | 🟡 Phase 2 | resolved-code |
+| 2 · bidirectional links | spec behaviour | 🟡 Phase 2 | resolved-visibility |
+| 3 · LLM conflict → Inbox | spec behaviour | 🟡 Phase 2 | resolved-code |
 | 4 · quality spot-check | spec behaviour | 🟠 Phase 3 | deferred |
 | 5 · confidence 三维 | spec behaviour | 🟠 Phase 3 | deferred |
 | 6 · per-day changelog | spec behaviour | 🟢 Phase 4+ | deferred |
-| 7 · 503 broker health | 契约 | 🔵 blocked-on | deferred |
-| 8 · AbsorbTrigger polling→SSE | UX | 🟡 Phase 2 | deferred |
+| 7 · 503 broker health | 契约 | 🟡 Phase 2 | resolved-code |
+| 8 · AbsorbTrigger polling→SSE | UX | 🟡 Phase 2 | resolved |
 | 9 · AbsorbTrigger reachability | UX | ✅ RESOLVED | 收口 sprint Stage 1 `c8a00a5` |
-| 10 · providers.json 配置 | env/runtime | 🔵 runtime | deferred |
-| 11 · WikiFileTree 键盘导航 | UX | 🟡 Phase 2 | deferred |
-| 12 · WikiArticle confidence display | UX | 🟡 Phase 2 | deferred |
+| 10 · providers.json 配置 | env/runtime | 🔵 runtime | resolved-local |
+| 11 · WikiFileTree 键盘导航 | UX | 🟡 Phase 2 | resolved |
+| 12 · WikiArticle confidence display | UX | 🟡 Phase 2 | resolved |
 
 ### Phase 2 启动就绪信号
 

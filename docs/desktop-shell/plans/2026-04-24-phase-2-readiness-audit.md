@@ -1,10 +1,11 @@
 ---
 title: Phase 2 Readiness Audit
 doc_type: plan
-status: active
+status: superseded
 owner: desktop-shell
 last_verified: 2026-04-24
 related:
+  - docs/desktop-shell/plans/2026-04-24-phase-2-closure.md
   - backlog/phase1-deferred.md
   - docs/design/technical-design.md
   - docs/design/modules/01-skill-engine.md
@@ -13,6 +14,10 @@ related:
 ---
 
 # Phase 2 Readiness Audit
+
+Status note: this audit captured the Phase 2 start state. It is superseded by
+`2026-04-24-phase-2-closure.md`, which records the closed code-readiness state
+and the remaining live WeChat device environment validation.
 
 Phase 1 MVP closed with the `pre-land scan -> audit -> gap-fill -> trust-but-verify`
 loop validated. Phase 2 should keep that loop: verify what already landed, fill

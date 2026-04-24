@@ -35,6 +35,7 @@ import { RawLibraryPage } from "@/features/raw/RawLibraryPage";
 import { PillTabs } from "@/components/ds/PillTabs";
 import { KnowledgePagesList } from "./KnowledgePagesList";
 import { KnowledgeArticleView } from "./KnowledgeArticleView";
+import { AbsorbTriggerButton } from "./AbsorbTriggerButton";
 
 type HubView = "pages" | "graph" | "raw";
 
@@ -137,6 +138,13 @@ export function KnowledgeHubPage() {
             <span className="hidden text-[11.5px] text-muted-foreground/70 md:inline">
               {HUB_TABS.find((t) => t.id === view)?.hint}
             </span>
+            {/* Phase 1 MVP · §9.5 criterion 1 — surface /absorb trigger
+                at the hub level. Pre-wiring it lived only inside
+                WikiFileTree (compact variant) which the default
+                /wiki route never mounts. See backlog item 9. */}
+            <div className="ml-auto">
+              <AbsorbTriggerButton />
+            </div>
           </div>
         </div>
       </header>

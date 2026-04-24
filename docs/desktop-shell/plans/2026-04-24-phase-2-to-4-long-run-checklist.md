@@ -91,9 +91,15 @@ than an application-code blocker.
   extract route assembly into `routes/desktop`, `routes/wiki`,
   `routes/wechat`, and `routes/internal`; keep handler bodies in `lib.rs` for
   a lower-risk follow-up slice.
-- [ ] Rust server route split follow-up:
+- [x] Rust server handler split first slice:
+  move Wiki report/maintenance handlers (`cleanup`, `patrol`, `absorb-log`,
+  `backlinks`, `stats`, `patrol/report`, `schema/templates`) into
+  `handlers/wiki_reports.rs` while keeping route names stable through crate
+  re-exports.
+- [ ] Rust server handler split follow-up:
   move handler DTOs and implementations out of `lib.rs` by domain once route
-  assembly is stable.
+  assembly is stable; suggested next slices are query/absorb task handlers,
+  provider/runtime handlers, then desktop session handlers.
 - [x] Current-truth docs:
   refresh `docs/desktop-shell/architecture/overview.md` and `rust/README.md`
   whenever a slice lands.
@@ -136,5 +142,6 @@ than an application-code blocker.
 - [x] Then frontend API boundary split for desktop/settings/ask clients.
 - [x] Then Wiki repository extraction from `features/ingest/persist.ts`.
 - [x] Then Rust route assembly split into domain route modules.
-- [ ] Next: handler-body split for `desktop-server/src/lib.rs` after Phase 2
-  closure remains green.
+- [x] Then handler-body split first slice for Wiki report/maintenance handlers.
+- [ ] Next: continue handler-body split with query/absorb task handlers, after
+  Phase 2 closure remains green.

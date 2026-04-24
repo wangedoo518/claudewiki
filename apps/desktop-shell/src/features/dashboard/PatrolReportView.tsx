@@ -9,10 +9,10 @@
 import { useQuery } from "@tanstack/react-query";
 import { AlertTriangle, CheckCircle2, Loader2, RefreshCw } from "lucide-react";
 
-import { getPatrolReport, triggerPatrol } from "@/features/ingest/persist";
+import { getPatrolReport, triggerPatrol } from "@/api/wiki/repository";
 import { useSettingsStore } from "@/state/settings-store";
 import { useWikiTabStore } from "@/state/wiki-tab-store";
-import type { PatrolIssue } from "@/features/ingest/types";
+import type { PatrolIssue } from "@/api/wiki/types";
 
 const KIND_LABELS: Record<string, { label: string; color: string }> = {
   orphan: { label: "孤儿页", color: "var(--deeptutor-warn, #C88B1A)" },

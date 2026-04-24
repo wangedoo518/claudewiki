@@ -42,8 +42,8 @@ import {
   PopoverTrigger,
 } from "@/components/ui/popover";
 import { cn } from "@/lib/utils";
-import { searchWikiPages } from "@/features/ingest/persist";
-import type { WikiSearchHit } from "@/features/ingest/types";
+import { searchWikiPages } from "@/api/wiki/repository";
+import type { WikiSearchHit } from "@/api/wiki/types";
 
 export interface WikiPageSearchFieldProps {
   /** Currently selected slug (controlled). Empty/undefined → unselected. */

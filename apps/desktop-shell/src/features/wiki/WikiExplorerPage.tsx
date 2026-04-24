@@ -66,8 +66,8 @@ import {
   getWikiPage,
   listWikiPages,
   searchWikiPages,
-} from "@/features/ingest/persist";
-import type { WikiPageSummary, WikiSearchHit } from "@/features/ingest/types";
+} from "@/api/wiki/repository";
+import type { WikiPageSummary, WikiSearchHit } from "@/api/wiki/types";
 
 /**
  * Selection state for the left pane. Concept pages are identified

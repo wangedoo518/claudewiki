@@ -1,0 +1,133 @@
+---
+title: Phase 2-4 Long-Run Execution Checklist
+doc_type: plan
+status: active
+owner: desktop-shell
+last_verified: 2026-04-24
+related:
+  - docs/desktop-shell/plans/2026-04-24-phase-2-readiness-audit.md
+  - docs/desktop-shell/architecture/overview.md
+  - rust/README.md
+  - backlog/phase1-deferred.md
+---
+
+# Phase 2-4 Long-Run Execution Checklist
+
+This checklist turns the Phase 1 review into a long-running execution rail.
+The operating rule stays the same: `pre-land scan -> audit -> gap-fill ->
+trust-but-verify`. Do not rewrite a surface until the scan proves it is truly
+missing.
+
+## Current Baseline
+
+- [x] Phase 1 MVP absorb path is reachable from the Wiki header.
+- [x] Global absorb progress SSE is wired into the frontend store.
+- [x] Local `.claw/providers.json` is ignored by git and active for provider
+  fallback.
+- [x] Provider fallback tolerates UTF-8 BOM in local JSON configs.
+- [x] Ask `?question` and `/query question` entrypoints are pre-landed.
+- [x] WeChat Kefu `?` / `？` classification is pre-landed and covered by tests.
+- [x] Phase 2 readiness matrix is recorded in
+  `2026-04-24-phase-2-readiness-audit.md`.
+
+## Always-On Guardrails
+
+- [ ] Before every sprint, run a pre-land scan for the exact endpoint, hook,
+  component, route, store, and test names in scope.
+- [ ] Do not add new imports from feature modules into `src/lib/tauri.ts`.
+- [ ] Do not add new public Wiki repository consumers to
+  `features/ingest/persist.ts`; prefer `src/api/wiki` or `src/domain/wiki`.
+- [ ] If a route is added, update the canonical shell route config and derive
+  sidebar, palette, and `<Routes>` from that same config.
+- [ ] If `desktop-server/src/lib.rs` gets a new handler before the route split,
+  mark it as temporary and keep the change narrow.
+- [ ] Any architecture-facing change must update the current-truth docs under
+  `docs/desktop-shell/architecture`, `tokens`, or `operations`.
+- [ ] Keep local runtime secrets in ignored files only; never put API keys into
+  tracked docs or code.
+
+## Phase 2: Readiness And User-Visible Closure
+
+- [x] Unlock provider runtime locally with ignored `.claw/providers.json`.
+- [x] Verify provider fallback with a real `BrokerAdapter -> query_wiki` smoke.
+- [x] Replace AbsorbTrigger completion polling with SSE/store updates.
+- [x] Move Ask query source DTOs out of `features/ingest`.
+- [ ] Add or confirm HTTP-level `/api/wiki/query` smoke once standalone server
+  startup is decoupled from WeChat monitor readiness.
+- [ ] Add a mock/handler E2E for Kefu `?` query reply with sources.
+- [ ] Add a mock/handler E2E for URL/text ingest -> conflict notification.
+- [ ] Confirm empty-wiki query returns a friendly UI error in Ask.
+- [ ] Confirm `query_done.sources` renders and opens the matching Wiki tab.
+- [ ] Close UX backlog item 11: Wiki file tree keyboard up/down navigation.
+- [ ] Close UX backlog item 12: Wiki article `confidence` and `last_verified`
+  display.
+
+## Phase 2.5: Architecture Debt Slice
+
+- [x] Route config single source of truth:
+  `CLAWWIKI_ROUTES`, sidebar, palette, and `<Routes>` must derive from one
+  canonical route config, including `/connect-wechat`.
+- [ ] Frontend API boundary:
+  split `src/lib/tauri.ts` into neutral contracts and API clients under
+  `src/api/desktop`, `src/api/wiki`, `src/api/wechat`, and
+  `src/api/contracts`.
+- [x] Desktop API first slice:
+  move session and settings/provider/wechat desktop HTTP clients under
+  `src/api/desktop`, with old feature paths kept as compatibility re-exports.
+- [x] Wiki repository boundary:
+  migrate common Wiki data access from `features/ingest/persist.ts` to
+  `src/api/wiki` or `src/domain/wiki/repository`.
+- [x] Inbox scorer boundary:
+  move target resolver/scoring helpers into a domain service instead of
+  dynamic importing across feature folders.
+- [x] Rust server route split first slice:
+  extract route assembly into `routes/desktop`, `routes/wiki`,
+  `routes/wechat`, and `routes/internal`; keep handler bodies in `lib.rs` for
+  a lower-risk follow-up slice.
+- [ ] Rust server route split follow-up:
+  move handler DTOs and implementations out of `lib.rs` by domain once route
+  assembly is stable.
+- [x] Current-truth docs:
+  refresh `docs/desktop-shell/architecture/overview.md` and `rust/README.md`
+  whenever a slice lands.
+
+## Phase 3: Patrol And Quality
+
+- [ ] Promote `wiki_patrol` from local checks to a user-visible dashboard
+  signal.
+- [ ] Add orphan, stale, schema violation, oversized, stub, confidence decay,
+  and uncrystallized detectors as explicit patrol categories.
+- [ ] Add quality sampling for LLM-maintained pages.
+- [ ] Connect patrol results to Dashboard cards and Inbox actions.
+- [ ] Add tests that keep `wiki_stats` and `wiki_patrol` orphan semantics in
+  sync.
+
+## Phase 4: Power Tools And Viewer
+
+- [ ] Graph View enhancements: richer relation filters, backlinks, and source
+  drilldown.
+- [ ] `/cleanup`: patrol-backed cleanup proposal flow.
+- [ ] `/breakdown`: split oversized or mixed-topic pages into maintainable
+  targets.
+- [ ] Settings Modal final sweep: provider, storage, WeChat, and runtime health.
+- [ ] Web viewer: stable read-only view for wiki pages and graph entrypoints.
+
+## Verification Cadence
+
+- [ ] Frontend minimum: `cd apps/desktop-shell && npm run build`.
+- [ ] Tauri minimum: `cd apps/desktop-shell/src-tauri && cargo check`.
+- [ ] Rust minimum: `cd rust && cargo check --workspace`.
+- [ ] Query tests: `cargo test -p wiki_maintainer query_wiki` and
+  `cargo test -p desktop-server query_done`.
+- [ ] Kefu tests: `cargo test -p desktop-core wechat_kefu`.
+- [ ] Provider fallback tests: `cargo test -p desktop-core provider_config`.
+- [ ] Before commit: `git diff --check` and `git status --short`.
+
+## Current Next Slice
+
+- [x] Phase 2.5 route config single source of truth.
+- [x] Then frontend API boundary split for desktop/settings/ask clients.
+- [x] Then Wiki repository extraction from `features/ingest/persist.ts`.
+- [x] Then Rust route assembly split into domain route modules.
+- [ ] Next: handler-body split for `desktop-server/src/lib.rs` after Phase 2
+  readiness remains green.

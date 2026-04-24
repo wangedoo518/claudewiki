@@ -16,11 +16,29 @@ This document answers: how `desktop-shell` is currently organized.
 
 ## Application Layers
 
-- App shell and routing
-- Feature modules
-- Neutral API clients under `apps/desktop-shell/src/api/` for cross-feature HTTP/SSE surfaces
+- App shell and routing. `apps/desktop-shell/src/shell/clawwiki-routes.tsx`
+  is the canonical route config; sidebar navigation, command-palette route
+  entries, and `<Routes>` are derived from the same list.
+- Feature modules own UI and feature-specific orchestration.
+- Neutral API clients under `apps/desktop-shell/src/api/` own cross-feature
+  HTTP/SSE surfaces. Common Wiki repository access lives under
+  `src/api/wiki`; desktop session/settings/provider clients live under
+  `src/api/desktop`.
+- Domain services under `apps/desktop-shell/src/domain/` own shared pure
+  client-side business logic, such as Wiki target scoring and fallback
+  resolution.
 - Shared UI and utility layer
 - Desktop integration layer
+
+## Compatibility Shims
+
+- `features/ingest/persist.ts` and `features/ingest/types.ts` are legacy
+  compatibility re-exports for the neutral Wiki API layer.
+- `features/inbox/candidate-scoring.ts` and
+  `features/inbox/target-resolver.ts` are legacy compatibility re-exports for
+  `src/domain/wiki`.
+- `features/ask/api/client.ts` and `features/settings/api/client.ts` are
+  legacy compatibility re-exports for `src/api/desktop`.
 
 ## State Ownership
 

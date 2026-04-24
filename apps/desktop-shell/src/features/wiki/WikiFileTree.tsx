@@ -16,10 +16,10 @@ import {
   FileCode2,
 } from "lucide-react";
 
-import { listRawEntries, listWikiPages, listInboxEntries } from "@/features/ingest/persist";
+import { listRawEntries, listWikiPages, listInboxEntries } from "@/api/wiki/repository";
 import { useWikiTabStore, type WikiTabItem } from "@/state/wiki-tab-store";
 import { AbsorbTriggerButton } from "./AbsorbTriggerButton";
-import type { RawEntry, WikiPageSummary } from "@/features/ingest/types";
+import type { RawEntry, WikiPageSummary } from "@/api/wiki/types";
 
 /* ── Query keys ────────────────────────────────────────────────── */
 const treeKeys = {

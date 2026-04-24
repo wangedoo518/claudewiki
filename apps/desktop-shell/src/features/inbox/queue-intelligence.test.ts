@@ -21,7 +21,7 @@ import {
   type QueueIntelligence,
   type RecommendedAction,
 } from "./queue-intelligence";
-import type { InboxEntry } from "@/features/ingest/types";
+import type { InboxEntry } from "@/api/wiki/types";
 import type { IngestDecision } from "@/lib/tauri";
 
 // ── Local vitest ambient globals (drop once vitest is installed) ───

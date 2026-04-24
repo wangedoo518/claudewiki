@@ -9,7 +9,6 @@ use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::IntoResponse;
 use axum::routing::{delete, get, post};
 use axum::{Json, Router};
-use tokio_util::sync::CancellationToken;
 use desktop_core::{
     AppendDesktopMessageRequest, CreateDesktopDispatchItemRequest,
     CreateDesktopScheduledTaskRequest, CreateDesktopSessionRequest, DesktopBootstrap,
@@ -22,7 +21,10 @@ use desktop_core::{
     UpdateDesktopScheduledTaskRequest,
 };
 use serde::{Deserialize, Serialize};
+use tokio_util::sync::CancellationToken;
 use tower_http::cors::{Any, CorsLayer};
+
+mod routes;
 
 // S0.4 cut day: `mod code_tools_bridge` is gone along with the
 // `/api/desktop/code-tools/*` routes. ClawWiki canonical §11.1 cut #3
@@ -107,7 +109,11 @@ impl Default for AppState {
 impl AppState {
     #[must_use]
     pub fn new(desktop: DesktopState) -> Self {
-        Self::new_with_shutdown(desktop, uuid::Uuid::new_v4().to_string(), CancellationToken::new())
+        Self::new_with_shutdown(
+            desktop,
+            uuid::Uuid::new_v4().to_string(),
+            CancellationToken::new(),
+        )
     }
 
     /// Build an `AppState` that shares an externally-owned cancellation
@@ -287,8 +293,6 @@ type ApiResult<T> = Result<T, ApiError>;
 // handlers would touch 30+ files and pollute git blame for no functional
 // benefit. New handlers should use the `_handler` suffix.
 
-
-
 /// Global body-size ceiling for all HTTP endpoints.
 ///
 /// Set to 15 MiB (slightly above the 10 MiB frontend attachment cap) to
@@ -301,8 +305,7 @@ fn install_private_cloud_routes(router: Router<AppState>) -> Router<AppState> {
     router
         .route(
             "/api/desktop/cloud/codex-accounts",
-            get(list_cloud_codex_accounts_handler)
-                .post(sync_cloud_codex_accounts_handler),
+            get(list_cloud_codex_accounts_handler).post(sync_cloud_codex_accounts_handler),
         )
         .route(
             "/api/desktop/cloud/codex-accounts/clear",
@@ -330,464 +333,17 @@ pub fn app(state: AppState) -> Router {
         .allow_headers(Any)
         .allow_methods([Method::GET, Method::POST, Method::DELETE, Method::OPTIONS]);
 
-    let router = Router::new()
-        .route("/healthz", get(health))
-        .route("/api/desktop/bootstrap", get(bootstrap))
-        .route("/api/desktop/workbench", get(workbench))
-        .route("/api/desktop/customize", get(customize))
-        .route("/api/desktop/codex/runtime", get(codex_runtime))
-        .route("/api/desktop/codex/auth", get(codex_auth_overview))
-        .route(
-            "/api/desktop/codex/auth/import",
-            post(import_codex_auth_profile),
-        )
-        .route("/api/desktop/codex/auth/login", post(begin_codex_login))
-        .route("/api/desktop/codex/auth/login/{id}", get(poll_codex_login))
-        .route(
-            "/api/desktop/codex/auth/profiles/{id}/activate",
-            post(activate_codex_auth_profile),
-        )
-        .route(
-            "/api/desktop/codex/auth/profiles/{id}/refresh",
-            post(refresh_codex_auth_profile),
-        )
-        .route(
-            "/api/desktop/codex/auth/profiles/{id}",
-            delete(remove_codex_auth_profile),
-        )
-        .route("/api/desktop/auth/providers", get(managed_auth_providers))
-        .route(
-            "/api/desktop/auth/providers/{provider}/accounts",
-            get(managed_auth_accounts),
-        )
-        // S0.4 cut day: /api/desktop/code-tools/* routes are gone.
-        // (launch-profile + claude-bridge passthrough). No /code page,
-        // no CLI launcher in canonical ClawWiki §11.1 cut #3.
-        .route(
-            "/api/desktop/auth/providers/{provider}/import",
-            post(import_managed_auth_accounts),
-        )
-        .route(
-            "/api/desktop/auth/providers/{provider}/login",
-            post(begin_managed_auth_login),
-        )
-        .route(
-            "/api/desktop/auth/providers/{provider}/login/{id}",
-            get(poll_managed_auth_login),
-        )
-        .route(
-            "/api/desktop/auth/providers/{provider}/accounts/{id}/default",
-            post(set_managed_auth_default_account),
-        )
-        .route(
-            "/api/desktop/auth/providers/{provider}/accounts/{id}/refresh",
-            post(refresh_managed_auth_account),
-        )
-        .route(
-            "/api/desktop/auth/providers/{provider}/accounts/{id}",
-            delete(remove_managed_auth_account),
-        )
-        .route(
-            "/api/desktop/dispatch",
-            get(dispatch).post(create_dispatch_item),
-        )
-        .route(
-            "/api/desktop/dispatch/items/{id}/status",
-            post(update_dispatch_item_status),
-        )
-        .route(
-            "/api/desktop/dispatch/items/{id}/deliver",
-            post(deliver_dispatch_item),
-        )
-        .route(
-            "/api/desktop/scheduled",
-            get(scheduled).post(create_scheduled_task),
-        )
-        .route("/api/desktop/settings", get(settings))
-        .route("/api/desktop/search", get(search_sessions))
-        .route(
-            "/api/desktop/sessions",
-            get(list_sessions).post(create_session),
-        )
-        .route(
-            "/api/desktop/scheduled/{id}/enabled",
-            post(update_scheduled_task_enabled),
-        )
-        .route(
-            "/api/desktop/scheduled/{id}/run",
-            post(run_scheduled_task_now),
-        )
-        .route(
-            "/api/desktop/sessions/cleanup-empty",
-            post(cleanup_empty_sessions_handler),
-        )
-        .route("/api/desktop/sessions/{id}", get(get_session).delete(delete_session_handler))
-        .route("/api/desktop/sessions/{id}/messages", post(append_message))
-        .route("/api/desktop/sessions/{id}/title", post(rename_session))
-        .route("/api/desktop/sessions/{id}/cancel", post(cancel_session))
-        .route("/api/desktop/sessions/{id}/resume", post(resume_session))
-        .route("/api/desktop/sessions/{id}/compact", post(compact_session))
-        .route("/api/desktop/sessions/{id}/fork", post(fork_session))
-        .route("/api/desktop/sessions/{id}/lifecycle", post(set_session_lifecycle_handler))
-        .route("/api/desktop/sessions/{id}/flag", post(set_session_flag_handler))
-        // A2 — session source binding. POST body = `BindSourceBody`
-        // (tagged SourceRef + optional reason); DELETE clears. Both
-        // return the updated DesktopSessionDetail so the UI can stamp
-        // its state optimistically.
-        .route(
-            "/api/desktop/sessions/{id}/bind",
-            post(bind_source_handler).delete(clear_source_binding_handler),
-        )
-        .route("/api/desktop/attachments/process", post(process_attachment_handler))
-        .route("/api/desktop/skills", get(list_workspace_skills_handler))
-        .route("/api/desktop/settings/permission-mode", post(set_permission_mode_handler).get(get_permission_mode_handler))
-        // SG-01: Debug routes are intended for development + QA only.
-        // They are always registered so the release binary can still help
-        // diagnose MCP issues, but production deployments should keep the
-        // server bound to 127.0.0.1 only (see `main.rs` DEFAULT_ADDRESS).
-        // A future hardening step could gate these behind an env flag
-        // (`OCL_ENABLE_DEBUG=1`) if the server is ever exposed beyond
-        // localhost — they expose no secrets and run under the same
-        // validate_project_path() guard as other handlers.
-        .route("/api/desktop/debug/mcp/probe", post(debug_mcp_probe_handler))
-        .route("/api/desktop/debug/mcp/call", post(debug_mcp_call_handler))
-        .route("/api/desktop/sessions/{id}/permission", post(forward_permission))
-        .route(
-            "/api/desktop/sessions/{id}/events",
-            get(stream_session_events),
-        )
-        // ── feat(U): canonical §9.3 Ask session aliases ────────────
-        // The canonical route prefix is /api/ask/sessions. Pre-U all
-        // session routes lived under /api/desktop/sessions (inherited
-        // from the pre-ClawWiki CCD shell). Both paths now work; the
-        // canonical alias lets the frontend migrate at its own pace.
-        .route(
-            "/api/ask/sessions",
-            get(list_sessions).post(create_session),
-        )
-        .route("/api/ask/sessions/{id}", get(get_session).delete(delete_session_handler))
-        .route("/api/ask/sessions/{id}/messages", post(append_message))
-        .route("/api/ask/sessions/{id}/cancel", post(cancel_session))
-        .route("/api/ask/sessions/{id}/resume", post(resume_session))
-        .route("/api/ask/sessions/{id}/events", get(stream_session_events))
-        .route("/api/ask/sessions/{id}/permission", post(forward_permission))
-        // I2 fix: complete the alias surface so frontend can fully
-        // migrate without falling back to /api/desktop/*.
-        .route("/api/ask/sessions/{id}/title", post(rename_session))
-        .route("/api/ask/sessions/{id}/compact", post(compact_session))
-        .route("/api/ask/sessions/{id}/fork", post(fork_session))
-        .route("/api/ask/sessions/{id}/lifecycle", post(set_session_lifecycle_handler))
-        .route("/api/ask/sessions/{id}/flag", post(set_session_flag_handler))
-        // A2 — canonical Ask alias for the bind endpoint.
-        .route(
-            "/api/ask/sessions/{id}/bind",
-            post(bind_source_handler).delete(clear_source_binding_handler),
-        )
-        // ── end feat(U) aliases ─────────────────────────────────────
-        // ── feat(O): WebSocket inbox change stream (canonical §9.3) ─
-        // WS /ws/wechat-inbox — clients subscribe to get instant
-        // notification when the inbox changes (new raw, approve, etc).
-        // Replaces the 30s polling interval with sub-second reactivity.
-        .route("/ws/wechat-inbox", axum::routing::get(ws_wechat_inbox_handler))
-        .route(
-            "/api/desktop/scheduled/{id}",
-            delete(delete_scheduled_task_handler).post(update_scheduled_task),
-        )
-        .route(
-            "/api/desktop/dispatch/items/{id}",
-            delete(delete_dispatch_item_handler).post(update_dispatch_item),
-        )
-        // ── MarkItDown file conversion ──
-        .route("/api/desktop/markitdown/check", get(markitdown_check_handler))
-        .route("/api/desktop/markitdown/convert", post(markitdown_convert_handler))
-        // ── WeChat article fetch (Playwright) ──
-        .route("/api/desktop/wechat-fetch", post(wechat_fetch_handler))
-        .route("/api/desktop/wechat-fetch/check", get(wechat_fetch_check_handler))
-        // ── URL ingest observability (M3) ──
-        // Exposes the in-memory ring buffer of recent
-        // `desktop_core::url_ingest::ingest_url` decisions so operators
-        // can inspect "why was this reused / suppressed / rejected".
-        .route("/api/desktop/url-ingest/recent", get(recent_ingest_handler))
-        // ── Environment Doctor: host-level prerequisite probes ──
-        // Uniform `{available, ...}` shape so the frontend Environment
-        // Doctor panel can render every row with the same component.
-        // Chromium probe reuses `wechat_fetch::check_environment` —
-        // Playwright's import also exercises Chromium via its bundled
-        // driver, so a green `available` here implies Chromium is
-        // reachable.
-        .route("/api/desktop/node/check", get(node_check_handler))
-        .route("/api/desktop/opencli/check", get(opencli_check_handler))
-        .route("/api/desktop/chromium/check", get(chromium_check_handler))
-        // ── Auto-install Python dependencies ──
-        .route("/api/desktop/python-deps/install", post(install_python_deps_handler))
-        // ── Storage migration ──
-        .route("/api/desktop/storage/migrate", post(migrate_storage_handler))
-        // ── Multi-provider registry (generic compatible gateways) ──
-        .route(
-            "/api/desktop/providers",
-            get(list_providers_handler).post(upsert_provider_handler),
-        )
-        .route(
-            "/api/desktop/providers/templates",
-            get(list_provider_templates_handler),
-        )
-        .route(
-            "/api/desktop/providers/{id}",
-            delete(delete_provider_handler),
-        )
-        .route(
-            "/api/desktop/providers/{id}/activate",
-            post(activate_provider_handler),
-        )
-        .route(
-            "/api/desktop/providers/{id}/test",
-            post(test_provider_handler),
-        );
+    let router = routes::desktop::install(Router::new());
     let router = install_private_cloud_routes(router);
+    let router = routes::wiki::install(router);
+    let router = routes::wechat::install(router);
+    let router = routes::internal::install(router);
+
     router
-        // ── ClawWiki S1 wiki/raw layer routes ──────────────────────
-        // The "raw" layer is the immutable facts directory under
-        // `~/.clawwiki/raw/`. Per canonical §10 every WeChat-ingested
-        // article / paste / URL lands here exactly once and is never
-        // mutated; the wiki_maintainer agent (S4) reads it and produces
-        // wiki/ pages on top.
-        .route(
-            "/api/wiki/raw",
-            get(list_wiki_raw_handler).post(ingest_wiki_raw_handler),
-        )
-        .route("/api/wiki/raw/{id}", get(get_wiki_raw_handler).delete(delete_wiki_raw_handler))
-        // ── ClawWiki N: URL preview proxy (canonical §9.3) ─────────
-        // POST /api/wiki/fetch — fetches a URL through the
-        // server's HTTP client and returns the extracted markdown
-        // WITHOUT writing to disk. Designed for a future "preview
-        // before commit" UI: paste URL → click Preview → see the
-        // extracted body → click Commit to actually ingest. The
-        // ingest path (POST /api/wiki/raw above) does the same
-        // fetch internally; this route exists so the preview can
-        // happen WITHOUT side effects.
-        .route("/api/wiki/fetch", post(preview_wiki_fetch_handler))
-        // ── ClawWiki S4 inbox layer routes ─────────────────────────
-        // Maintainer-proposed tasks that need user approval. S4 MVP:
-        // raw-ingest side-effect auto-appends a `new-raw` task; future
-        // sprints add conflict / stale / deprecate kinds once the
-        // maintainer LLM runs.
-        .route("/api/wiki/inbox", get(list_wiki_inbox_handler))
-        .route(
-            "/api/wiki/inbox/{id}/resolve",
-            post(resolve_wiki_inbox_handler),
-        )
-        // Q1 Inbox Queue Intelligence: batch resolve many ids in
-        // one HTTP call. Avoids the Batch Triage UI issuing N
-        // round-trips when a user sweeps a group of related
-        // pending tasks. Q1 MVP accepts only `action=reject`.
-        .route(
-            "/api/wiki/inbox/batch/resolve",
-            post(batch_resolve_wiki_inbox_handler),
-        )
-        // ── ClawWiki S4 maintainer MVP (engram-style) ──────────────
-        // `propose` fires one chat_completion against the Codex pool
-        // via the wiki_maintainer crate and returns a JSON proposal
-        // without touching disk. `approve-with-write` is the
-        // human-confirmed follow-up: it writes the concept page to
-        // `wiki/concepts/{slug}.md` and flips the inbox entry to
-        // `approved` atomically. Canonical §4 blade 3.
-        .route(
-            "/api/wiki/inbox/{id}/propose",
-            post(propose_wiki_inbox_handler),
-        )
-        .route(
-            "/api/wiki/inbox/{id}/approve-with-write",
-            post(approve_wiki_inbox_with_write_handler),
-        )
-        // ── W1 Maintainer Workbench: three-choice maintain endpoint ─
-        // Replaces the implicit "approve" with an explicit user
-        // decision (create_new / update_existing / reject). See
-        // `inbox_maintain_handler` for request/response shapes and
-        // parameter validation.
-        .route(
-            "/api/wiki/inbox/{id}/maintain",
-            post(inbox_maintain_handler),
-        )
-        // ── W2 Proposal/Apply: two-phase update_existing ───────────
-        // `proposal` (POST body `{target_slug}`) → runs the LLM
-        // merge, persists the staged markdown on the inbox entry,
-        // returns the UpdateProposal shape so the UI can render a
-        // diff. `proposal/apply` commits the staged markdown;
-        // `proposal/cancel` clears it. All three are aligned with
-        // the Worker B TS contract in
-        // `apps/desktop-shell/src/features/ingest/`.
-        .route(
-            "/api/wiki/inbox/{id}/proposal",
-            post(create_proposal_handler),
-        )
-        .route(
-            "/api/wiki/inbox/{id}/proposal/apply",
-            post(apply_proposal_handler),
-        )
-        .route(
-            "/api/wiki/inbox/{id}/proposal/cancel",
-            post(cancel_proposal_handler),
-        )
-        // ── W3 Combined Proposal (Maintainer Multi-Proposal Merge) ──
-        // Two new routes that fold 2..=6 inbox entries into a single
-        // wiki page in one LLM call. Contract diverges from the W2
-        // per-inbox `/proposal` path in two ways:
-        //   1. Preview is body-in / body-out (no inbox_id in the URL,
-        //      no inbox staging writes) — the diff is ephemeral and
-        //      the frontend echoes the critical pieces back on apply.
-        //   2. Apply is atomic-ish: wiki page writes first, then each
-        //      of the N inbox entries flips to Approved. Partial
-        //      success returns `outcome: "partial_applied"` with the
-        //      failing ids (see `apply_combined_proposal` in
-        //      wiki_maintainer for the atomicity rationale).
-        .route(
-            "/api/wiki/proposal/combined",
-            post(create_combined_proposal_handler),
-        )
-        .route(
-            "/api/wiki/proposal/combined/apply",
-            post(apply_combined_proposal_handler),
-        )
-        // ── Q2 Target Resolver: ranked target-page candidates ──────
-        // Read-only scorer that suggests up to three wiki pages the
-        // user might want to pick as the `update_existing` target
-        // for an inbox entry. Pure function in `wiki_maintainer`;
-        // this route just plumbs the inbox + wiki store read layer
-        // into the scorer and returns the response. GET is correct
-        // (idempotent, no side effects). Optional `?with_graph=true`
-        // triggers a second pass that folds graph_* signals into
-        // the top-3 — costs 3 extra page-graph builds, so it's
-        // opt-in.
-        .route(
-            "/api/wiki/inbox/{id}/candidates",
-            get(list_inbox_candidates_handler),
-        )
-        // ── ClawWiki S4 wiki concept pages (read) ──────────────────
-        // Pure read routes for the Wiki tab and the InboxPage diff
-        // preview. Writes ONLY happen through the propose →
-        // approve-with-write flow above, so no POST /api/wiki/pages
-        // exists (the plan had one; review trimmed it because there's
-        // no UI producing standalone pages without a raw-entry
-        // seed — that's a follow-up sprint).
-        .route("/api/wiki/pages", get(list_wiki_pages_handler))
-        .route("/api/wiki/pages/{slug}", get(get_wiki_page_handler))
-        // ── ClawWiki G: wiki page search (canonical §9.3 + Karpathy §"CLI tools") ─
-        // Simple substring search with weighted per-field scoring.
-        // No BM25, no embeddings, no index — Karpathy explicitly says
-        // "at small scale the index file is enough" and we're well
-        // inside that regime. Swap point for when we outgrow it.
-        .route("/api/wiki/search", get(search_wiki_pages_handler))
-        // ── ClawWiki F: index + log special files (Karpathy §Indexing and logging) ─
-        // These two live at the top of `wiki/`, not under
-        // `wiki/concepts/`, so they need dedicated routes — the
-        // generic `read_wiki_page(slug)` path would look for
-        // `wiki/concepts/{slug}.md` and miss them.
-        .route("/api/wiki/index", get(get_wiki_index_handler))
-        .route("/api/wiki/log", get(get_wiki_log_handler))
-        // ── ClawWiki S6 schema layer (read-only) ───────────────────
-        // Returns the text of `schema/CLAUDE.md` so the SchemaEditorPage
-        // can render the maintainer agent's rule book. Per canonical
-        // §8 / §10, schema/ is human-owned: the maintainer agent may
-        // PROPOSE changes via the Inbox but never writes here directly,
-        // and neither does this HTTP route (no PUT/POST).
-        .route(
-            "/api/wiki/schema",
-            get(get_wiki_schema_handler).put(put_wiki_schema_handler),
-        )
-        // ── ClawWiki T: graph data (canonical §9.3) ────────────────
-        // GET /api/wiki/graph — returns nodes (raw + concept) and
-        // edges (derived-from) for the Graph page. Frontend uses
-        // this to render the Karpathy three-layer cognitive web.
-        .route("/api/wiki/graph", get(get_wiki_graph_handler))
-        // ── ClawWiki Q: backlinks endpoint ─────────────────────────
-        .route("/api/wiki/pages/{slug}/backlinks", get(get_wiki_backlinks_handler))
-        // ── ClawWiki G1: page-level graph (outgoing + backlinks + related) ─
-        // One request per page-graph render; frontend avoids three round-trips.
-        .route("/api/wiki/pages/{slug}/graph", get(get_page_graph_handler))
-        // ── P1 Lineage Explorer: end-to-end provenance read APIs ──
-        // Three pure-read endpoints over `{meta}/lineage.jsonl`. Each
-        // scans the full file linearly and filters by LineageRef
-        // (MVP scale is fine; an index file is a P1.1 concern).
-        .route(
-            "/api/lineage/wiki/{slug}",
-            get(get_wiki_lineage_handler),
-        )
-        .route(
-            "/api/lineage/inbox/{id}",
-            get(get_inbox_lineage_handler),
-        )
-        .route(
-            "/api/lineage/raw/{id}",
-            get(get_raw_lineage_handler),
-        )
-        // ── v2 SKILL engine endpoints (technical-design.md §2.1-§2.9) ──
-        .route("/api/wiki/absorb", post(absorb_handler))
-        .route("/api/wiki/absorb/events", get(stream_absorb_events_handler))
-        .route("/api/wiki/query", post(query_wiki_handler))
-        .route("/api/wiki/cleanup", post(cleanup_handler))
-        .route("/api/wiki/patrol", post(patrol_handler))
-        .route("/api/wiki/absorb-log", get(get_absorb_log_handler))
-        .route("/api/wiki/backlinks", get(get_backlinks_index_handler))
-        .route("/api/wiki/stats", get(get_stats_handler))
-        .route("/api/wiki/patrol/report", get(get_patrol_report_handler))
-        .route("/api/wiki/schema/templates", get(get_schema_templates_handler))
-        // ── M5: WeChat bridge health + group-scope config ──────────
-        .route(
-            "/api/wechat/bridge/health",
-            get(wechat_bridge_health_handler),
-        )
-        .route(
-            "/api/wechat/bridge/config",
-            get(wechat_bridge_config_get_handler).post(wechat_bridge_config_post_handler),
-        )
-        // ── Phase 6C: WeChat account management ────────────────────
-        .route(
-            "/api/desktop/wechat/accounts",
-            get(list_wechat_accounts_handler),
-        )
-        .route(
-            "/api/desktop/wechat/accounts/{id}",
-            delete(delete_wechat_account_handler),
-        )
-        .route(
-            "/api/desktop/wechat/login/start",
-            post(start_wechat_login_handler),
-        )
-        .route(
-            "/api/desktop/wechat/login/{handle}/status",
-            get(wechat_login_status_handler),
-        )
-        .route(
-            "/api/desktop/wechat/login/{handle}/cancel",
-            post(cancel_wechat_login_handler),
-        )
-        // ── Channel B: Official WeChat Customer Service (kefu) ───────
-        .route("/api/desktop/wechat-kefu/config", post(save_kefu_config_handler))
-        .route("/api/desktop/wechat-kefu/config", get(load_kefu_config_handler))
-        .route("/api/desktop/wechat-kefu/account/create", post(create_kefu_account_handler))
-        .route("/api/desktop/wechat-kefu/contact-url", get(get_kefu_contact_url_handler))
-        .route("/api/desktop/wechat-kefu/status", get(kefu_status_handler))
-        .route("/api/desktop/wechat-kefu/monitor/start", post(start_kefu_monitor_handler))
-        .route("/api/desktop/wechat-kefu/monitor/stop", post(stop_kefu_monitor_handler))
-        .route("/api/desktop/wechat-kefu/callback", get(kefu_callback_verify_handler))
-        .route("/api/desktop/wechat-kefu/callback", post(kefu_callback_event_handler))
-        // Pipeline
-        .route("/api/desktop/wechat-kefu/pipeline/start", post(start_kefu_pipeline_handler))
-        .route("/api/desktop/wechat-kefu/pipeline/status", get(kefu_pipeline_status_handler))
-        .route("/api/desktop/wechat-kefu/pipeline/cancel", post(cancel_kefu_pipeline_handler))
-        // ── Graceful shutdown (internal, Tauri-shell only) ─────────
-        // POST /internal/shutdown with header `X-Shutdown-Token:
-        // <secret>` trips the cancellation token wired into
-        // `axum::serve().with_graceful_shutdown(...)`. The secret is
-        // injected into the spawned child's env by the Tauri parent
-        // (and known only to that pair) so no other local process can
-        // steer the child. 401 if the header is missing/wrong.
-        .route("/internal/shutdown", post(shutdown_handler))
         .layer(DefaultBodyLimit::max(MAX_REQUEST_BODY_BYTES))
         .layer(cors)
         .with_state(state)
 }
-
 /// Internal handler for `POST /internal/shutdown`. Auth-gated by a
 /// per-process secret (the `X-Shutdown-Token` HTTP header) that the
 /// Tauri parent supplies when spawning the child. Success flips the
@@ -797,10 +353,7 @@ pub fn app(state: AppState) -> Router {
 ///
 /// We treat an already-cancelled token as idempotent success — racing
 /// a window-close against a Ctrl-C must not panic.
-async fn shutdown_handler(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-) -> impl IntoResponse {
+async fn shutdown_handler(State(state): State<AppState>, headers: HeaderMap) -> impl IntoResponse {
     let provided = headers
         .get("x-shutdown-token")
         .and_then(|v| v.to_str().ok())
@@ -808,7 +361,11 @@ async fn shutdown_handler(
     // Constant-time-ish comparison: both strings short and lengths
     // cheap to mismatch on, so byte-wise eq is fine here.
     if provided.is_empty() || provided != state.shutdown_token.as_str() {
-        return (StatusCode::UNAUTHORIZED, "shutdown token missing or invalid").into_response();
+        return (
+            StatusCode::UNAUTHORIZED,
+            "shutdown token missing or invalid",
+        )
+            .into_response();
     }
     state.shutdown_cancel.cancel();
     (StatusCode::ACCEPTED, "shutdown signalled").into_response()
@@ -1109,12 +666,8 @@ async fn search_sessions(
 fn validate_optional_project_path(path: &Option<String>) -> Result<(), ApiError> {
     if let Some(p) = path.as_ref() {
         if !p.is_empty() {
-            desktop_core::validate_project_path(p).map_err(|e| {
-                (
-                    StatusCode::BAD_REQUEST,
-                    Json(ErrorResponse { error: e }),
-                )
-            })?;
+            desktop_core::validate_project_path(p)
+                .map_err(|e| (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })))?;
         }
     }
     Ok(())
@@ -1492,17 +1045,14 @@ async fn set_session_lifecycle_handler(
     Path(id): Path<String>,
     Json(body): Json<serde_json::Value>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let status_str = body
-        .get("status")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| {
-            (
-                axum::http::StatusCode::BAD_REQUEST,
-                Json(ErrorResponse {
-                    error: "missing status field".to_string(),
-                }),
-            )
-        })?;
+    let status_str = body.get("status").and_then(|v| v.as_str()).ok_or_else(|| {
+        (
+            axum::http::StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "missing status field".to_string(),
+            }),
+        )
+    })?;
     let status = match status_str {
         "todo" => desktop_core::DesktopLifecycleStatus::Todo,
         "in_progress" => desktop_core::DesktopLifecycleStatus::InProgress,
@@ -1532,7 +1082,10 @@ async fn set_session_flag_handler(
     Path(id): Path<String>,
     Json(body): Json<serde_json::Value>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let flagged = body.get("flagged").and_then(|v| v.as_bool()).unwrap_or(false);
+    let flagged = body
+        .get("flagged")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
     let session = state
         .desktop
         .set_session_flagged(&id, flagged)
@@ -1613,17 +1166,14 @@ async fn process_attachment_handler(
             )
         })?;
 
-    let base64_data = body
-        .get("base64")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| {
-            (
-                axum::http::StatusCode::BAD_REQUEST,
-                Json(ErrorResponse {
-                    error: "missing base64 payload".to_string(),
-                }),
-            )
-        })?;
+    let base64_data = body.get("base64").and_then(|v| v.as_str()).ok_or_else(|| {
+        (
+            axum::http::StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "missing base64 payload".to_string(),
+            }),
+        )
+    })?;
 
     // CR-04: Enforce a strict 10 MiB cap on the *decoded* payload.
     //
@@ -1791,17 +1341,14 @@ async fn set_permission_mode_handler(
             Json(ErrorResponse { error: e }),
         )
     })?;
-    let mode = body
-        .get("mode")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| {
-            (
-                axum::http::StatusCode::BAD_REQUEST,
-                Json(ErrorResponse {
-                    error: "missing mode".to_string(),
-                }),
-            )
-        })?;
+    let mode = body.get("mode").and_then(|v| v.as_str()).ok_or_else(|| {
+        (
+            axum::http::StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "missing mode".to_string(),
+            }),
+        )
+    })?;
     state
         .desktop
         .set_permission_mode(&validated.display().to_string(), mode)
@@ -1844,7 +1391,9 @@ async fn compact_session(
         .compact_session_messages(&id)
         .await
         .map_err(into_api_error)?;
-    Ok(Json(serde_json::json!({ "compacted": true, "session": session })))
+    Ok(Json(
+        serde_json::json!({ "compacted": true, "session": session }),
+    ))
 }
 
 /// Forward a permission decision (allow/deny) to an in-flight session.
@@ -1892,9 +1441,7 @@ async fn forward_permission(
         return Err((
             StatusCode::BAD_REQUEST,
             Json(ErrorResponse {
-                error: format!(
-                    "invalid decision: {decision} (expected: allow | deny)"
-                ),
+                error: format!("invalid decision: {decision} (expected: allow | deny)"),
             }),
         ));
     }
@@ -1974,7 +1521,6 @@ async fn update_dispatch_item(
     Ok(Json(DesktopDispatchItemResponse { item }))
 }
 
-
 // ── Phase 6C: WeChat account management HTTP handlers ──────────────
 //
 // Lets the frontend drive a full QR-login → monitor-spawn flow from
@@ -1984,9 +1530,7 @@ async fn update_dispatch_item(
 
 /// `GET /api/desktop/wechat/accounts` — list persisted WeChat bots
 /// with their connection status (connected / disconnected / expired).
-async fn list_wechat_accounts_handler(
-    State(state): State<AppState>,
-) -> Json<serde_json::Value> {
+async fn list_wechat_accounts_handler(State(state): State<AppState>) -> Json<serde_json::Value> {
     let accounts = state.desktop.list_wechat_accounts_summary().await;
     let items: Vec<serde_json::Value> = accounts
         .into_iter()
@@ -2010,14 +1554,18 @@ async fn delete_wechat_account_handler(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    state.desktop.remove_wechat_account(&id).await.map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ErrorResponse {
-                error: format!("failed to remove wechat account `{id}`: {e}"),
-            }),
-        )
-    })?;
+    state
+        .desktop
+        .remove_wechat_account(&id)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: format!("failed to remove wechat account `{id}`: {e}"),
+                }),
+            )
+        })?;
     Ok(Json(serde_json::json!({ "ok": true })))
 }
 
@@ -2034,15 +1582,18 @@ async fn start_wechat_login_handler(
         .and_then(|v| v.as_str())
         .filter(|s| !s.is_empty())
         .map(String::from);
-    let (handle, qr_image_content, expires_at) =
-        state.desktop.start_wechat_login(base_url).await.map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse {
-                    error: format!("start_wechat_login failed: {e}"),
-                }),
-            )
-        })?;
+    let (handle, qr_image_content, expires_at) = state
+        .desktop
+        .start_wechat_login(base_url)
+        .await
+        .map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("start_wechat_login failed: {e}"),
+            }),
+        )
+    })?;
     Ok(Json(serde_json::json!({
         "handle": handle,
         "qr_image_base64": qr_image_content,
@@ -2057,14 +1608,18 @@ async fn wechat_login_status_handler(
     State(state): State<AppState>,
     Path(handle): Path<String>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let snapshot = state.desktop.wechat_login_status(&handle).await.ok_or_else(|| {
-        (
-            StatusCode::NOT_FOUND,
-            Json(ErrorResponse {
-                error: format!("login handle `{handle}` not found"),
-            }),
-        )
-    })?;
+    let snapshot = state
+        .desktop
+        .wechat_login_status(&handle)
+        .await
+        .ok_or_else(|| {
+            (
+                StatusCode::NOT_FOUND,
+                Json(ErrorResponse {
+                    error: format!("login handle `{handle}` not found"),
+                }),
+            )
+        })?;
     Ok(Json(serde_json::json!({
         "status": snapshot.status,
         "account_id": snapshot.account_id,
@@ -2119,9 +1674,7 @@ pub struct BridgeHealthResponse {
 /// of both WeChat bridges. The kefu channel is currently dead code
 /// (M5 ships ilink-only); we still surface a disconnected row so the
 /// frontend can render a two-column layout.
-async fn wechat_bridge_health_handler(
-    State(state): State<AppState>,
-) -> Json<BridgeHealthResponse> {
+async fn wechat_bridge_health_handler(State(state): State<AppState>) -> Json<BridgeHealthResponse> {
     // ── ilink: merge every registered monitor into a single row.
     // When multiple accounts run in parallel (rare — most users only
     // bind one bot), pick the most-recently-active monitor as the
@@ -2195,8 +1748,8 @@ async fn wechat_bridge_health_handler(
 /// group-scope config. Equivalent to reading
 /// `~/.clawwiki/wechat_ingest_config.json` but served through the
 /// cache so repeated polls are cheap.
-async fn wechat_bridge_config_get_handler()
--> Json<desktop_core::wechat_ilink::WeChatIngestConfig> {
+async fn wechat_bridge_config_get_handler() -> Json<desktop_core::wechat_ilink::WeChatIngestConfig>
+{
     Json(desktop_core::wechat_ilink::ingest_config::read_snapshot())
 }
 
@@ -2206,8 +1759,10 @@ async fn wechat_bridge_config_get_handler()
 /// disk before the cache swap so a reload always sees the latest.
 async fn wechat_bridge_config_post_handler(
     Json(body): Json<desktop_core::wechat_ilink::WeChatIngestConfig>,
-) -> Result<Json<desktop_core::wechat_ilink::WeChatIngestConfig>, (StatusCode, Json<serde_json::Value>)>
-{
+) -> Result<
+    Json<desktop_core::wechat_ilink::WeChatIngestConfig>,
+    (StatusCode, Json<serde_json::Value>),
+> {
     match desktop_core::wechat_ilink::ingest_config::update(body) {
         Ok(updated) => Ok(Json(updated)),
         Err(err) => Err((
@@ -2244,22 +1799,16 @@ async fn save_kefu_config_handler(
         callback_url: None,
         callback_token_generated: None,
     };
-    state
-        .desktop
-        .save_kefu_config(config)
-        .await
-        .map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({ "error": e })),
-            )
-        })?;
+    state.desktop.save_kefu_config(config).await.map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": e })),
+        )
+    })?;
     Ok(Json(serde_json::json!({ "ok": true })))
 }
 
-async fn load_kefu_config_handler(
-    State(state): State<AppState>,
-) -> Json<serde_json::Value> {
+async fn load_kefu_config_handler(State(state): State<AppState>) -> Json<serde_json::Value> {
     match state.desktop.load_kefu_config().await {
         Ok(Some(config)) => {
             let summary = config.to_summary();
@@ -2275,16 +1824,12 @@ async fn create_kefu_account_handler(
     Json(body): Json<serde_json::Value>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
     let name = body["name"].as_str().unwrap_or("ClaudeWiki助手");
-    let open_kfid = state
-        .desktop
-        .create_kefu_account(name)
-        .await
-        .map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({ "error": e })),
-            )
-        })?;
+    let open_kfid = state.desktop.create_kefu_account(name).await.map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": e })),
+        )
+    })?;
     Ok(Json(serde_json::json!({
         "ok": true,
         "open_kfid": open_kfid,
@@ -2294,22 +1839,16 @@ async fn create_kefu_account_handler(
 async fn get_kefu_contact_url_handler(
     State(state): State<AppState>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
-    let url = state
-        .desktop
-        .get_kefu_contact_url()
-        .await
-        .map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({ "error": e })),
-            )
-        })?;
+    let url = state.desktop.get_kefu_contact_url().await.map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": e })),
+        )
+    })?;
     Ok(Json(serde_json::json!({ "url": url })))
 }
 
-async fn kefu_status_handler(
-    State(state): State<AppState>,
-) -> Json<serde_json::Value> {
+async fn kefu_status_handler(State(state): State<AppState>) -> Json<serde_json::Value> {
     let status = state.desktop.kefu_status().await;
     Json(serde_json::to_value(&status).unwrap_or_default())
 }
@@ -2326,9 +1865,7 @@ async fn start_kefu_monitor_handler(
     Ok(Json(serde_json::json!({ "ok": true })))
 }
 
-async fn stop_kefu_monitor_handler(
-    State(state): State<AppState>,
-) -> Json<serde_json::Value> {
+async fn stop_kefu_monitor_handler(State(state): State<AppState>) -> Json<serde_json::Value> {
     state.desktop.stop_kefu_monitor().await;
     Json(serde_json::json!({ "ok": true }))
 }
@@ -2368,14 +1905,20 @@ async fn kefu_callback_verify_handler(
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
 
-    let msg_sig = params.get("msg_signature").map(|s| s.as_str()).unwrap_or("");
+    let msg_sig = params
+        .get("msg_signature")
+        .map(|s| s.as_str())
+        .unwrap_or("");
     let timestamp = params.get("timestamp").map(|s| s.as_str()).unwrap_or("");
     let nonce = params.get("nonce").map(|s| s.as_str()).unwrap_or("");
     let echostr = params.get("echostr").map(|s| s.as_str()).unwrap_or("");
 
     eprintln!(
         "[kefu callback] params: msg_sig_len={} ts={} nonce={} echostr_len={}",
-        msg_sig.len(), timestamp, nonce, echostr.len()
+        msg_sig.len(),
+        timestamp,
+        nonce,
+        echostr.len()
     );
 
     callback
@@ -2406,7 +1949,10 @@ async fn kefu_callback_event_handler(
     )
     .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
-    let msg_sig = params.get("msg_signature").map(|s| s.as_str()).unwrap_or("");
+    let msg_sig = params
+        .get("msg_signature")
+        .map(|s| s.as_str())
+        .unwrap_or("");
     let timestamp = params.get("timestamp").map(|s| s.as_str()).unwrap_or("");
     let nonce = params.get("nonce").map(|s| s.as_str()).unwrap_or("");
 
@@ -2448,9 +1994,7 @@ async fn start_kefu_pipeline_handler(
     Ok(Json(serde_json::json!({ "ok": true })))
 }
 
-async fn kefu_pipeline_status_handler(
-    State(state): State<AppState>,
-) -> Json<serde_json::Value> {
+async fn kefu_pipeline_status_handler(State(state): State<AppState>) -> Json<serde_json::Value> {
     match state.desktop.kefu_pipeline_status().await {
         Some(s) => {
             let mut val = serde_json::to_value(&s).unwrap_or_default();
@@ -2466,9 +2010,7 @@ async fn kefu_pipeline_status_handler(
     }
 }
 
-async fn cancel_kefu_pipeline_handler(
-    State(state): State<AppState>,
-) -> Json<serde_json::Value> {
+async fn cancel_kefu_pipeline_handler(State(state): State<AppState>) -> Json<serde_json::Value> {
     state.desktop.cancel_kefu_pipeline().await;
     Json(serde_json::json!({ "ok": true }))
 }
@@ -2586,17 +2128,16 @@ async fn ingest_wiki_raw_handler(
             ));
         }
 
-        let outcome = desktop_core::url_ingest::ingest_url(
-            desktop_core::url_ingest::IngestRequest {
+        let outcome =
+            desktop_core::url_ingest::ingest_url(desktop_core::url_ingest::IngestRequest {
                 url: &url,
                 origin_tag: "raw-library-url".to_string(),
                 prefer_playwright: None, // orchestrator auto-routes weixin.qq.com to Playwright
                 fetch_timeout: std::time::Duration::from_secs(30),
                 allow_text_fallback: None,
                 force: body.force.unwrap_or(false),
-            },
-        )
-        .await;
+            })
+            .await;
         eprintln!("[raw-library-url] outcome: {}", outcome.as_display());
 
         return match outcome {
@@ -2664,7 +2205,9 @@ async fn ingest_wiki_raw_handler(
             )),
             desktop_core::url_ingest::IngestOutcome::FetchFailed { error } => Err((
                 StatusCode::BAD_GATEWAY,
-                Json(ErrorResponse { error: error.to_string() }),
+                Json(ErrorResponse {
+                    error: error.to_string(),
+                }),
             )),
             desktop_core::url_ingest::IngestOutcome::PrerequisiteMissing { dep, hint } => Err((
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -2698,8 +2241,7 @@ async fn ingest_wiki_raw_handler(
     let effective_source_url = body.source_url.clone();
 
     let paths = resolve_wiki_root_for_handler()?;
-    let frontmatter =
-        wiki_store::RawFrontmatter::for_paste(&body.source, effective_source_url);
+    let frontmatter = wiki_store::RawFrontmatter::for_paste(&body.source, effective_source_url);
     let entry = wiki_store::write_raw_entry(
         &paths,
         &body.source,
@@ -2825,9 +2367,7 @@ async fn list_wiki_raw_handler() -> Result<Json<serde_json::Value>, ApiError> {
 /// Read one raw entry by numeric id. Returns the metadata block plus
 /// the body text (`{ entry: ..., body: "..." }`). 404 when the id is
 /// not present in the directory.
-async fn get_wiki_raw_handler(
-    Path(id): Path<u32>,
-) -> Result<Json<serde_json::Value>, ApiError> {
+async fn get_wiki_raw_handler(Path(id): Path<u32>) -> Result<Json<serde_json::Value>, ApiError> {
     let paths = resolve_wiki_root_for_handler()?;
     match wiki_store::read_raw_entry(&paths, id) {
         Ok((entry, body)) => Ok(Json(serde_json::json!({
@@ -2947,8 +2487,7 @@ async fn list_inbox_candidates_handler(
     })?;
 
     // Step 3: first-pass scoring. No graph signals yet.
-    let preliminary =
-        wiki_maintainer::resolve_target_candidates(&entry, &pages, None);
+    let preliminary = wiki_maintainer::resolve_target_candidates(&entry, &pages, None);
 
     // Step 4 (optional): second pass with graph signals. Build a
     // per-slug graph map ONLY for the preliminary hits so the cost
@@ -3136,7 +2675,9 @@ async fn get_wiki_graph_handler() -> Result<Json<serde_json::Value>, ApiError> {
             }),
         )
     })?;
-    Ok(Json(serde_json::to_value(&graph).unwrap_or(serde_json::Value::Null)))
+    Ok(Json(
+        serde_json::to_value(&graph).unwrap_or(serde_json::Value::Null),
+    ))
 }
 
 /// `GET /api/wiki/pages/{slug}/graph` (G1)
@@ -3278,8 +2819,8 @@ async fn resolve_wiki_inbox_handler(
     Json(body): Json<ResolveInboxRequest>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let paths = resolve_wiki_root_for_handler()?;
-    let updated = wiki_store::resolve_inbox_entry(&paths, id, &body.action).map_err(
-        |e| match e {
+    let updated =
+        wiki_store::resolve_inbox_entry(&paths, id, &body.action).map_err(|e| match e {
             wiki_store::WikiStoreError::NotFound(_) => (
                 StatusCode::NOT_FOUND,
                 Json(ErrorResponse {
@@ -3298,8 +2839,7 @@ async fn resolve_wiki_inbox_handler(
                     error: format!("resolve_inbox_entry failed: {other}"),
                 }),
             ),
-        },
-    )?;
+        })?;
     fire_inbox_notify(); // feat(O): instant WS push
     Ok(Json(serde_json::json!({ "entry": updated })))
 }
@@ -3563,62 +3103,60 @@ async fn propose_wiki_inbox_handler(
     let adapter = desktop_core::wiki_maintainer_adapter::BrokerAdapter::from_global();
 
     // Step 3: fire the proposal.
-    let proposal =
-        wiki_maintainer::propose_for_raw_entry(&paths, raw_id, &adapter)
-            .await
-            .map_err(|e| match e {
-                wiki_maintainer::MaintainerError::RawNotAvailable(msg) => (
-                    StatusCode::NOT_FOUND,
+    let proposal = wiki_maintainer::propose_for_raw_entry(&paths, raw_id, &adapter)
+        .await
+        .map_err(|e| match e {
+            wiki_maintainer::MaintainerError::RawNotAvailable(msg) => (
+                StatusCode::NOT_FOUND,
+                Json(ErrorResponse {
+                    error: format!("raw entry not available: {msg}"),
+                }),
+            ),
+            wiki_maintainer::MaintainerError::Broker(msg) => {
+                // Empty-broker / no-provider cases land here via the
+                // adapter's string flattening. Pin the 503 on anything
+                // that looks like "no usable auth source"; everything
+                // else is an upstream LLM error worth a 502.
+                let is_empty_pool = msg.contains("no codex account")
+                    || msg.contains("pool_size")
+                    || msg.contains("no providers.json fallback");
+                let code = if is_empty_pool {
+                    StatusCode::SERVICE_UNAVAILABLE
+                } else {
+                    StatusCode::BAD_GATEWAY
+                };
+                (
+                    code,
                     Json(ErrorResponse {
-                        error: format!("raw entry not available: {msg}"),
+                        error: format!("broker error: {msg}"),
                     }),
-                ),
-                wiki_maintainer::MaintainerError::Broker(msg) => {
-                    // Empty-broker / no-provider cases land here via the
-                    // adapter's string flattening. Pin the 503 on anything
-                    // that looks like "no usable auth source"; everything
-                    // else is an upstream LLM error worth a 502.
-                    let is_empty_pool =
-                        msg.contains("no codex account")
-                            || msg.contains("pool_size")
-                            || msg.contains("no providers.json fallback");
-                    let code = if is_empty_pool {
-                        StatusCode::SERVICE_UNAVAILABLE
-                    } else {
-                        StatusCode::BAD_GATEWAY
-                    };
-                    (
-                        code,
-                        Json(ErrorResponse {
-                            error: format!("broker error: {msg}"),
-                        }),
-                    )
-                }
-                wiki_maintainer::MaintainerError::BadJson { reason, preview } => (
-                    StatusCode::BAD_GATEWAY,
-                    Json(ErrorResponse {
-                        error: format!("LLM returned malformed JSON: {reason}; preview: {preview}"),
-                    }),
-                ),
-                wiki_maintainer::MaintainerError::InvalidProposal(msg) => (
-                    StatusCode::BAD_GATEWAY,
-                    Json(ErrorResponse {
-                        error: format!("LLM proposal shape invalid: {msg}"),
-                    }),
-                ),
-                wiki_maintainer::MaintainerError::Store(msg) => (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(ErrorResponse {
-                        error: format!("wiki store error: {msg}"),
-                    }),
-                ),
-                wiki_maintainer::MaintainerError::Cancelled => (
-                    StatusCode::from_u16(499).unwrap_or(StatusCode::BAD_REQUEST),
-                    Json(ErrorResponse {
-                        error: "absorb cancelled by user".to_string(),
-                    }),
-                ),
-            })?;
+                )
+            }
+            wiki_maintainer::MaintainerError::BadJson { reason, preview } => (
+                StatusCode::BAD_GATEWAY,
+                Json(ErrorResponse {
+                    error: format!("LLM returned malformed JSON: {reason}; preview: {preview}"),
+                }),
+            ),
+            wiki_maintainer::MaintainerError::InvalidProposal(msg) => (
+                StatusCode::BAD_GATEWAY,
+                Json(ErrorResponse {
+                    error: format!("LLM proposal shape invalid: {msg}"),
+                }),
+            ),
+            wiki_maintainer::MaintainerError::Store(msg) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: format!("wiki store error: {msg}"),
+                }),
+            ),
+            wiki_maintainer::MaintainerError::Cancelled => (
+                StatusCode::from_u16(499).unwrap_or(StatusCode::BAD_REQUEST),
+                Json(ErrorResponse {
+                    error: "absorb cancelled by user".to_string(),
+                }),
+            ),
+        })?;
 
     Ok(Json(serde_json::json!({
         "proposal": wiki_page_proposal_to_json(&proposal),
@@ -3702,24 +3240,22 @@ async fn approve_wiki_inbox_with_write_handler(
     // user's approve succeeded; a missing log entry or stale index is
     // a maintenance problem the next write will fix on its own, NOT
     // a reason to fail the user's action.
-    let log_title = if p.title.is_empty() { p.slug.clone() } else { p.title.clone() };
+    let log_title = if p.title.is_empty() {
+        p.slug.clone()
+    } else {
+        p.title.clone()
+    };
     if let Err(e) = wiki_store::append_wiki_log(&paths, "write-concept", &log_title) {
-        eprintln!(
-            "approve-with-write: wiki page written but log append failed: {e}"
-        );
+        eprintln!("approve-with-write: wiki page written but log append failed: {e}");
     }
     // feat(S): also append to per-day changelog file (canonical §8
     // Triggers row 5). Same soft-fail policy as the log: missing
     // entries are recoverable, the page is already persisted.
     if let Err(e) = wiki_store::append_changelog_entry(&paths, "write-concept", &log_title) {
-        eprintln!(
-            "approve-with-write: wiki page written but changelog append failed: {e}"
-        );
+        eprintln!("approve-with-write: wiki page written but changelog append failed: {e}");
     }
     if let Err(e) = wiki_store::rebuild_wiki_index(&paths) {
-        eprintln!(
-            "approve-with-write: wiki page written but index rebuild failed: {e}"
-        );
+        eprintln!("approve-with-write: wiki page written but index rebuild failed: {e}");
     }
     // feat(P): scan existing concept pages for mentions of the newly
     // written page and create Stale inbox entries. Canonical §8
@@ -3734,9 +3270,7 @@ async fn approve_wiki_inbox_with_write_handler(
         }
         Ok(_) => {}
         Err(e) => {
-            eprintln!(
-                "approve-with-write: notify_affected_pages failed (non-fatal): {e}"
-            );
+            eprintln!("approve-with-write: notify_affected_pages failed (non-fatal): {e}");
         }
     }
 
@@ -3748,9 +3282,7 @@ async fn approve_wiki_inbox_with_write_handler(
     let inbox_entry_json = match inbox_result {
         Ok(updated) => Some(serde_json::to_value(&updated).unwrap_or(serde_json::Value::Null)),
         Err(e) => {
-            eprintln!(
-                "approve-with-write: wiki page written but inbox resolve failed: {e}"
-            );
+            eprintln!("approve-with-write: wiki page written but inbox resolve failed: {e}");
             None
         }
     };
@@ -3886,8 +3418,7 @@ async fn inbox_maintain_handler(
     // Step 3: run the action. On error, flatten into a `Failed` outcome
     // rather than bubbling a 5xx — the frontend uses `error` as an
     // inline warning in the Workbench result pane.
-    let outcome_result =
-        wiki_maintainer::execute_maintain(&paths, id, action, &adapter).await;
+    let outcome_result = wiki_maintainer::execute_maintain(&paths, id, action, &adapter).await;
 
     let response = match outcome_result {
         Ok(wiki_maintainer::MaintainOutcome::Created { target_page_slug }) => {
@@ -4074,12 +3605,9 @@ async fn apply_proposal_handler(
             target_page_slug: None,
             error: Some(format!("unexpected outcome: {other:?}")),
         })),
-        Err(wiki_maintainer::MaintainerError::InvalidProposal(msg)) => Err((
-            StatusCode::BAD_REQUEST,
-            Json(ErrorResponse {
-                error: msg,
-            }),
-        )),
+        Err(wiki_maintainer::MaintainerError::InvalidProposal(msg)) => {
+            Err((StatusCode::BAD_REQUEST, Json(ErrorResponse { error: msg })))
+        }
         Err(e) => {
             // Concurrent-edit conflicts surface as `Store` errors;
             // fold them into a structured 200 response so the UI can
@@ -4110,17 +3638,13 @@ async fn cancel_proposal_handler(
                 error: None,
             }))
         }
-        Err(wiki_maintainer::MaintainerError::RawNotAvailable(msg)) => Err((
-            StatusCode::NOT_FOUND,
-            Json(ErrorResponse { error: msg }),
-        )),
+        Err(wiki_maintainer::MaintainerError::RawNotAvailable(msg)) => {
+            Err((StatusCode::NOT_FOUND, Json(ErrorResponse { error: msg })))
+        }
         Err(wiki_maintainer::MaintainerError::Store(msg))
             if msg.to_lowercase().contains("not found") =>
         {
-            Err((
-                StatusCode::NOT_FOUND,
-                Json(ErrorResponse { error: msg }),
-            ))
+            Err((StatusCode::NOT_FOUND, Json(ErrorResponse { error: msg })))
         }
         Err(e) => Ok(Json(CancelProposalResponse {
             outcome: "failed".to_string(),
@@ -4239,10 +3763,9 @@ impl From<wiki_maintainer::CombinedApplyResult> for CombinedApplyResponse {
 fn combined_error_to_api(e: wiki_maintainer::MaintainerError) -> ApiError {
     use wiki_maintainer::MaintainerError;
     match e {
-        MaintainerError::InvalidProposal(msg) => (
-            StatusCode::BAD_REQUEST,
-            Json(ErrorResponse { error: msg }),
-        ),
+        MaintainerError::InvalidProposal(msg) => {
+            (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: msg }))
+        }
         MaintainerError::RawNotAvailable(msg) => (
             StatusCode::BAD_REQUEST,
             Json(ErrorResponse {
@@ -4290,14 +3813,10 @@ async fn create_combined_proposal_handler(
     let slug = body.target_slug.trim().to_string();
 
     let adapter = desktop_core::wiki_maintainer_adapter::BrokerAdapter::from_global();
-    let proposal = wiki_maintainer::propose_combined_update(
-        &paths,
-        &slug,
-        &body.inbox_ids,
-        &adapter,
-    )
-    .await
-    .map_err(combined_error_to_api)?;
+    let proposal =
+        wiki_maintainer::propose_combined_update(&paths, &slug, &body.inbox_ids, &adapter)
+            .await
+            .map_err(combined_error_to_api)?;
 
     Ok(Json(CombinedProposalResponse::from(proposal)))
 }
@@ -4463,9 +3982,8 @@ async fn ws_wechat_inbox_handler(
         loop {
             match rx.recv().await {
                 Ok(()) => {
-                    let msg = axum::extract::ws::Message::Text(
-                        "{\"event\":\"inbox_changed\"}".into(),
-                    );
+                    let msg =
+                        axum::extract::ws::Message::Text("{\"event\":\"inbox_changed\"}".into());
                     if socket.send(msg).await.is_err() {
                         break; // client disconnected
                     }
@@ -4601,14 +4119,17 @@ async fn sync_cloud_codex_accounts_handler(
     Json(body): Json<SyncCloudCodexAccountsRequest>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let count = body.accounts.len();
-    state.broker().sync_cloud_accounts(body.accounts).map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ErrorResponse {
-                error: format!("broker sync failed: {e}"),
-            }),
-        )
-    })?;
+    state
+        .broker()
+        .sync_cloud_accounts(body.accounts)
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: format!("broker sync failed: {e}"),
+                }),
+            )
+        })?;
     Ok(Json(serde_json::json!({
         "ok": true,
         "pool_size": count,
@@ -4644,7 +4165,6 @@ async fn broker_status_handler(
 ) -> Json<desktop_core::codex_broker::BrokerPublicStatus> {
     Json(state.broker().public_status())
 }
-
 
 pub async fn serve(state: AppState, address: SocketAddr) -> std::io::Result<()> {
     // The graceful-shutdown future fires when the cancel token owned
@@ -4857,10 +4377,7 @@ mod tests {
         assert_eq!(response.status(), reqwest::StatusCode::BAD_REQUEST);
         let err: serde_json::Value = response.json().await.expect("json");
         assert!(
-            err["error"]
-                .as_str()
-                .unwrap_or("")
-                .contains(".."),
+            err["error"].as_str().unwrap_or("").contains(".."),
             "expected traversal error, got: {err}"
         );
     }
@@ -4918,10 +4435,7 @@ mod tests {
         assert_eq!(response.status(), reqwest::StatusCode::BAD_REQUEST);
         let err: serde_json::Value = response.json().await.expect("json");
         assert!(
-            err["error"]
-                .as_str()
-                .unwrap_or("")
-                .contains("requestId"),
+            err["error"].as_str().unwrap_or("").contains("requestId"),
             "expected requestId error, got: {err}"
         );
     }
@@ -4984,8 +4498,7 @@ mod tests {
             "expected 413 for oversized attachment"
         );
 
-        let error: serde_json::Value =
-            response.json().await.expect("error payload");
+        let error: serde_json::Value = response.json().await.expect("error payload");
         let msg = error["error"].as_str().unwrap_or("");
         assert!(
             msg.contains("too large"),
@@ -5114,15 +4627,15 @@ mod tests {
         let score = sources[1]["relevance_score"]
             .as_f64()
             .expect("relevance_score should be a number");
-        assert!(
-            (score - 0.52).abs() < 1e-5,
-            "expected ≈0.52, got {score}"
-        );
+        assert!((score - 0.52).abs() < 1e-5, "expected ≈0.52, got {score}");
     }
 
     #[test]
     fn query_done_payload_keeps_empty_sources_array() {
-        let result = QueryResult { sources: vec![], total_tokens: 0 };
+        let result = QueryResult {
+            sources: vec![],
+            total_tokens: 0,
+        };
         let payload = make_query_done_payload(&result);
         assert_eq!(payload["type"], "query_done");
         assert_eq!(payload["total_tokens"], 0);
@@ -5143,9 +4656,7 @@ mod tests {
 
     #[test]
     fn query_error_payload_preserves_join_error_message() {
-        let payload = make_query_error_payload(
-            "query task failed: JoinError::Panic(...)",
-        );
+        let payload = make_query_error_payload("query task failed: JoinError::Panic(...)");
         assert!(payload["error"]
             .as_str()
             .unwrap()
@@ -5180,9 +4691,7 @@ mod tests {
 
     impl WikiSandbox {
         fn new() -> Self {
-            let lock = ABSORB_TEST_GUARD
-                .lock()
-                .unwrap_or_else(|p| p.into_inner());
+            let lock = ABSORB_TEST_GUARD.lock().unwrap_or_else(|p| p.into_inner());
             let tempdir = tempfile::tempdir().expect("tempdir");
             let prev = std::env::var_os("CLAWWIKI_HOME");
             std::env::set_var("CLAWWIKI_HOME", tempdir.path());
@@ -5478,7 +4987,14 @@ fn redact_api_key_for_display(key: &str) -> String {
         return "***".to_string();
     }
     let prefix: String = key.chars().take(4).collect();
-    let suffix: String = key.chars().rev().take(4).collect::<Vec<_>>().into_iter().rev().collect();
+    let suffix: String = key
+        .chars()
+        .rev()
+        .take(4)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect();
     format!("{prefix}...{suffix} ({len} chars)")
 }
 
@@ -5506,9 +5022,8 @@ fn resolve_project_path_for_providers(
 ) -> Result<std::path::PathBuf, ApiError> {
     if let Some(raw) = provided {
         if !raw.trim().is_empty() {
-            return desktop_core::validate_project_path(raw).map_err(|e| {
-                (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e }))
-            });
+            return desktop_core::validate_project_path(raw)
+                .map_err(|e| (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })));
         }
     }
     std::env::current_dir().map_err(|e| {
@@ -5524,9 +5039,8 @@ fn resolve_project_path_for_providers(
 async fn list_providers_handler(
     Query(params): Query<std::collections::HashMap<String, String>>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let project = resolve_project_path_for_providers(
-        params.get("project_path").map(String::as_str),
-    )?;
+    let project =
+        resolve_project_path_for_providers(params.get("project_path").map(String::as_str))?;
     let config = desktop_core::providers_config::load(&project).map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -5562,9 +5076,8 @@ async fn upsert_provider_handler(
                 }),
             )
         })?;
-    let project = resolve_project_path_for_providers(
-        body.get("project_path").and_then(|v| v.as_str()),
-    )?;
+    let project =
+        resolve_project_path_for_providers(body.get("project_path").and_then(|v| v.as_str()))?;
     let entry_json = body.get("entry").cloned().ok_or_else(|| {
         (
             StatusCode::BAD_REQUEST,
@@ -5624,9 +5137,8 @@ async fn delete_provider_handler(
     Path(id): Path<String>,
     Query(params): Query<std::collections::HashMap<String, String>>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let project = resolve_project_path_for_providers(
-        params.get("project_path").map(String::as_str),
-    )?;
+    let project =
+        resolve_project_path_for_providers(params.get("project_path").map(String::as_str))?;
     let mut config = desktop_core::providers_config::load(&project).map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -5662,9 +5174,8 @@ async fn activate_provider_handler(
     Path(id): Path<String>,
     Query(params): Query<std::collections::HashMap<String, String>>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let project = resolve_project_path_for_providers(
-        params.get("project_path").map(String::as_str),
-    )?;
+    let project =
+        resolve_project_path_for_providers(params.get("project_path").map(String::as_str))?;
     let mut config = desktop_core::providers_config::load(&project).map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -5699,9 +5210,8 @@ async fn test_provider_handler(
     Path(id): Path<String>,
     Query(params): Query<std::collections::HashMap<String, String>>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let project = resolve_project_path_for_providers(
-        params.get("project_path").map(String::as_str),
-    )?;
+    let project =
+        resolve_project_path_for_providers(params.get("project_path").map(String::as_str))?;
     let config = desktop_core::providers_config::load(&project).map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -5774,7 +5284,9 @@ async fn migrate_storage_handler(
     if new_path.is_empty() {
         return Err((
             StatusCode::BAD_REQUEST,
-            Json(ErrorResponse { error: "new_path must not be empty".to_string() }),
+            Json(ErrorResponse {
+                error: "new_path must not be empty".to_string(),
+            }),
         ));
     }
 
@@ -5782,10 +5294,17 @@ async fn migrate_storage_handler(
     let target = std::path::PathBuf::from(&new_path);
 
     // Don't overwrite an existing non-empty directory
-    if target.exists() && target.read_dir().map(|mut d| d.next().is_some()).unwrap_or(false) {
+    if target.exists()
+        && target
+            .read_dir()
+            .map(|mut d| d.next().is_some())
+            .unwrap_or(false)
+    {
         return Err((
             StatusCode::CONFLICT,
-            Json(ErrorResponse { error: format!("目标目录 {} 已存在且非空", new_path) }),
+            Json(ErrorResponse {
+                error: format!("目标目录 {} 已存在且非空", new_path),
+            }),
         ));
     }
 
@@ -5811,7 +5330,9 @@ async fn migrate_storage_handler(
     let file_count = copy_dir_recursive(&current_root, &target).map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ErrorResponse { error: format!("迁移失败: {e}") }),
+            Json(ErrorResponse {
+                error: format!("迁移失败: {e}"),
+            }),
         )
     })?;
 
@@ -5872,17 +5393,17 @@ async fn markitdown_convert_handler(
         .map_err(|e| {
             (
                 StatusCode::BAD_REQUEST,
-                Json(ErrorResponse { error: format!("{e}") }),
+                Json(ErrorResponse {
+                    error: format!("{e}"),
+                }),
             )
         })?;
 
     // Optionally ingest into Raw Library
     let raw_id = if body.ingest {
         let paths = resolve_wiki_root_for_handler()?;
-        let frontmatter = wiki_store::RawFrontmatter::for_paste(
-            &result.source,
-            result.source_url.clone(),
-        );
+        let frontmatter =
+            wiki_store::RawFrontmatter::for_paste(&result.source, result.source_url.clone());
         match wiki_store::write_raw_entry(
             &paths,
             &result.source,
@@ -5926,7 +5447,9 @@ struct WechatFetchRequest {
     #[serde(default)]
     force: bool,
 }
-fn default_true() -> bool { true }
+fn default_true() -> bool {
+    true
+}
 
 /// `POST /api/desktop/wechat-fetch`
 ///
@@ -5946,7 +5469,9 @@ async fn wechat_fetch_handler(
     if url.is_empty() {
         return Err((
             StatusCode::BAD_REQUEST,
-            Json(ErrorResponse { error: "url must not be empty".to_string() }),
+            Json(ErrorResponse {
+                error: "url must not be empty".to_string(),
+            }),
         ));
     }
 
@@ -5958,7 +5483,9 @@ async fn wechat_fetch_handler(
             .map_err(|e| {
                 (
                     StatusCode::BAD_REQUEST,
-                    Json(ErrorResponse { error: format!("{e}") }),
+                    Json(ErrorResponse {
+                        error: format!("{e}"),
+                    }),
                 )
             })?;
 
@@ -6051,7 +5578,9 @@ async fn wechat_fetch_handler(
         }
         desktop_core::url_ingest::IngestOutcome::FetchFailed { error } => Err((
             StatusCode::BAD_REQUEST,
-            Json(ErrorResponse { error: format!("{error}") }),
+            Json(ErrorResponse {
+                error: format!("{error}"),
+            }),
         )),
         desktop_core::url_ingest::IngestOutcome::InvalidUrl { reason } => Err((
             StatusCode::BAD_REQUEST,
@@ -6211,9 +5740,7 @@ async fn recent_ingest_handler(
             .unwrap_or(e.outcome_kind.as_str())
             .to_string();
         *stats_by_kind.entry(kind_key).or_insert(0) += 1;
-        *stats_by_entry
-            .entry(e.entry_point.clone())
-            .or_insert(0) += 1;
+        *stats_by_entry.entry(e.entry_point.clone()).or_insert(0) += 1;
     }
 
     let total = filtered.len();
@@ -6429,7 +5956,9 @@ struct InstallDepsRequest {
     #[serde(default = "default_pkg_all")]
     package: String,
 }
-fn default_pkg_all() -> String { "all".to_string() }
+fn default_pkg_all() -> String {
+    "all".to_string()
+}
 
 async fn install_python_deps_handler(
     Json(body): Json<InstallDepsRequest>,
@@ -6437,7 +5966,10 @@ async fn install_python_deps_handler(
     let mut steps: Vec<serde_json::Value> = Vec::new();
     let mut all_ok = true;
 
-    let py = tokio::process::Command::new("python").args(["--version"]).output().await;
+    let py = tokio::process::Command::new("python")
+        .args(["--version"])
+        .output()
+        .await;
     match py {
         Ok(o) if o.status.success() => {
             steps.push(serde_json::json!({"step":"python","ok":true,"output":String::from_utf8_lossy(&o.stdout).trim().to_string()}));
@@ -6449,32 +5981,69 @@ async fn install_python_deps_handler(
     }
 
     if body.package == "markitdown" || body.package == "all" {
-        let o = tokio::process::Command::new("python").args(["-m","pip","install","--upgrade","markitdown[all]"]).output().await
-            .map_err(|e|(StatusCode::INTERNAL_SERVER_ERROR,Json(ErrorResponse{error:format!("{e}")})))?;
+        let o = tokio::process::Command::new("python")
+            .args(["-m", "pip", "install", "--upgrade", "markitdown[all]"])
+            .output()
+            .await
+            .map_err(|e| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: format!("{e}"),
+                    }),
+                )
+            })?;
         let ok = o.status.success();
-        if !ok { all_ok = false; }
+        if !ok {
+            all_ok = false;
+        }
         steps.push(serde_json::json!({"step":"markitdown","ok":ok,"output":format!("{}\n{}",String::from_utf8_lossy(&o.stdout),String::from_utf8_lossy(&o.stderr)).trim().to_string()}));
     }
 
     if body.package == "playwright" || body.package == "all" {
-        let o1 = tokio::process::Command::new("python").args(["-m","pip","install","--upgrade","playwright"]).output().await
-            .map_err(|e|(StatusCode::INTERNAL_SERVER_ERROR,Json(ErrorResponse{error:format!("{e}")})))?;
-        let o2 = tokio::process::Command::new("python").args(["-m","playwright","install","chromium"]).output().await
-            .map_err(|e|(StatusCode::INTERNAL_SERVER_ERROR,Json(ErrorResponse{error:format!("{e}")})))?;
+        let o1 = tokio::process::Command::new("python")
+            .args(["-m", "pip", "install", "--upgrade", "playwright"])
+            .output()
+            .await
+            .map_err(|e| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: format!("{e}"),
+                    }),
+                )
+            })?;
+        let o2 = tokio::process::Command::new("python")
+            .args(["-m", "playwright", "install", "chromium"])
+            .output()
+            .await
+            .map_err(|e| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: format!("{e}"),
+                    }),
+                )
+            })?;
         let ok = o1.status.success() && o2.status.success();
-        if !ok { all_ok = false; }
+        if !ok {
+            all_ok = false;
+        }
         steps.push(serde_json::json!({"step":"playwright","ok":ok}));
     }
 
     Ok(Json(serde_json::json!({"ok":all_ok,"steps":steps})))
 }
 
-async fn delete_wiki_raw_handler(
-    Path(id): Path<u32>,
-) -> Result<Json<serde_json::Value>, ApiError> {
+async fn delete_wiki_raw_handler(Path(id): Path<u32>) -> Result<Json<serde_json::Value>, ApiError> {
     let paths = resolve_wiki_root_for_handler()?;
     wiki_store::delete_raw_entry(&paths, id).map_err(|e| {
-        (StatusCode::NOT_FOUND, Json(ErrorResponse { error: format!("{e}") }))
+        (
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse {
+                error: format!("{e}"),
+            }),
+        )
     })?;
     Ok(Json(serde_json::json!({ "ok": true, "deleted": id })))
 }
@@ -6557,8 +6126,7 @@ async fn absorb_handler(
     // un-absorbed raw entries.
     let entry_ids: Vec<u32> = if let Some(ids) = body.entry_ids {
         // 404 ENTRIES_NOT_FOUND
-        let existing: std::collections::HashSet<u32> =
-            raws.iter().map(|r| r.id).collect();
+        let existing: std::collections::HashSet<u32> = raws.iter().map(|r| r.id).collect();
         let missing: Vec<u32> = ids
             .iter()
             .copied()
@@ -6576,8 +6144,7 @@ async fn absorb_handler(
     } else if let Some(range) = &body.date_range {
         raws.iter()
             .filter(|r| {
-                r.date.as_str() >= range.from.as_str()
-                    && r.date.as_str() <= range.to.as_str()
+                r.date.as_str() >= range.from.as_str() && r.date.as_str() <= range.to.as_str()
             })
             .filter(|r| !wiki_store::is_entry_absorbed(&paths, r.id))
             .map(|r| r.id)
@@ -6603,11 +6170,7 @@ async fn absorb_handler(
 
     // ── 409 ABSORB_IN_PROGRESS (TaskManager per-kind gate) ──
     let desktop_state = state.desktop().clone();
-    let (task_id, cancel_token) = match desktop_state
-        .task_manager()
-        .register("absorb")
-        .await
-    {
+    let (task_id, cancel_token) = match desktop_state.task_manager().register("absorb").await {
         Ok(pair) => pair,
         Err(_) => {
             return Err((
@@ -6629,8 +6192,7 @@ async fn absorb_handler(
     // subscribed to `/api/desktop/sessions/{id}/events` then receives
     // the event regardless of which session they opened — matching
     // §2.1 "SSE 事件 (通过 /api/desktop/sessions/{id}/events)".
-    let (tx, mut rx) =
-        tokio::sync::mpsc::channel::<wiki_maintainer::AbsorbProgressEvent>(64);
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<wiki_maintainer::AbsorbProgressEvent>(64);
     let bridge_state = desktop_state.clone();
     tokio::spawn(async move {
         while let Some(ev) = rx.recv().await {
@@ -6683,10 +6245,7 @@ async fn absorb_handler(
                 );
             }
             Err(e) => {
-                log::warn!(
-                    "[absorb] task {} errored: {e}",
-                    task_id_for_complete
-                );
+                log::warn!("[absorb] task {} errored: {e}", task_id_for_complete);
                 // Still emit AbsorbComplete so the UI tears down the
                 // progress UI; mark the whole batch as one failed.
                 complete_state
@@ -6763,7 +6322,14 @@ struct QueryWikiRequest {
 async fn query_wiki_handler(
     State(_state): State<AppState>,
     Json(body): Json<QueryWikiRequest>,
-) -> Result<axum::response::sse::Sse<impl futures::stream::Stream<Item = std::result::Result<axum::response::sse::Event, std::convert::Infallible>>>, ApiError> {
+) -> Result<
+    axum::response::sse::Sse<
+        impl futures::stream::Stream<
+            Item = std::result::Result<axum::response::sse::Event, std::convert::Infallible>,
+        >,
+    >,
+    ApiError,
+> {
     use axum::response::sse::{Event, Sse};
 
     let question = body.question.trim().to_string();
@@ -6797,14 +6363,7 @@ async fn query_wiki_handler(
     let paths_clone = paths.clone();
     let question_clone = question.clone();
     let query_task = tokio::spawn(async move {
-        wiki_maintainer::query_wiki(
-            &paths_clone,
-            &question_clone,
-            max_sources,
-            &adapter,
-            tx,
-        )
-        .await
+        wiki_maintainer::query_wiki(&paths_clone, &question_clone, max_sources, &adapter, tx).await
     });
 
     // SSE stream: forward chunks from rx, then emit exactly one of
@@ -6868,12 +6427,14 @@ async fn cleanup_handler() -> Result<Json<serde_json::Value>, ApiError> {
     let paths = resolve_wiki_root_for_handler()?;
     let config = wiki_patrol::PatrolConfig {
         stale_threshold_days: 30,
-        min_page_words: 50,  // cleanup uses higher threshold than patrol
+        min_page_words: 50, // cleanup uses higher threshold than patrol
         max_page_words: 3000,
     };
     let report = wiki_patrol::run_full_patrol(&paths, &config);
     let _ = wiki_store::save_patrol_report(&paths, &report);
-    Ok(Json(serde_json::to_value(&report).unwrap_or(serde_json::Value::Null)))
+    Ok(Json(
+        serde_json::to_value(&report).unwrap_or(serde_json::Value::Null),
+    ))
 }
 
 // ── §2.4 POST /api/wiki/patrol ──────────────────────────────────────
@@ -6970,13 +6531,15 @@ async fn get_backlinks_index_handler(
             let enriched: Vec<serde_json::Value> = backlinks
                 .iter()
                 .filter_map(|s| {
-                    wiki_store::read_wiki_page(&paths, s).ok().map(|(summary, _)| {
-                        serde_json::json!({
-                            "slug": s,
-                            "title": summary.title,
-                            "category": summary.category,
+                    wiki_store::read_wiki_page(&paths, s)
+                        .ok()
+                        .map(|(summary, _)| {
+                            serde_json::json!({
+                                "slug": s,
+                                "title": summary.title,
+                                "category": summary.category,
+                            })
                         })
-                    })
                 })
                 .collect();
             Ok(Json(serde_json::json!({
@@ -7018,7 +6581,9 @@ async fn get_stats_handler() -> Result<Json<serde_json::Value>, ApiError> {
             }),
         )
     })?;
-    Ok(Json(serde_json::to_value(&stats).unwrap_or(serde_json::Value::Null)))
+    Ok(Json(
+        serde_json::to_value(&stats).unwrap_or(serde_json::Value::Null),
+    ))
 }
 
 // ── §2.8 GET /api/wiki/patrol/report ────────────────────────────────
@@ -7036,7 +6601,9 @@ async fn get_patrol_report_handler() -> Result<Json<serde_json::Value>, ApiError
         )
     })?;
     match report {
-        Some(r) => Ok(Json(serde_json::to_value(&r).unwrap_or(serde_json::Value::Null))),
+        Some(r) => Ok(Json(
+            serde_json::to_value(&r).unwrap_or(serde_json::Value::Null),
+        )),
         None => Ok(Json(serde_json::Value::Null)),
     }
 }
@@ -7060,5 +6627,7 @@ async fn get_schema_templates_handler() -> Result<Json<serde_json::Value>, ApiEr
             }),
         )
     })?;
-    Ok(Json(serde_json::to_value(&infos).unwrap_or(serde_json::json!([]))))
+    Ok(Json(
+        serde_json::to_value(&infos).unwrap_or(serde_json::json!([])),
+    ))
 }

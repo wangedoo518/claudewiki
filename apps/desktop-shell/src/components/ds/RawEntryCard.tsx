@@ -44,7 +44,7 @@ import {
   X,
   ChevronDown,
 } from "lucide-react";
-import type { RawEntry } from "@/features/ingest/types";
+import type { RawEntry } from "@/api/wiki/types";
 import { RawLineageBadge } from "@/features/raw/RawLineageBadge";
 import {
   SourceIcon,

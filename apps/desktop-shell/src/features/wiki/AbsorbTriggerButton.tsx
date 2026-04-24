@@ -11,7 +11,7 @@ import { useCallback } from "react";
 import { Loader2, Sparkles } from "lucide-react";
 import { toast } from "sonner";
 
-import { triggerAbsorb } from "@/features/ingest/persist";
+import { triggerAbsorb } from "@/api/wiki/repository";
 import { useSkillStore } from "@/state/skill-store";
 
 interface AbsorbTriggerButtonProps {

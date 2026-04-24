@@ -12,7 +12,7 @@
  * The MVP constants live here so all 3 layers stay in sync.
  */
 
-import type { InboxEntry } from "@/features/ingest/types";
+import type { InboxEntry } from "@/api/wiki/types";
 import type { QueueIntelligence } from "@/features/inbox/queue-intelligence";
 import type { TargetCandidate } from "@/lib/tauri";
 

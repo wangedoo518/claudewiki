@@ -23,7 +23,7 @@ import {
   type BundleIneligibleReason,
 } from "./combined-proposal-rules";
 import type { QueueIntelligence } from "./queue-intelligence";
-import type { InboxEntry } from "@/features/ingest/types";
+import type { InboxEntry } from "@/api/wiki/types";
 
 // ── Local vitest ambient globals (drop once vitest is installed) ───
 

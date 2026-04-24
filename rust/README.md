@@ -35,6 +35,10 @@ Current upstream pin:
 - Open Claude Code should keep Rust changes scoped to downstream integration concerns unless there is a deliberate upstreaming plan.
 - If you need the Rust CLI binary itself, build it from `claw-code-parity`, not from this repository.
 - Local LLM provider fallback is configured via `.claw/providers.json`; the maintainer adapter searches from the process cwd upward so a repository-root config still works when the desktop server starts from a nested app directory.
+- `desktop-server` route assembly is split under `crates/desktop-server/src/routes/`
+  (`desktop`, `wiki`, `wechat`, `internal`). Handler bodies still live in
+  `lib.rs` until the lower-risk follow-up split moves DTOs and handlers by
+  domain.
 
 ## Build and verify
 

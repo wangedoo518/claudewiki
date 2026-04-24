@@ -23,11 +23,11 @@ import {
   Maximize2,
   Target,
 } from "lucide-react";
-import { listRawEntries, getRawEntry } from "@/features/ingest/persist";
+import { listRawEntries, getRawEntry } from "@/api/wiki/repository";
 import { ingestText } from "@/features/ingest/adapters/text";
 import { ingestUrl, type IngestUrlResult } from "@/features/ingest/adapters/url";
 import { fetchJson } from "@/lib/desktop/transport";
-import type { RawEntry } from "@/features/ingest/types";
+import type { RawEntry } from "@/api/wiki/types";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";

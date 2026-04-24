@@ -9,7 +9,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { Loader2, Network } from "lucide-react";
-import { getWikiGraph, listRawEntries } from "@/features/ingest/persist";
+import { getWikiGraph, listRawEntries } from "@/api/wiki/repository";
 import { EmptyState } from "@/components/ui/empty-state";
 import { ForceGraph } from "./ForceGraph";
 import { navigateToWikiPage } from "@/features/wiki/navigate-helpers";

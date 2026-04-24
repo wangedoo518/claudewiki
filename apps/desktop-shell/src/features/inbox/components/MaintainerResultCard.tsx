@@ -20,7 +20,7 @@
 import { Link } from "react-router-dom";
 import type { LucideIcon } from "lucide-react";
 import { CheckCircle2, XCircle, AlertTriangle, ExternalLink } from "lucide-react";
-import type { MaintainOutcome } from "@/features/ingest/types";
+import type { MaintainOutcome } from "@/api/wiki/types";
 import { FailureBanner } from "@/components/ui/failure-banner";
 
 export interface MaintainerResultCardProps {

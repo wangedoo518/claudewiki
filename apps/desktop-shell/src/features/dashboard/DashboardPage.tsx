@@ -51,7 +51,7 @@ import {
   getAbsorbLog,
   getPatrolReport,
   triggerPatrol,
-} from "@/features/ingest/persist";
+} from "@/api/wiki/repository";
 import { getBootstrap, getKefuStatus } from "@/features/settings/api/client";
 import { getBrokerStatus } from "@/features/settings/api/private-cloud";
 import { SkillCard } from "@/components/ds/SkillCard";

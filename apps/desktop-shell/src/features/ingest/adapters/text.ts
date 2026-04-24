@@ -8,8 +8,8 @@
 // Per canonical §11.2, more elaborate adapters (wechat-article via
 // defuddle, voice via whisper, image via Vision) ship in S6.
 
-import { ingestRawEntry } from "../persist";
-import type { RawEntry } from "../types";
+import { ingestRawEntry } from "@/api/wiki/repository";
+import type { RawEntry } from "@/api/wiki/types";
 
 export interface IngestTextInput {
   title: string;

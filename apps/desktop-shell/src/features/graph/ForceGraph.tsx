@@ -12,7 +12,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Search, X } from "lucide-react";
-import type { WikiGraphResponse, RawEntry } from "@/features/ingest/types";
+import type { WikiGraphResponse, RawEntry } from "@/api/wiki/types";
 
 /* ─── Types ───────────────────────────────────────────────────── */
 

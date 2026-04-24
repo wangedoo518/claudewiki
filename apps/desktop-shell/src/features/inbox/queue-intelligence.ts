@@ -29,7 +29,7 @@
  * plus score ordering in isolation.
  */
 
-import type { InboxEntry } from "@/features/ingest/types";
+import type { InboxEntry } from "@/api/wiki/types";
 import type { IngestDecision } from "@/lib/tauri";
 
 /**

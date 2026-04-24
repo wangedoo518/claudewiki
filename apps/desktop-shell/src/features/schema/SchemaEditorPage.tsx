@@ -37,7 +37,7 @@ import {
   X,
   CheckCircle2,
 } from "lucide-react";
-import { getWikiSchema, putWikiSchema } from "@/features/ingest/persist";
+import { getWikiSchema, putWikiSchema } from "@/api/wiki/repository";
 import { Textarea } from "@/components/ui/textarea";
 import { Button } from "@/components/ui/button";
 

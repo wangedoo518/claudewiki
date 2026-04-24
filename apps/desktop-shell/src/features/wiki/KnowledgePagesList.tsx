@@ -30,8 +30,8 @@ import { useMemo } from "react";
 import { useNavigate } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { BookOpen, FileText, Loader2, Hash } from "lucide-react";
-import { listWikiPages } from "@/features/ingest/persist";
-import type { WikiPageSummary } from "@/features/ingest/types";
+import { listWikiPages } from "@/api/wiki/repository";
+import type { WikiPageSummary } from "@/api/wiki/types";
 import { ListItem, type ListItemCategory } from "@/components/ds/ListItem";
 
 /* ── Category inference (slug-based best-effort) ─────────────────

@@ -25,7 +25,7 @@
 import { useState } from "react";
 import { Loader2, XCircle, Trash2, GitMerge } from "lucide-react";
 
-import { batchResolveInboxEntries } from "@/features/ingest/persist";
+import { batchResolveInboxEntries } from "@/api/wiki/repository";
 import {
   Dialog,
   DialogContent,

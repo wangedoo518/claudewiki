@@ -10,8 +10,8 @@ import ReactMarkdown from "react-markdown";
 import type { Components } from "react-markdown";
 import { MessageCircleQuestion } from "lucide-react";
 
-import { getWikiPage } from "@/features/ingest/persist";
-import type { WikiPageSummary } from "@/features/ingest/types";
+import { getWikiPage } from "@/api/wiki/repository";
+import type { WikiPageSummary } from "@/api/wiki/types";
 import {
   preprocessWikilinks,
   useWikiLinkRenderer,

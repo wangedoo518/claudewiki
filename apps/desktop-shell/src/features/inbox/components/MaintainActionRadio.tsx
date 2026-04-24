@@ -16,7 +16,7 @@
  */
 
 import type { ReactNode } from "react";
-import type { MaintainAction } from "@/features/ingest/types";
+import type { MaintainAction } from "@/api/wiki/types";
 
 /**
  * Ordered list of every `MaintainAction` — used by the radio group

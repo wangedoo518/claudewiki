@@ -32,7 +32,7 @@
 
 import { fetchJson } from "@/lib/desktop/transport";
 import type { IngestDecision } from "@/lib/tauri";
-import type { InboxEntry, RawEntry } from "../types";
+import type { InboxEntry, RawEntry } from "@/api/wiki/types";
 
 export interface IngestUrlInput {
   url: string;

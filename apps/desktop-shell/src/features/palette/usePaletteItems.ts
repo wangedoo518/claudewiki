@@ -56,12 +56,12 @@ import {
   CLAWWIKI_ROUTES,
   type ClawWikiRoute,
 } from "@/shell/clawwiki-routes";
-import { listInboxEntries, listRawEntries, listWikiPages } from "@/features/ingest/persist";
+import { listInboxEntries, listRawEntries, listWikiPages } from "@/api/wiki/repository";
 import type {
   InboxEntry,
   RawEntry,
   WikiPageSummary,
-} from "@/features/ingest/types";
+} from "@/api/wiki/types";
 import { useCommandPaletteStore } from "@/state/command-palette-store";
 import { useWikiTabStore } from "@/state/wiki-tab-store";
 import {

@@ -35,7 +35,7 @@ import {
   listInboxEntries,
   proposeForInboxEntry,
   resolveInboxEntry,
-} from "@/features/ingest/persist";
+} from "@/api/wiki/repository";
 import type {
   InboxEntry,
   InboxResolveAction,
@@ -44,7 +44,7 @@ import type {
   MaintainResponse,
   UpdateProposal,
   WikiPageProposal,
-} from "@/features/ingest/types";
+} from "@/api/wiki/types";
 import type { IngestDecision } from "@/lib/tauri";
 import {
   applyProposal,
@@ -86,7 +86,7 @@ import {
   type QueueIntelligence,
 } from "@/features/inbox/queue-intelligence";
 import type { TargetCandidate } from "@/lib/tauri";
-import { fetchInboxCandidates } from "@/features/ingest/persist";
+import { fetchInboxCandidates } from "@/api/wiki/repository";
 
 /** Q2 — Layer 1 duplicate-guard trigger threshold (inclusive). */
 const DUPLICATE_GUARD_SCORE_THRESHOLD = 75;

@@ -2,9 +2,9 @@ import { invoke } from "@tauri-apps/api/core";
 export { getDesktopApiBase } from "@/lib/desktop/bootstrap";
 // S0.4 cut day: workbench / session-workbench / code-tools api clients
 // were deleted along with their feature dirs. The post-cut session
-// lifecycle ops live under features/ask/api/client.ts now.
-export * from "@/features/ask/api/client";
-export * from "@/features/settings/api/client";
+// lifecycle ops live under the neutral API layer now.
+export * from "@/api/desktop/sessions";
+export * from "@/api/desktop/settings";
 
 export type DesktopTabKind =
   | "home"
@@ -1049,7 +1049,7 @@ export async function openclawGetDashboardUrl(): Promise<string> {
 // W1 Maintainer Workbench wrappers
 // ---------------------------------------------------------------------------
 //
-// Thin re-exports over `features/ingest/persist.ts` so call sites in
+// Thin re-exports over `api/wiki/repository.ts` so call sites in
 // the Inbox Workbench can import everything from `@/lib/tauri`
 // without depending on the ingest module structure. `fetchRawById` is
 // an alias for the existing `getRawEntry` detail fetch, returning
@@ -1061,7 +1061,7 @@ import {
   createProposal as _createProposal,
   applyProposal as _applyProposal,
   cancelProposal as _cancelProposal,
-} from "@/features/ingest/persist";
+} from "@/api/wiki/repository";
 import type {
   InboxEntry,
   MaintainAction,
@@ -1070,7 +1070,7 @@ import type {
   MaintainResponse,
   RawDetailResponse,
   UpdateProposal,
-} from "@/features/ingest/types";
+} from "@/api/wiki/types";
 
 // ── W1 Maintainer Workbench type mirrors (re-export + alias) ──────────
 //
@@ -1078,7 +1078,7 @@ import type {
 // / `InboxMaintainResponse` to match the handler function names in
 // `rust/crates/desktop-server/src/lib.rs`. The frontend types were
 // landed earlier under the shorter `MaintainRequest` / `MaintainResponse`
-// identifiers in `features/ingest/types.ts` — we alias both shapes
+// identifiers in `api/wiki/types.ts` — we alias both shapes
 // here so any caller that imports from `@/lib/tauri` gets the full
 // W1 vocabulary (MaintainAction, MaintainOutcome, InboxEntry +
 // request/response envelopes under both names).
@@ -1108,7 +1108,7 @@ export type { UpdateProposal };
 
 /**
  * Fetch a single raw entry by id, returning metadata + markdown body.
- * Alias of `getRawEntry` from `features/ingest/persist.ts` — exposed
+ * Alias of `getRawEntry` from `api/wiki/repository.ts` — exposed
  * here so the Workbench can pull it from a single import boundary.
  */
 export async function fetchRawById(id: number): Promise<RawDetailResponse> {

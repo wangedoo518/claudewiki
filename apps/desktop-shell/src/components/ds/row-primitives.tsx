@@ -48,7 +48,7 @@ import {
   File,
   FileText,
 } from "lucide-react";
-import type { InboxEntry } from "@/features/ingest/types";
+import type { InboxEntry } from "@/api/wiki/types";
 
 /* ─── Inbox status ──────────────────────────────────────────────── */
 

@@ -15,7 +15,7 @@ import {
   useWikiLinkRenderer,
 } from "./wiki-link-utils";
 import { useWikiTabStore } from "@/state/wiki-tab-store";
-import { getWikiIndex, getWikiLog, getWikiGraph, listRawEntries } from "@/features/ingest/persist";
+import { getWikiIndex, getWikiLog, getWikiGraph, listRawEntries } from "@/api/wiki/repository";
 import { ForceGraph } from "@/features/graph/ForceGraph";
 
 /* ── Index/Log special page ────────────────────────────────────── */

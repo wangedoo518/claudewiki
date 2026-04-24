@@ -149,7 +149,7 @@ async fn try_providers_json_chat_completion(
     for root in provider_config_candidate_roots() {
         let path = root.join(".claw").join("providers.json");
         let Ok(raw) = std::fs::read_to_string(&path) else { continue };
-        let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&raw) else { continue };
+        let Some(parsed) = parse_provider_config_json(&raw) else { continue };
         let Some(active_id) = parsed.get("active").and_then(|v| v.as_str()) else { continue };
         let Some(entry) = parsed.get("providers").and_then(|p| p.get(active_id)) else { continue };
         let kind = entry.get("kind").and_then(|v| v.as_str()).unwrap_or("");
@@ -204,6 +204,10 @@ async fn try_providers_json_chat_completion(
     None
 }
 
+fn parse_provider_config_json(raw: &str) -> Option<serde_json::Value> {
+    serde_json::from_str(raw.trim_start_matches('\u{feff}')).ok()
+}
+
 fn provider_config_candidate_roots() -> Vec<PathBuf> {
     std::env::current_dir()
         .map(|cwd| provider_config_candidate_roots_from(&cwd))
@@ -240,6 +244,16 @@ mod tests {
             roots.iter().any(|root| root == temp.path()),
             "candidate roots should include the repository/project root"
         );
+    }
+
+    #[test]
+    fn provider_config_parser_accepts_utf8_bom() {
+        let parsed = parse_provider_config_json(
+            "\u{feff}{\"active\":\"deepseek\",\"providers\":{\"deepseek\":{\"kind\":\"openai_compat\"}}}",
+        )
+        .expect("UTF-8 BOM should not hide an otherwise valid providers.json");
+
+        assert_eq!(parsed.get("active").and_then(|v| v.as_str()), Some("deepseek"));
     }
 
     #[cfg(feature = "private-cloud")]

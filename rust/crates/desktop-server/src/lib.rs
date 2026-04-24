@@ -4211,7 +4211,10 @@ mod tests {
         DesktopSessionsResponse, HealthResponse,
     };
     use reqwest::Client;
+    use std::env;
+    use std::fs;
     use std::net::SocketAddr;
+    use std::path::{Path, PathBuf};
     use tokio::net::TcpListener;
     use tokio::task::JoinHandle;
 
@@ -4263,6 +4266,62 @@ mod tests {
     }
 
     impl Drop for TestServer {
+        fn drop(&mut self) {
+            self.handle.abort();
+        }
+    }
+
+    struct MockOpenAiServer {
+        address: SocketAddr,
+        handle: JoinHandle<()>,
+    }
+
+    impl MockOpenAiServer {
+        async fn spawn(answer: impl Into<String>) -> Self {
+            async fn chat_completion(
+                axum::extract::State(answer): axum::extract::State<String>,
+            ) -> axum::Json<serde_json::Value> {
+                axum::Json(serde_json::json!({
+                    "id": "chatcmpl_desktop_server_test",
+                    "model": "mock-query-model",
+                    "choices": [{
+                        "message": {
+                            "role": "assistant",
+                            "content": answer,
+                            "tool_calls": []
+                        },
+                        "finish_reason": "stop"
+                    }],
+                    "usage": {
+                        "prompt_tokens": 11,
+                        "completion_tokens": 5
+                    }
+                }))
+            }
+
+            let listener = TcpListener::bind("127.0.0.1:0")
+                .await
+                .expect("mock provider should bind");
+            let address = listener
+                .local_addr()
+                .expect("mock provider should expose address");
+            let router = axum::Router::new()
+                .route("/chat/completions", axum::routing::post(chat_completion))
+                .with_state(answer.into());
+            let handle = tokio::spawn(async move {
+                axum::serve(listener, router)
+                    .await
+                    .expect("mock provider should run");
+            });
+            Self { address, handle }
+        }
+
+        fn base_url(&self) -> String {
+            format!("http://{}", self.address)
+        }
+    }
+
+    impl Drop for MockOpenAiServer {
         fn drop(&mut self) {
             self.handle.abort();
         }
@@ -4716,9 +4775,113 @@ mod tests {
         }
     }
 
-    /// Test 1 / 5 — POST /api/wiki/absorb happy path returns
-    /// `202 Accepted` + a canonical `absorb-{unix_secs}-{4hex}`
-    /// task_id + `total_entries: 0` when the entry list is empty.
+    // Sandbox for /api/wiki/query HTTP smoke: temp wiki root plus local providers.json.
+    struct WikiProviderSandbox {
+        tempdir: tempfile::TempDir,
+        prev_clawwiki_home: Option<std::ffi::OsString>,
+        prev_cwd: PathBuf,
+        _lock: std::sync::MutexGuard<'static, ()>,
+    }
+
+    impl WikiProviderSandbox {
+        fn new(provider_base_url: &str) -> Self {
+            let lock = ABSORB_TEST_GUARD.lock().unwrap_or_else(|p| p.into_inner());
+            let tempdir = tempfile::tempdir().expect("tempdir");
+            let prev_clawwiki_home = env::var_os("CLAWWIKI_HOME");
+            let prev_cwd = env::current_dir().expect("current dir");
+            let claw_dir = tempdir.path().join(".claw");
+            fs::create_dir_all(&claw_dir).expect(".claw dir");
+            fs::write(
+                claw_dir.join("providers.json"),
+                serde_json::json!({
+                    "version": 1,
+                    "active": "mock",
+                    "providers": {
+                        "mock": {
+                            "kind": "openai_compat",
+                            "display_name": "Mock Query Provider",
+                            "base_url": provider_base_url,
+                            "api_key": "test-key",
+                            "model": "mock-query-model",
+                            "max_tokens": 4096
+                        }
+                    }
+                })
+                .to_string(),
+            )
+            .expect("providers config");
+            env::set_var("CLAWWIKI_HOME", tempdir.path());
+            env::set_current_dir(tempdir.path()).expect("set temp cwd");
+            wiki_store::init_wiki(tempdir.path()).expect("init wiki");
+            Self {
+                tempdir,
+                prev_clawwiki_home,
+                prev_cwd,
+                _lock: lock,
+            }
+        }
+
+        fn root(&self) -> &Path {
+            self.tempdir.path()
+        }
+    }
+
+    impl Drop for WikiProviderSandbox {
+        fn drop(&mut self) {
+            let _ = env::set_current_dir(&self.prev_cwd);
+            if let Some(p) = &self.prev_clawwiki_home {
+                env::set_var("CLAWWIKI_HOME", p);
+            } else {
+                env::remove_var("CLAWWIKI_HOME");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn query_wiki_http_smoke_streams_chunks_done_and_sources() {
+        let provider = MockOpenAiServer::spawn("Transformer mock answer").await;
+        let sandbox = WikiProviderSandbox::new(&provider.base_url());
+        let paths = wiki_store::WikiPaths::resolve(sandbox.root());
+        wiki_store::write_wiki_page_in_category(
+            &paths,
+            "concept",
+            "transformer",
+            "Transformer Architecture",
+            "Self-attention based neural network.",
+            "# Transformer\n\nA Transformer uses self-attention to process sequences.",
+            Some(1),
+        )
+        .expect("seed wiki page");
+
+        let server = TestServer::spawn().await;
+        let client = Client::new();
+        let response = client
+            .post(server.url("/api/wiki/query"))
+            .json(&serde_json::json!({
+                "question": "What is a Transformer?",
+                "max_sources": 5
+            }))
+            .send()
+            .await
+            .expect("query POST");
+
+        assert_eq!(response.status(), reqwest::StatusCode::OK);
+        let body = response.text().await.expect("SSE body");
+        assert!(body.contains("event: skill"), "expected skill SSE events: {body}");
+        assert!(body.contains("\"type\":\"query_chunk\""), "missing query chunk: {body}");
+        assert!(
+            body.contains("Transformer mock answer"),
+            "mock provider answer should stream through: {body}"
+        );
+        assert!(body.contains("\"type\":\"query_done\""), "missing query_done: {body}");
+        assert!(body.contains("\"slug\":\"transformer\""), "missing source slug: {body}");
+        assert!(
+            body.contains("\"title\":\"Transformer Architecture\""),
+            "missing source title: {body}"
+        );
+    }
+
+    /// POST /api/wiki/absorb happy path returns 202 plus a canonical task id.
     #[tokio::test]
     async fn absorb_returns_202_with_task_id_for_empty_entry_ids() {
         let _sandbox = WikiSandbox::new();

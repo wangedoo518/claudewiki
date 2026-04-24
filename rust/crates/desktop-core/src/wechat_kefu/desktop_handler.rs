@@ -386,12 +386,7 @@ impl KefuDesktopHandler {
         };
 
         // Structured reply format.
-        let sources_section = if sources.is_empty() {
-            String::new()
-        } else {
-            let items: Vec<String> = sources.iter().map(|s| format!("• {}", s.title)).collect();
-            format!("\n\n📚 参考来源:\n{}", items.join("\n"))
-        };
+        let sources_section = format_query_sources_section(&sources);
 
         let reply = format!(
             "💡 {question}\n\n{answer}{sources_section}\n\n—— 基于 ClawWiki 知识库回答"
@@ -771,6 +766,18 @@ fn source_emoji(source: &str) -> &'static str {
     }
 }
 
+fn format_query_sources_section(sources: &[wiki_maintainer::QuerySource]) -> String {
+    if sources.is_empty() {
+        return String::new();
+    }
+
+    let items: Vec<String> = sources
+        .iter()
+        .map(|s| format!("• {} ({})", s.title, s.slug))
+        .collect();
+    format!("\n\n📚 参考来源:\n{}", items.join("\n"))
+}
+
 /// Delayed conflict check: wait for absorb to finish, then check inbox
 /// for new conflict entries and push a WeChat notification.
 /// Per 04-wechat-kefu.md §5.6 (方案 A).
@@ -783,21 +790,12 @@ async fn check_and_notify_conflicts(
     // Wait 5 seconds for absorb to process.
     tokio::time::sleep(std::time::Duration::from_secs(5)).await;
 
-    let inbox = match wiki_store::list_inbox_entries(paths) {
-        Ok(entries) => entries,
-        Err(_) => return,
-    };
-
-    let conflict_titles = pending_conflict_titles(inbox.iter());
-    let Some(msg) = format_conflict_notification(&conflict_titles) else {
+    let Some(msg) = conflict_notification_for_paths(paths) else {
         return;
     };
 
     let _ = client.send_text(userid, open_kfid, &msg).await;
-    eprintln!(
-        "[kefu handler] conflict notification sent ({} conflicts)",
-        conflict_titles.len()
-    );
+    eprintln!("[kefu handler] conflict notification sent");
 }
 
 fn pending_conflict_titles<'a>(
@@ -811,6 +809,12 @@ fn pending_conflict_titles<'a>(
         })
         .map(|e| e.title.clone())
         .collect()
+}
+
+fn conflict_notification_for_paths(paths: &wiki_store::WikiPaths) -> Option<String> {
+    let inbox = wiki_store::list_inbox_entries(paths).ok()?;
+    let conflict_titles = pending_conflict_titles(inbox.iter());
+    format_conflict_notification(&conflict_titles)
 }
 
 fn format_conflict_notification(conflict_titles: &[String]) -> Option<String> {
@@ -1067,6 +1071,80 @@ mod tests {
         assert!(reply.contains("• conflict-1"));
         assert!(reply.contains("• conflict-5"));
         assert!(!reply.contains("• conflict-6"));
+    }
+
+    #[test]
+    fn query_sources_section_includes_titles_and_slugs() {
+        let sources = vec![wiki_maintainer::QuerySource {
+            slug: "transformer".to_string(),
+            title: "Transformer Architecture".to_string(),
+            relevance_score: 0.91,
+            snippet: "self-attention".to_string(),
+        }];
+
+        let section = format_query_sources_section(&sources);
+
+        assert!(section.contains("参考来源"));
+        assert!(section.contains("Transformer Architecture"));
+        assert!(section.contains("(transformer)"));
+    }
+
+    #[test]
+    fn text_ingest_conflict_notification_reads_pending_conflicts() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        wiki_store::init_wiki(tmp.path()).expect("init wiki");
+        let paths = wiki_store::WikiPaths::resolve(tmp.path());
+        let raw = wiki_store::write_raw_entry(
+            &paths,
+            "wechat-text",
+            "kefu-note",
+            "A long enough text body from kefu.",
+            &wiki_store::RawFrontmatter::for_paste("wechat-text", None),
+        )
+        .expect("write raw");
+        wiki_store::append_new_raw_task(&paths, &raw, "WeChat kefu").expect("new raw task");
+        wiki_store::mark_conflict(
+            &paths,
+            "Conflict: transformer summary",
+            &["transformer".to_string()],
+            Some(raw.id),
+            "new text disagrees with existing page",
+        )
+        .expect("conflict task");
+
+        let reply = conflict_notification_for_paths(&paths).expect("conflict notification");
+
+        assert!(reply.contains("Conflict: transformer summary"));
+        assert!(reply.contains("1 "));
+    }
+
+    #[test]
+    fn url_ingest_conflict_notification_reads_pending_conflicts() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        wiki_store::init_wiki(tmp.path()).expect("init wiki");
+        let paths = wiki_store::WikiPaths::resolve(tmp.path());
+        let raw = wiki_store::write_raw_entry(
+            &paths,
+            "url",
+            "kefu-url",
+            &"Fetched article body from URL. ".repeat(12),
+            &wiki_store::RawFrontmatter::for_paste("url", Some("https://example.com/a".to_string())),
+        )
+        .expect("write raw");
+        wiki_store::append_new_raw_task(&paths, &raw, "WeChat kefu").expect("new raw task");
+        wiki_store::mark_conflict(
+            &paths,
+            "Conflict: url article",
+            &["article".to_string()],
+            Some(raw.id),
+            "new URL disagrees with existing page",
+        )
+        .expect("conflict task");
+
+        let reply = conflict_notification_for_paths(&paths).expect("conflict notification");
+
+        assert!(reply.contains("Conflict: url article"));
+        assert!(reply.contains("1 "));
     }
 
     #[test]

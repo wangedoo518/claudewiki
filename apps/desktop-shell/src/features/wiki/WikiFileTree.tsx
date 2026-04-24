@@ -3,7 +3,7 @@
  * Per 02-wiki-explorer.md §6.1 and component-spec.md §2.
  */
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import {
@@ -51,6 +51,10 @@ interface TreeNode {
   label: string;
   action: TreeNodeAction;
 }
+
+type VisibleTreeItem =
+  | { id: string; kind: "section"; section: TreeSection }
+  | { id: string; kind: "node"; node: TreeNode };
 
 /* ── Component ─────────────────────────────────────────────────── */
 export function WikiFileTree({ embedded = false }: { embedded?: boolean }) {
@@ -122,9 +126,9 @@ export function WikiFileTree({ embedded = false }: { embedded?: boolean }) {
       // category field from backend is "concept" not "concepts", etc.
       const catKey = cat === "concepts" ? "concept" : cat === "topics" ? "topic" : cat;
       const catPages = pages.filter(
-        (p) => (p as WikiPageSummary & { category?: string }).category === catKey ||
+        (p) => p.category === catKey ||
           // Fallback: if no category field, put under concepts
-          (!((p as WikiPageSummary & { category?: string }).category) && cat === "concepts"),
+          (!p.category && cat === "concepts"),
       );
 
       for (const p of catPages) {
@@ -182,6 +186,47 @@ export function WikiFileTree({ embedded = false }: { embedded?: boolean }) {
     return [inboxSection, rawSection, wikiSection, advancedSection];
   }, [rawData, pagesData, inboxData, filter]);
 
+  const visibleItems = useMemo<VisibleTreeItem[]>(() => {
+    const items: VisibleTreeItem[] = [];
+    for (const section of sections) {
+      items.push({ id: `section-${section.id}`, kind: "section", section });
+      if (expanded.has(section.id)) {
+        for (const node of section.children) {
+          items.push({ id: `node-${node.id}`, kind: "node", node });
+        }
+      }
+    }
+    return items;
+  }, [sections, expanded]);
+
+  const itemRefs = useRef(new Map<string, HTMLButtonElement>());
+  const [activeItemId, setActiveItemId] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!visibleItems.length) {
+      setActiveItemId(null);
+      return;
+    }
+    if (!activeItemId || !visibleItems.some((item) => item.id === activeItemId)) {
+      setActiveItemId(visibleItems[0].id);
+    }
+  }, [activeItemId, visibleItems]);
+
+  const setItemRef = (id: string) => (element: HTMLButtonElement | null) => {
+    if (element) itemRefs.current.set(id, element);
+    else itemRefs.current.delete(id);
+  };
+
+  const focusItem = (id: string) => {
+    setActiveItemId(id);
+    window.requestAnimationFrame(() => {
+      itemRefs.current.get(id)?.focus();
+    });
+  };
+
+  const isTabStop = (id: string) =>
+    activeItemId ? activeItemId === id : visibleItems[0]?.id === id;
+
   /* ── Handlers ──────────────────────────────────────────────── */
   const toggleSection = (id: string) => {
     setExpanded((prev) => {
@@ -218,6 +263,61 @@ export function WikiFileTree({ embedded = false }: { embedded?: boolean }) {
     }
   };
 
+  const handleTreeKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (event.altKey || event.ctrlKey || event.metaKey || !visibleItems.length) {
+      return;
+    }
+
+    const currentIndex = Math.max(
+      0,
+      visibleItems.findIndex((item) => item.id === activeItemId),
+    );
+    const currentItem = visibleItems[currentIndex];
+
+    switch (event.key) {
+      case "ArrowDown": {
+        event.preventDefault();
+        const next = visibleItems[Math.min(currentIndex + 1, visibleItems.length - 1)];
+        focusItem(next.id);
+        break;
+      }
+      case "ArrowUp": {
+        event.preventDefault();
+        const previous = visibleItems[Math.max(currentIndex - 1, 0)];
+        focusItem(previous.id);
+        break;
+      }
+      case "Home":
+        event.preventDefault();
+        focusItem(visibleItems[0].id);
+        break;
+      case "End":
+        event.preventDefault();
+        focusItem(visibleItems[visibleItems.length - 1].id);
+        break;
+      case "ArrowRight":
+        if (
+          currentItem?.kind === "section" &&
+          !currentItem.section.linkTo &&
+          !expanded.has(currentItem.section.id)
+        ) {
+          event.preventDefault();
+          toggleSection(currentItem.section.id);
+        }
+        break;
+      case "ArrowLeft":
+        if (
+          currentItem?.kind === "section" &&
+          !currentItem.section.linkTo &&
+          expanded.has(currentItem.section.id)
+        ) {
+          event.preventDefault();
+          toggleSection(currentItem.section.id);
+        }
+        break;
+    }
+  };
+
   /* ── Render ────────────────────────────────────────────────── */
   return (
     <div className={
@@ -240,13 +340,18 @@ export function WikiFileTree({ embedded = false }: { embedded?: boolean }) {
       </div>
 
       {/* Tree sections */}
-      <div className="flex-1 overflow-y-auto px-1 pb-2">
+      <div className="flex-1 overflow-y-auto px-1 pb-2" onKeyDown={handleTreeKeyDown}>
         {sections.map((section) => (
           <div key={section.id} className="mb-1">
             {/* Section header */}
             <button
+              ref={setItemRef(`section-${section.id}`)}
+              tabIndex={isTabStop(`section-${section.id}`) ? 0 : -1}
               onClick={() => handleSectionClick(section)}
-              className="flex w-full items-center gap-1.5 rounded-md px-2 py-1 text-[12px] font-semibold text-[var(--color-sidebar-foreground)] hover:bg-[var(--color-sidebar-accent)] transition-colors"
+              onFocus={() => setActiveItemId(`section-${section.id}`)}
+              className={`flex w-full items-center gap-1.5 rounded-md px-2 py-1 text-[12px] font-semibold text-[var(--color-sidebar-foreground)] transition-colors hover:bg-[var(--color-sidebar-accent)] ${
+                activeItemId === `section-${section.id}` ? "bg-[var(--color-sidebar-accent)]" : ""
+              }`}
             >
               {!section.linkTo && (
                 <ChevronRight
@@ -279,8 +384,13 @@ export function WikiFileTree({ embedded = false }: { embedded?: boolean }) {
                 {section.children.map((node) => (
                   <button
                     key={node.id}
+                    ref={setItemRef(`node-${node.id}`)}
+                    tabIndex={isTabStop(`node-${node.id}`) ? 0 : -1}
                     onClick={() => handleNodeClick(node)}
-                    className="flex w-full items-center gap-1.5 rounded-md px-2 py-1 text-[12px] text-[var(--color-sidebar-foreground)] hover:bg-[var(--color-foreground)]/5 transition-colors truncate"
+                    onFocus={() => setActiveItemId(`node-${node.id}`)}
+                    className={`flex w-full items-center gap-1.5 truncate rounded-md px-2 py-1 text-[12px] text-[var(--color-sidebar-foreground)] transition-colors hover:bg-[var(--color-foreground)]/5 ${
+                      activeItemId === `node-${node.id}` ? "bg-[var(--color-foreground)]/5" : ""
+                    }`}
                   >
                     <FileCode2 className="size-3.5 shrink-0 text-[var(--color-muted-foreground)]" />
                     <span className="truncate">{node.label}</span>

@@ -11,7 +11,6 @@ import type { Components } from "react-markdown";
 import { MessageCircleQuestion } from "lucide-react";
 
 import { getWikiPage } from "@/api/wiki/repository";
-import type { WikiPageSummary } from "@/api/wiki/types";
 import {
   preprocessWikilinks,
   useWikiLinkRenderer,
@@ -40,6 +39,26 @@ const CATEGORY_STYLES: Record<string, string> = {
   topic: "bg-purple-500/10 text-purple-600 dark:text-purple-400",
   compare: "bg-yellow-500/10 text-yellow-600 dark:text-yellow-400",
 };
+
+function formatShortDate(value?: string | null): string | null {
+  if (!value) return null;
+  return value.slice(0, 10);
+}
+
+function confidenceMeta(value?: number): { label: string; className: string } | null {
+  if (typeof value !== "number" || !Number.isFinite(value)) return null;
+  const clamped = Math.max(0, Math.min(1, value));
+  const percent = Math.round(clamped * 100);
+  const tier =
+    clamped >= 0.85 ? "high" : clamped >= 0.5 ? "medium" : clamped > 0 ? "low" : "unknown";
+  const className =
+    tier === "high"
+      ? "border-emerald-500/25 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300"
+      : tier === "medium"
+        ? "border-amber-500/25 bg-amber-500/10 text-amber-700 dark:text-amber-300"
+        : "border-border bg-muted/60 text-muted-foreground";
+  return { label: `confidence ${percent}%`, className };
+}
 
 /* ── Markdown custom components ────────────────────────────────── */
 /**
@@ -99,10 +118,12 @@ export function WikiArticle({ slug }: WikiArticleProps) {
   }
 
   const { summary, body } = data;
-  const category = (summary as WikiPageSummary & { category?: string }).category ?? "concept";
+  const category = summary.category ?? "concept";
   const categoryStyle = CATEGORY_STYLES[category] ?? CATEGORY_STYLES.concept;
   const readingTime = estimateReadingTime(body);
   const expandedBody = preprocessWikilinks(body);
+  const confidence = confidenceMeta(summary.confidence);
+  const lastVerified = formatShortDate(summary.last_verified);
 
   return (
     <div className="mx-auto max-w-[720px] px-8 py-6">
@@ -120,6 +141,25 @@ export function WikiArticle({ slug }: WikiArticleProps) {
         <span>{summary.created_at?.slice(0, 10) ?? "—"}</span>
         <span>&middot;</span>
         <span>{readingTime} read</span>
+        {confidence && (
+          <>
+            <span>&middot;</span>
+            <span
+              className={`rounded border px-2 py-0.5 text-[10px] font-medium ${confidence.className}`}
+              title="Automatically computed from source count, freshness, and conflicts"
+            >
+              {confidence.label}
+            </span>
+          </>
+        )}
+        {lastVerified && (
+          <>
+            <span>&middot;</span>
+            <span title="Last verified by the maintainer pipeline">
+              verified {lastVerified}
+            </span>
+          </>
+        )}
         <button
           type="button"
           onClick={handleAsk}

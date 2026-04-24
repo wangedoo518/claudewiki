@@ -1480,6 +1480,9 @@ pub struct WikiPageSummary {
     /// v2: Confidence score [0.0, 1.0] from frontmatter.
     #[serde(default)]
     pub confidence: f32,
+    /// v2: ISO-8601 datetime when the page was last verified by maintenance.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_verified: Option<String>,
 }
 
 /// Validate a wiki page slug. Rules match `slugify` output plus the
@@ -1955,7 +1958,7 @@ pub fn list_backlinks(paths: &WikiPaths, target_slug: &str) -> Result<Vec<WikiPa
                 Ok(m) => m,
                 Err(_) => continue,
             };
-            let (title, summary, source_raw_id, created_at) =
+            let (title, summary, source_raw_id, created_at, last_verified) =
                 parse_wiki_frontmatter_fields(&content);
             // Parse confidence from frontmatter if present.
             let confidence = content.lines()
@@ -1972,6 +1975,7 @@ pub fn list_backlinks(paths: &WikiPaths, target_slug: &str) -> Result<Vec<WikiPa
                 byte_size: metadata.len(),
                 category: "concept".to_string(),
                 confidence,
+                last_verified,
             });
         }
     }
@@ -2147,7 +2151,7 @@ pub fn compute_related_pages(
     let target_content = fs::read_to_string(&target_path)
         .map_err(|e| WikiStoreError::io(target_path.clone(), e))?;
     let target_body = strip_frontmatter(&target_content);
-    let (_t_title, _t_summary, target_source_raw, _t_created) =
+    let (_t_title, _t_summary, target_source_raw, _t_created, _t_last_verified) =
         parse_wiki_frontmatter_fields(&target_content);
 
     // Build the target's outgoing link set, lowercased (the parser
@@ -2286,7 +2290,7 @@ pub fn get_page_graph(
     let content = fs::read_to_string(&target_path)
         .map_err(|e| WikiStoreError::io(target_path.clone(), e))?;
     let body = strip_frontmatter(&content);
-    let (title, summary, _source_raw, _created_at) =
+    let (title, summary, _source_raw, _created_at, _last_verified) =
         parse_wiki_frontmatter_fields(&content);
     let summary_opt = if summary.is_empty() {
         None
@@ -2430,7 +2434,7 @@ pub fn search_wiki_pages(paths: &WikiPaths, query: &str) -> Result<Vec<WikiSearc
             Ok(m) => m,
             Err(_) => continue,
         };
-        let (title, summary, source_raw_id, created_at) =
+        let (title, summary, source_raw_id, created_at, last_verified) =
             parse_wiki_frontmatter_fields(&content);
         let body = strip_frontmatter(&content);
 
@@ -2470,6 +2474,7 @@ pub fn search_wiki_pages(paths: &WikiPaths, query: &str) -> Result<Vec<WikiSearc
                 byte_size: metadata.len(),
                 category: "concept".to_string(),
                 confidence: 0.0,
+                last_verified,
             },
             score,
             snippet,
@@ -2573,8 +2578,10 @@ fn parse_wiki_file(path: &Path, slug: &str) -> Result<WikiPageSummary> {
     let content =
         fs::read_to_string(path).map_err(|e| WikiStoreError::io(path.to_path_buf(), e))?;
     let metadata = fs::metadata(path).map_err(|e| WikiStoreError::io(path.to_path_buf(), e))?;
-    let (title, summary, source_raw_id, created_at) = parse_wiki_frontmatter_fields(&content);
-    let confidence = content.lines()
+    let (title, summary, source_raw_id, created_at, last_verified) =
+        parse_wiki_frontmatter_fields(&content);
+    let confidence = content
+        .lines()
         .find(|l| l.trim_start().starts_with("confidence:"))
         .and_then(|l| l.split(':').nth(1)?.trim().parse::<f32>().ok())
         .unwrap_or(0.0);
@@ -2587,6 +2594,7 @@ fn parse_wiki_file(path: &Path, slug: &str) -> Result<WikiPageSummary> {
         byte_size: metadata.len(),
         category: "concept".to_string(), // overridden by list_all_wiki_pages
         confidence,
+        last_verified,
     })
 }
 
@@ -2594,11 +2602,14 @@ fn parse_wiki_file(path: &Path, slug: &str) -> Result<WikiPageSummary> {
 /// YAML frontmatter of a wiki page. Tolerant of missing fields —
 /// returns empty strings / `None` rather than erroring. Same
 /// defensive posture as `parse_frontmatter_fields` for raw entries.
-fn parse_wiki_frontmatter_fields(content: &str) -> (String, String, Option<u32>, String) {
+fn parse_wiki_frontmatter_fields(
+    content: &str,
+) -> (String, String, Option<u32>, String, Option<String>) {
     let mut title = String::new();
     let mut summary = String::new();
     let mut source_raw_id: Option<u32> = None;
     let mut created_at = String::new();
+    let mut last_verified: Option<String> = None;
     let mut in_frontmatter = false;
     for line in content.lines() {
         if line == "---" {
@@ -2619,9 +2630,11 @@ fn parse_wiki_frontmatter_fields(content: &str) -> (String, String, Option<u32>,
             source_raw_id = rest.trim().parse().ok();
         } else if let Some(rest) = line.strip_prefix("created_at: ") {
             created_at = rest.to_string();
+        } else if let Some(rest) = line.strip_prefix("last_verified: ") {
+            last_verified = Some(rest.to_string());
         }
     }
-    (title, summary, source_raw_id, created_at)
+    (title, summary, source_raw_id, created_at, last_verified)
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -4418,6 +4431,7 @@ pub fn update_page_confidence(paths: &WikiPaths, slug: &str, new_confidence: f32
     let page_path = find_page_file(paths, slug, &summary.category);
     let content = std::fs::read_to_string(&page_path)
         .map_err(|e| WikiStoreError::io(page_path.clone(), e))?;
+    let verified_at = now_iso8601();
 
     // Replace or insert confidence in frontmatter.
     let updated = if content.contains("confidence:") {
@@ -4437,6 +4451,24 @@ pub fn update_page_confidence(paths: &WikiPaths, slug: &str, new_confidence: f32
         content.replacen(
             "\n---\n",
             &format!("\nconfidence: {:.2}\n---\n", new_confidence),
+            1,
+        )
+    };
+    let updated = if updated.contains("last_verified:") {
+        let mut result = String::new();
+        for line in updated.lines() {
+            if line.trim_start().starts_with("last_verified:") {
+                result.push_str(&format!("last_verified: {verified_at}"));
+            } else {
+                result.push_str(line);
+            }
+            result.push('\n');
+        }
+        result
+    } else {
+        updated.replacen(
+            "\n---\n",
+            &format!("\nlast_verified: {verified_at}\n---\n"),
             1,
         )
     };

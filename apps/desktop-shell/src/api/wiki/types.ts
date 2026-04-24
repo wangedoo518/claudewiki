@@ -265,6 +265,9 @@ export interface WikiPageSummary {
   source_raw_id?: number | null;
   created_at: string;
   byte_size: number;
+  category?: "concept" | "people" | "topic" | "compare" | string;
+  confidence?: number;
+  last_verified?: string | null;
 }
 
 export interface WikiPagesListResponse {

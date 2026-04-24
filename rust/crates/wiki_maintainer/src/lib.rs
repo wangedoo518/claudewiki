@@ -3417,6 +3417,7 @@ mod tests {
             byte_size: 500,
             category: "concept".to_string(),
             confidence: 0.0,
+            last_verified: None,
         };
         let backlinks = wiki_store::BacklinksIndex::new();
         let score = compute_relevance("transformer", &page, &backlinks);
@@ -3435,6 +3436,7 @@ mod tests {
             byte_size: 500,
             category: "concept".to_string(),
             confidence: 0.0,
+            last_verified: None,
         };
         let backlinks = wiki_store::BacklinksIndex::new();
         let score = compute_relevance("完全不相关的问题", &page, &backlinks);
@@ -3454,6 +3456,7 @@ mod tests {
             byte_size: 500,
             category: "concept".to_string(),
             confidence: 0.0,
+            last_verified: None,
         };
         let mut backlinks = wiki_store::BacklinksIndex::new();
         backlinks.insert(

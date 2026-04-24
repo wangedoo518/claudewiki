@@ -29,6 +29,7 @@
 
 use api::{MessageRequest, MessageResponse};
 use async_trait::async_trait;
+use std::path::{Path, PathBuf};
 use wiki_maintainer::{BrokerSender, MaintainerError};
 
 #[cfg(feature = "private-cloud")]
@@ -145,12 +146,7 @@ async fn try_providers_json_chat_completion(
 ) -> Option<Result<MessageResponse, api::ApiError>> {
     use api::{AnthropicClient, AuthSource, OpenAiCompatClient, OpenAiCompatConfig};
 
-    let mut roots = Vec::new();
-    if let Ok(cwd) = std::env::current_dir() {
-        roots.push(cwd);
-    }
-
-    for root in &roots {
+    for root in provider_config_candidate_roots() {
         let path = root.join(".claw").join("providers.json");
         let Ok(raw) = std::fs::read_to_string(&path) else { continue };
         let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&raw) else { continue };
@@ -208,6 +204,16 @@ async fn try_providers_json_chat_completion(
     None
 }
 
+fn provider_config_candidate_roots() -> Vec<PathBuf> {
+    std::env::current_dir()
+        .map(|cwd| provider_config_candidate_roots_from(&cwd))
+        .unwrap_or_default()
+}
+
+fn provider_config_candidate_roots_from(start: &Path) -> Vec<PathBuf> {
+    start.ancestors().map(Path::to_path_buf).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -219,6 +225,21 @@ mod tests {
     #[cfg(feature = "private-cloud")]
     fn seed_test_key() {
         secure_storage::seed_key_for_test([11u8; 32]);
+    }
+
+    #[test]
+    fn provider_config_candidate_roots_walk_up_from_nested_cwd() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let nested = temp.path().join("apps").join("desktop-shell").join("src-tauri");
+        std::fs::create_dir_all(&nested).expect("nested dirs");
+
+        let roots = provider_config_candidate_roots_from(&nested);
+
+        assert_eq!(roots.first().map(PathBuf::as_path), Some(nested.as_path()));
+        assert!(
+            roots.iter().any(|root| root == temp.path()),
+            "candidate roots should include the repository/project root"
+        );
     }
 
     #[cfg(feature = "private-cloud")]

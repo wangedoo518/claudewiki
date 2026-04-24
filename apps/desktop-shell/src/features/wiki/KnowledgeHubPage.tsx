@@ -36,6 +36,7 @@ import { PillTabs } from "@/components/ds/PillTabs";
 import { KnowledgePagesList } from "./KnowledgePagesList";
 import { KnowledgeArticleView } from "./KnowledgeArticleView";
 import { AbsorbTriggerButton } from "./AbsorbTriggerButton";
+import { SkillProgressCard } from "./SkillProgressCard";
 
 type HubView = "pages" | "graph" | "raw";
 
@@ -148,6 +149,7 @@ export function KnowledgeHubPage() {
           </div>
         </div>
       </header>
+      <SkillProgressCard />
 
       {/* Body — one mounted tab at a time. */}
       <div

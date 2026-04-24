@@ -845,6 +845,26 @@ export interface DesktopDispatchItemResponse {
   item: DesktopDispatchItem;
 }
 
+export interface AbsorbProgressEvent {
+  task_id: string;
+  processed: number;
+  total: number;
+  current_entry_id: number;
+  action: string;
+  page_slug: string | null;
+  page_title: string | null;
+  error: string | null;
+}
+
+export interface AbsorbCompleteEvent {
+  task_id: string;
+  created: number;
+  updated: number;
+  skipped: number;
+  failed: number;
+  duration_ms: number;
+}
+
 export type DesktopSessionEvent =
   | {
       type: "snapshot";
@@ -877,7 +897,13 @@ export type DesktopSessionEvent =
       request_id: string;
       tool_name: string;
       tool_input: string;
-    };
+    }
+  | ({
+      type: "absorb_progress";
+    } & AbsorbProgressEvent)
+  | ({
+      type: "absorb_complete";
+    } & AbsorbCompleteEvent);
 
 
 // ---------------------------------------------------------------------------

@@ -19,6 +19,7 @@ import { ConnectWeChatModal } from "@/features/wechat-kefu/ConnectWeChatModal";
 import { ConnectWeChatPipelinePage } from "@/features/wechat-kefu/ConnectWeChatPipelinePage";
 import { ChannelStatusModal } from "@/features/wechat-kefu/ChannelStatusModal";
 import { CommandPalette } from "@/features/palette/CommandPalette";
+import { AbsorbEventsBridge } from "@/features/wiki/AbsorbEventsBridge";
 import { BrowserDrawer } from "@/components/BrowserDrawer";
 
 /**
@@ -78,6 +79,7 @@ export function ClawWikiShell() {
   return (
     <ErrorBoundary>
       <AskSessionProvider>
+        <AbsorbEventsBridge />
         <div className="ds-canvas flex h-screen overflow-hidden">
           <AppSidebar />
           <div className="relative flex min-w-0 flex-1 flex-col overflow-hidden">

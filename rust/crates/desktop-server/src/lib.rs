@@ -722,6 +722,7 @@ pub fn app(state: AppState) -> Router {
         )
         // ── v2 SKILL engine endpoints (technical-design.md §2.1-§2.9) ──
         .route("/api/wiki/absorb", post(absorb_handler))
+        .route("/api/wiki/absorb/events", get(stream_absorb_events_handler))
         .route("/api/wiki/query", post(query_wiki_handler))
         .route("/api/wiki/cleanup", post(cleanup_handler))
         .route("/api/wiki/patrol", post(patrol_handler))
@@ -1327,6 +1328,32 @@ async fn stream_session_events(
                         yield Ok::<Event, Infallible>(sse_event);
                     }
                 }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+            }
+        }
+    };
+
+    Ok(Sse::new(stream).keep_alive(KeepAlive::new().interval(Duration::from_secs(15))))
+}
+
+async fn stream_absorb_events_handler(
+    State(state): State<AppState>,
+) -> ApiResult<impl IntoResponse> {
+    let mut receiver = state.desktop().subscribe_skill_events();
+
+    let stream = stream! {
+        loop {
+            match receiver.recv().await {
+                Ok(event) => match event {
+                    DesktopSessionEvent::AbsorbProgress(_)
+                    | DesktopSessionEvent::AbsorbComplete { .. } => {
+                        if let Ok(sse_event) = to_sse_event(&event) {
+                            yield Ok::<Event, Infallible>(sse_event);
+                        }
+                    }
+                    _ => {}
+                },
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
             }
@@ -5214,6 +5241,51 @@ mod tests {
         assert!(parts[1].parse::<u64>().is_ok(), "ts segment: {}", parts[1]);
         assert_eq!(parts[2].len(), 4, "hex segment length: {}", parts[2]);
         assert!(parts[2].chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    #[tokio::test]
+    async fn absorb_events_stream_receives_global_absorb_complete() {
+        let server = TestServer::spawn().await;
+        let client = Client::new();
+
+        let mut response = client
+            .get(server.url("/api/wiki/absorb/events"))
+            .header(reqwest::header::ACCEPT, "text/event-stream")
+            .send()
+            .await
+            .expect("absorb events stream should connect");
+
+        assert_eq!(response.status(), reqwest::StatusCode::OK);
+
+        server
+            .state
+            .desktop()
+            .broadcast_session_event(desktop_core::DesktopSessionEvent::AbsorbComplete {
+                task_id: "absorb-test-stream".to_string(),
+                created: 1,
+                updated: 0,
+                skipped: 0,
+                failed: 0,
+                duration_ms: 7,
+            })
+            .await;
+
+        let mut body = String::new();
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while !body.contains("\"task_id\":\"absorb-test-stream\"") {
+                let chunk = response
+                    .chunk()
+                    .await
+                    .expect("stream chunk read should not error")
+                    .expect("stream should yield absorb event");
+                body.push_str(&String::from_utf8_lossy(&chunk));
+            }
+        })
+        .await
+        .expect("absorb event should arrive quickly");
+
+        assert!(body.contains("event: absorb_complete"));
+        assert!(body.contains("\"type\":\"absorb_complete\""));
     }
 
     /// Test 2 / 5 — POST /api/wiki/absorb returns `409 Conflict` +

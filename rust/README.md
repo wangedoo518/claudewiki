@@ -6,11 +6,16 @@ The shared Rust core lives upstream in [`wangedoo518/claw-code-parity`](https://
 
 ## Current crate layout
 
-This workspace currently builds only:
+This workspace currently builds:
 
 - `desktop-core` - desktop-facing session, provider, and persistence integration
 - `desktop-server` - HTTP server that exposes `desktop-core` to the shell
+- `desktop-cli` - local CLI client for desktop-server debugging and automation
 - `server` - lighter HTTP runtime surface used by Open Claude Code
+- `wiki_store` - ClawWiki on-disk raw/wiki/inbox/schema storage primitives
+- `wiki_ingest` - ingestion helpers for raw knowledge inputs
+- `wiki_maintainer` - LLM-backed absorb/query maintainer logic
+- `wiki_patrol` - patrol and quality-check scaffolding for later phases
 
 The following core crates are consumed from `claw-code-parity` as pinned Git dependencies:
 
@@ -29,6 +34,7 @@ Current upstream pin:
 - Core runtime, tool, provider, and plugin changes should be made in `claw-code-parity` first.
 - Open Claude Code should keep Rust changes scoped to downstream integration concerns unless there is a deliberate upstreaming plan.
 - If you need the Rust CLI binary itself, build it from `claw-code-parity`, not from this repository.
+- Local LLM provider fallback is configured via `.claw/providers.json`; the maintainer adapter searches from the process cwd upward so a repository-root config still works when the desktop server starts from a nested app directory.
 
 ## Build and verify
 

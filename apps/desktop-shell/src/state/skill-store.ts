@@ -6,14 +6,18 @@
 import { create } from "zustand";
 
 export interface AbsorbProgress {
+  task_id: string;
   processed: number;
   total: number;
   current_entry_id: number;
   action: string;
   page_slug: string | null;
+  page_title: string | null;
+  error: string | null;
 }
 
 export interface AbsorbResultData {
+  task_id?: string;
   created: number;
   updated: number;
   skipped: number;
@@ -45,27 +49,56 @@ export const useSkillStore = create<SkillStore>()((set) => ({
   absorbError: null,
 
   startAbsorb: (taskId) =>
-    set({
-      absorbRunning: true,
-      absorbTaskId: taskId,
-      absorbProgress: null,
-      absorbResult: null,
-      absorbError: null,
+    set((state) => {
+      if (state.absorbResult?.task_id === taskId) {
+        return state;
+      }
+      if (state.absorbTaskId === taskId) {
+        return {
+          ...state,
+          absorbRunning: true,
+          absorbError: null,
+        };
+      }
+      return {
+        absorbRunning: true,
+        absorbTaskId: taskId,
+        absorbProgress: null,
+        absorbResult: null,
+        absorbError: null,
+      };
     }),
 
   updateAbsorbProgress: (progress) =>
-    set({ absorbProgress: progress }),
+    set((state) => {
+      if (state.absorbTaskId && state.absorbTaskId !== progress.task_id) {
+        return state;
+      }
+      return {
+        absorbRunning: true,
+        absorbTaskId: progress.task_id,
+        absorbProgress: progress,
+        absorbError: null,
+      };
+    }),
 
   completeAbsorb: (result) =>
-    set({
-      absorbRunning: false,
-      absorbProgress: null,
-      absorbResult: result,
+    set((state) => {
+      if (result.task_id && state.absorbTaskId && state.absorbTaskId !== result.task_id) {
+        return state;
+      }
+      return {
+        absorbRunning: false,
+        absorbTaskId: null,
+        absorbProgress: null,
+        absorbResult: result,
+      };
     }),
 
   failAbsorb: (error) =>
     set({
       absorbRunning: false,
+      absorbTaskId: null,
       absorbProgress: null,
       absorbError: error,
     }),

@@ -1520,6 +1520,10 @@ pub struct DesktopState {
     /// `with_executor` so every `DesktopState` — Mock, Live, test —
     /// carries one.
     task_manager: Arc<absorb_task::TaskManager>,
+    /// Session-agnostic SKILL event stream. Unlike per-session SSE,
+    /// this channel works even when the user has not created/opened an
+    /// Ask session yet, which is the common `/wiki` absorb-trigger path.
+    skill_events: broadcast::Sender<DesktopSessionEvent>,
 }
 
 /// Handle to a running WeChat iLink monitor. Held inside
@@ -1702,6 +1706,10 @@ impl DesktopState {
             kefu_pipeline_cancel: Arc::new(RwLock::new(None)),
             shutdown_cancel: Arc::new(RwLock::new(None)),
             task_manager: Arc::new(absorb_task::TaskManager::new()),
+            skill_events: {
+                let (tx, _) = broadcast::channel(BROADCAST_CAPACITY);
+                tx
+            },
         }
     }
 
@@ -1711,6 +1719,14 @@ impl DesktopState {
     #[must_use]
     pub fn task_manager(&self) -> Arc<absorb_task::TaskManager> {
         self.task_manager.clone()
+    }
+
+    /// Subscribe to session-agnostic SKILL events such as absorb
+    /// progress/completion. This is intentionally separate from
+    /// `subscribe(session_id)` so wiki surfaces can show task progress
+    /// without creating an empty Ask session just to hold an SSE stream.
+    pub fn subscribe_skill_events(&self) -> broadcast::Receiver<DesktopSessionEvent> {
+        self.skill_events.subscribe()
     }
 
     /// Inject the server-level shutdown cancellation token. Call this
@@ -4734,6 +4750,7 @@ impl DesktopState {
     /// session). Slow receivers eventually see `Lagged` in their recv
     /// loop (handled by `stream_session_events`).
     pub async fn broadcast_session_event(&self, event: DesktopSessionEvent) {
+        let _ = self.skill_events.send(event.clone());
         let store = self.store.read().await;
         for record in store.sessions.values() {
             // Cloning the event per session is O(n) but the event
@@ -9546,5 +9563,29 @@ mod tests {
         };
         assert_eq!(progress.event_name(), "absorb_progress");
         assert_eq!(complete.event_name(), "absorb_complete");
+    }
+
+    #[tokio::test]
+    async fn skill_event_subscriber_receives_absorb_events_without_session() {
+        use super::{DesktopSessionEvent, DesktopState};
+
+        let state = DesktopState::default();
+        let mut rx = state.subscribe_skill_events();
+        let event = DesktopSessionEvent::AbsorbComplete {
+            task_id: "absorb-global-sse".to_string(),
+            created: 1,
+            updated: 2,
+            skipped: 3,
+            failed: 0,
+            duration_ms: 42,
+        };
+
+        state.broadcast_session_event(event.clone()).await;
+
+        let received = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
+            .await
+            .expect("skill event should arrive")
+            .expect("skill event channel should stay open");
+        assert_eq!(received, event);
     }
 }

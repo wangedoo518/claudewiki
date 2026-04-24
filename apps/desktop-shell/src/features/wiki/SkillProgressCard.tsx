@@ -1,6 +1,5 @@
 /**
- * SkillProgressCard — floating progress card for absorb operations.
- * Per component-spec.md §5.
+ * SkillProgressCard - floating progress card for absorb operations.
  */
 
 import { CheckCircle2, Loader2, XCircle } from "lucide-react";
@@ -13,13 +12,13 @@ export function SkillProgressCard() {
   const error = useSkillStore((s) => s.absorbError);
   const reset = useSkillStore((s) => s.resetAbsorb);
 
-  // Don't render if nothing to show.
   if (!running && !result && !error) return null;
 
   const percent =
     progress && progress.total > 0
       ? Math.round((progress.processed / progress.total) * 100)
       : 0;
+  const currentLabel = progress?.page_title ?? progress?.page_slug ?? null;
 
   return (
     <div
@@ -29,7 +28,6 @@ export function SkillProgressCard() {
         backdropFilter: "blur(12px) saturate(1.4)",
       }}
     >
-      {/* ── Running state ────────────────────────────────────── */}
       {running && (
         <>
           <div className="mb-2 flex items-center justify-between text-[12px] text-[var(--color-muted-foreground)]">
@@ -44,7 +42,6 @@ export function SkillProgressCard() {
             )}
           </div>
 
-          {/* Progress bar — component-spec.md §5.2 */}
           <div className="h-1 w-full overflow-hidden rounded-full bg-[var(--color-muted)]">
             <div
               className="h-full rounded-full bg-[var(--color-primary)] transition-[width] duration-300 ease-out"
@@ -52,28 +49,32 @@ export function SkillProgressCard() {
             />
           </div>
 
-          {/* Current action */}
-          {progress?.page_slug && (
+          {currentLabel && (
             <div className="mt-1.5 truncate text-[11px] text-[var(--color-muted-foreground)]">
-              {progress.action === "create" && "创建 "}
-              {progress.action === "update" && "更新 "}
-              {progress.action === "skip" && "跳过 "}
-              {progress.page_slug}
+              {progress?.action === "create" && "创建 "}
+              {progress?.action === "update" && "更新 "}
+              {progress?.action === "skip" && "跳过 "}
+              {currentLabel}
+            </div>
+          )}
+          {progress?.error && (
+            <div className="mt-1.5 truncate text-[11px] text-[var(--color-destructive)]">
+              {progress.error}
             </div>
           )}
         </>
       )}
 
-      {/* ── Completed state ──────────────────────────────────── */}
       {!running && result && (
-        <div className="flex items-center justify-between">
+        <div className="flex items-center justify-between gap-3">
           <span className="flex items-center gap-1.5 text-[12px] text-[var(--deeptutor-ok,#3F8F5E)]">
             <CheckCircle2 className="size-3.5" />
             维护完成
           </span>
-          <span className="text-[11px] text-[var(--color-muted-foreground)]">
+          <span className="min-w-0 flex-1 truncate text-right text-[11px] text-[var(--color-muted-foreground)]">
             新增 {result.created} 页 · 更新 {result.updated} 页
             {result.skipped > 0 && ` · 跳过 ${result.skipped}`}
+            {result.failed > 0 && ` · 失败 ${result.failed}`}
           </span>
           <button
             onClick={reset}
@@ -84,9 +85,8 @@ export function SkillProgressCard() {
         </div>
       )}
 
-      {/* ── Error state ──────────────────────────────────────── */}
       {!running && error && (
-        <div className="flex items-center justify-between">
+        <div className="flex items-center justify-between gap-3">
           <span className="flex items-center gap-1.5 text-[12px] text-[var(--color-destructive)]">
             <XCircle className="size-3.5" />
             维护失败

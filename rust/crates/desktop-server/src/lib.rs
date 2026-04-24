@@ -4837,6 +4837,46 @@ mod tests {
         }
     }
 
+    struct WikiNoProviderSandbox {
+        tempdir: tempfile::TempDir,
+        prev_clawwiki_home: Option<std::ffi::OsString>,
+        prev_cwd: PathBuf,
+        _lock: std::sync::MutexGuard<'static, ()>,
+    }
+
+    impl WikiNoProviderSandbox {
+        fn new() -> Self {
+            let lock = ABSORB_TEST_GUARD.lock().unwrap_or_else(|p| p.into_inner());
+            let tempdir = tempfile::tempdir().expect("tempdir");
+            let prev_clawwiki_home = env::var_os("CLAWWIKI_HOME");
+            let prev_cwd = env::current_dir().expect("current dir");
+            env::set_var("CLAWWIKI_HOME", tempdir.path());
+            env::set_current_dir(tempdir.path()).expect("set temp cwd");
+            wiki_store::init_wiki(tempdir.path()).expect("init wiki");
+            Self {
+                tempdir,
+                prev_clawwiki_home,
+                prev_cwd,
+                _lock: lock,
+            }
+        }
+
+        fn root(&self) -> &Path {
+            self.tempdir.path()
+        }
+    }
+
+    impl Drop for WikiNoProviderSandbox {
+        fn drop(&mut self) {
+            let _ = env::set_current_dir(&self.prev_cwd);
+            if let Some(p) = &self.prev_clawwiki_home {
+                env::set_var("CLAWWIKI_HOME", p);
+            } else {
+                env::remove_var("CLAWWIKI_HOME");
+            }
+        }
+    }
+
     #[tokio::test]
     async fn query_wiki_http_smoke_streams_chunks_done_and_sources() {
         let provider = MockOpenAiServer::spawn("Transformer mock answer").await;
@@ -4913,6 +4953,39 @@ mod tests {
         assert!(parts[1].parse::<u64>().is_ok(), "ts segment: {}", parts[1]);
         assert_eq!(parts[2].len(), 4, "hex segment length: {}", parts[2]);
         assert!(parts[2].chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    #[tokio::test]
+    async fn absorb_returns_503_when_provider_missing_for_non_empty_batch() {
+        let sandbox = WikiNoProviderSandbox::new();
+        let paths = wiki_store::WikiPaths::resolve(sandbox.root());
+        let raw = wiki_store::write_raw_entry(
+            &paths,
+            "paste",
+            "provider-required",
+            "A raw note that needs the maintainer model before it can become wiki content.",
+            &wiki_store::RawFrontmatter::for_paste("paste", None),
+        )
+        .expect("seed raw entry");
+        let server = TestServer::spawn().await;
+        let client = Client::new();
+
+        let response = client
+            .post(server.url("/api/wiki/absorb"))
+            .json(&serde_json::json!({ "entry_ids": [raw.id] }))
+            .send()
+            .await
+            .expect("absorb POST");
+
+        assert_eq!(response.status(), reqwest::StatusCode::SERVICE_UNAVAILABLE);
+        let body: serde_json::Value = response.json().await.expect("body");
+        assert!(
+            body["error"]
+                .as_str()
+                .expect("error string")
+                .starts_with("BROKER_UNAVAILABLE:"),
+            "unexpected error body: {body}"
+        );
     }
 
     #[tokio::test]
@@ -6320,15 +6393,20 @@ async fn absorb_handler(
     };
 
     let total = entry_ids.len();
+    if total > 0 {
+        desktop_core::wiki_maintainer_adapter::BrokerAdapter::from_global()
+            .runtime_auth_health()
+            .map_err(|e| {
+                (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    Json(ErrorResponse {
+                        error: format!("BROKER_UNAVAILABLE: {e}"),
+                    }),
+                )
+            })?;
+    }
 
-    // ── 503 BROKER_UNAVAILABLE reserved ──
-    //
-    // TODO(Sprint 1-B.1+1): wire a codex_broker health probe here.
-    // Currently `BrokerAdapter::from_global()` does not fail because
-    // the broker is installed at app boot; a failed install panics
-    // before any HTTP request reaches this handler. Leaving the error
-    // code in the doc comment so the frontend knows to render the
-    // "设置未就绪" banner once this probe exists.
+    // Build the adapter now that non-empty batches have passed the auth preflight.
     let adapter = desktop_core::wiki_maintainer_adapter::BrokerAdapter::from_global();
 
     // ── 409 ABSORB_IN_PROGRESS (TaskManager per-kind gate) ──

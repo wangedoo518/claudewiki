@@ -88,6 +88,20 @@ impl BrokerAdapter {
         }
     }
 
+    /// Return Ok when this process has at least one auth source that can
+    /// plausibly serve a maintainer request before we enqueue long-running work.
+    pub fn runtime_auth_health(&self) -> Result<(), String> {
+        #[cfg(feature = "private-cloud")]
+        if let Some(broker) = &self.broker {
+            let status = broker.public_status();
+            if status.fresh_count + status.expiring_count > 0 {
+                return Ok(());
+            }
+        }
+
+        providers_json_fallback_health()
+    }
+
     #[cfg(feature = "private-cloud")]
     /// Expose the inner broker handle for callers that need the
     /// original API (e.g. to check pool status before deciding
@@ -96,6 +110,69 @@ impl BrokerAdapter {
     pub fn inner(&self) -> Option<&Arc<CodexBroker>> {
         self.broker.as_ref()
     }
+}
+
+/// Validate that the same `.claw/providers.json` fallback used by
+/// `chat_completion` has an active provider with enough fields to make
+/// a request. This is intentionally network-free; endpoint probing is
+/// handled by the provider settings API.
+pub fn providers_json_fallback_health() -> Result<(), String> {
+    for root in provider_config_candidate_roots() {
+        let path = root.join(".claw").join("providers.json");
+        if !path.exists() {
+            continue;
+        }
+
+        let raw = std::fs::read_to_string(&path)
+            .map_err(|e| format!("failed to read {}: {e}", path.display()))?;
+        let parsed = parse_provider_config_json(&raw)
+            .ok_or_else(|| format!("failed to parse {}", path.display()))?;
+        let active_id = parsed
+            .get("active")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.trim().is_empty())
+            .ok_or_else(|| format!("{} has no active provider", path.display()))?;
+        let entry = parsed
+            .get("providers")
+            .and_then(|p| p.get(active_id))
+            .ok_or_else(|| {
+                format!(
+                    "{} active provider `{active_id}` is missing",
+                    path.display()
+                )
+            })?;
+
+        let api_key = entry.get("api_key").and_then(|v| v.as_str()).unwrap_or("");
+        if resolve_provider_api_key(api_key).is_none() {
+            return Err(format!("active provider `{active_id}` has empty api_key"));
+        }
+
+        let model = entry.get("model").and_then(|v| v.as_str()).unwrap_or("");
+        if model.trim().is_empty() {
+            return Err(format!("active provider `{active_id}` has empty model"));
+        }
+
+        let kind = entry.get("kind").and_then(|v| v.as_str()).unwrap_or("");
+        match kind {
+            "openai_compat" => {
+                let base_url = entry.get("base_url").and_then(|v| v.as_str()).unwrap_or("");
+                if !base_url.starts_with("http://") && !base_url.starts_with("https://") {
+                    return Err(format!(
+                        "active provider `{active_id}` has invalid base_url"
+                    ));
+                }
+                return Ok(());
+            }
+            "anthropic" => return Ok(()),
+            _ => {
+                return Err(format!(
+                    "active provider `{active_id}` has unsupported kind `{kind}`"
+                ));
+            }
+        }
+    }
+
+    Err("no active providers.json fallback found".to_string())
 }
 
 #[async_trait]
@@ -154,7 +231,7 @@ async fn try_providers_json_chat_completion(
         let Some(entry) = parsed.get("providers").and_then(|p| p.get(active_id)) else { continue };
         let kind = entry.get("kind").and_then(|v| v.as_str()).unwrap_or("");
         let api_key = entry.get("api_key").and_then(|v| v.as_str()).unwrap_or("");
-        if api_key.trim().is_empty() { continue }
+        let Some(api_key) = resolve_provider_api_key(api_key) else { continue };
         let base_url = entry.get("base_url").and_then(|v| v.as_str()).unwrap_or("");
         let model = entry.get("model").and_then(|v| v.as_str()).unwrap_or("");
 
@@ -176,7 +253,7 @@ async fn try_providers_json_chat_completion(
                      {active_id:?} base_url={base_url:?} model={model:?}"
                 );
                 let client = OpenAiCompatClient::new(
-                    api_key.to_string(),
+                    api_key.clone(),
                     OpenAiCompatConfig::openai(),
                 )
                 .with_base_url(base_url.to_string());
@@ -193,7 +270,7 @@ async fn try_providers_json_chat_completion(
                      {active_id:?} base_url={effective_base:?} model={model:?}"
                 );
                 let client = AnthropicClient::from_auth(
-                    AuthSource::ApiKey(api_key.to_string()),
+                    AuthSource::ApiKey(api_key.clone()),
                 )
                 .with_base_url(effective_base.to_string());
                 return Some(client.send_message(&req).await);
@@ -206,6 +283,22 @@ async fn try_providers_json_chat_completion(
 
 fn parse_provider_config_json(raw: &str) -> Option<serde_json::Value> {
     serde_json::from_str(raw.trim_start_matches('\u{feff}')).ok()
+}
+
+fn resolve_provider_api_key(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    if let Some(name) = trimmed.strip_prefix('<').and_then(|s| s.strip_suffix('>')) {
+        return std::env::var(name)
+            .ok()
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty());
+    }
+
+    Some(trimmed.to_string())
 }
 
 fn provider_config_candidate_roots() -> Vec<PathBuf> {
@@ -254,6 +347,23 @@ mod tests {
         .expect("UTF-8 BOM should not hide an otherwise valid providers.json");
 
         assert_eq!(parsed.get("active").and_then(|v| v.as_str()), Some("deepseek"));
+    }
+
+    #[test]
+    fn provider_api_key_resolver_supports_env_placeholders() {
+        std::env::set_var("CLAW_TEST_PROVIDER_KEY", "test-provider-key");
+
+        assert_eq!(
+            resolve_provider_api_key("<CLAW_TEST_PROVIDER_KEY>").as_deref(),
+            Some("test-provider-key")
+        );
+        assert_eq!(
+            resolve_provider_api_key(" inline-provider-key ").as_deref(),
+            Some("inline-provider-key")
+        );
+        assert!(resolve_provider_api_key("<CLAW_TEST_MISSING_PROVIDER_KEY>").is_none());
+
+        std::env::remove_var("CLAW_TEST_PROVIDER_KEY");
     }
 
     #[cfg(feature = "private-cloud")]

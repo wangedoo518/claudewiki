@@ -207,3 +207,24 @@ but are worth tracking so Phase 2 picks them up together.
 - ⚠️ 5 项 minor gaps (items 8, 10, 11, 12 + item 10 runtime 配置) 明确 target Phase 2
 
 Last updated: 2026-04-24 (Phase 1 MVP closure sprint).
+
+---
+
+## Phase 2 validation update (2026-04-24)
+
+This section is the current follow-up truth after the Phase 2 validation-gap
+push. It supersedes the stale status cells above until the full backlog table is
+rewritten.
+
+| Item | Status | Evidence |
+|---|---|---|
+| 7 · 503 broker health | resolved-code | `/api/wiki/absorb` now preflights runtime auth for non-empty batches and returns `503 BROKER_UNAVAILABLE` before enqueueing background work when no Codex account / active providers fallback exists. Test: `cargo test -p desktop-server absorb_returns_503_when_provider_missing_for_non_empty_batch -- --nocapture`. |
+| 8 · AbsorbTrigger polling→SSE | resolved | `AbsorbEventsBridge` consumes `/api/wiki/absorb/events`, updates `useSkillStore`, invalidates wiki queries, and `AbsorbTriggerButton` no longer polls `last_absorb_at`. |
+| 10 · providers.json runtime | resolved-local | Local `.claw/providers.json` is present with active `deepseek`; live OpenAI-compatible smoke returned HTTP 200 with model echo `deepseek-v4-flash`. API keys remain local and are not documented here. |
+| 11 · WikiFileTree keyboard navigation | resolved | `WikiFileTree` has roving focus plus ArrowUp/ArrowDown/Home/End/ArrowLeft/ArrowRight handling. Commit: `834da12`. |
+| 12 · WikiArticle confidence display | resolved | `WikiArticle` displays `confidence` and `last_verified`; `wiki_store` now surfaces and updates `last_verified`. Commit: `834da12`. |
+
+Remaining Phase 2 risk: real WeChat device E2E is still environment-dependent.
+Mock/handler coverage is green for Kefu `?` sources and URL/text ingest conflict
+notifications, but a live enterprise WeChat credential/device pass should be
+tracked separately from code readiness.

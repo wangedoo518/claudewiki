@@ -154,13 +154,13 @@ than an application-code blocker.
 
 - [x] Graph View enhancements first slice: relation-kind filters for
   `derived-from` source edges and `references` wikilink edges.
-- [ ] Graph View enhancements follow-up: backlinks and source
+- [x] Graph View enhancements follow-up: backlinks and source
   drilldown.
-- [ ] `/cleanup`: patrol-backed cleanup proposal flow.
-- [ ] `/breakdown`: split oversized or mixed-topic pages into maintainable
+- [x] `/cleanup`: patrol-backed cleanup proposal flow.
+- [x] `/breakdown`: split oversized or mixed-topic pages into maintainable
   targets.
-- [ ] Settings Modal final sweep: provider, storage, WeChat, and runtime health.
-- [ ] Web viewer: stable read-only view for wiki pages and graph entrypoints.
+- [x] Settings Modal final sweep: provider, storage, WeChat, and runtime health.
+- [x] Web viewer: stable read-only view for wiki pages and graph entrypoints.
 
 ## Verification Cadence
 
@@ -188,3 +188,5 @@ than an application-code blocker.
   inbox/raw/wiki page CRUD, after Phase 2/3 closure remains green.
 - [x] Finish the remaining `src/lib/tauri.ts` contract/API split without
   reintroducing feature-layer imports.
+- [x] Finish Phase 4 in one pass: graph drilldown, cleanup proposals,
+  breakdown writes, runtime-health settings, and read-only viewer entrypoints.

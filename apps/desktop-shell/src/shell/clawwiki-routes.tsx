@@ -8,6 +8,7 @@
 import type { ReactNode } from "react";
 import {
   BookOpen,
+  Eye,
   FileStack,
   Home,
   Inbox,
@@ -15,7 +16,9 @@ import {
   MessageCircle,
   Network,
   Play,
+  Scissors,
   Settings,
+  ShieldCheck,
   Sigma,
   type LucideIcon,
 } from "lucide-react";
@@ -23,9 +26,12 @@ import { AskPage } from "@/features/ask/AskPage";
 import { DashboardPage } from "@/features/dashboard/DashboardPage";
 import { GraphPage } from "@/features/graph/GraphPage";
 import { InboxPage } from "@/features/inbox/InboxPage";
+import { BreakdownPage } from "@/features/power/BreakdownPage";
+import { CleanupPage } from "@/features/power/CleanupPage";
 import { RawLibraryPage } from "@/features/raw/RawLibraryPage";
 import { SchemaEditorPage } from "@/features/schema/SchemaEditorPage";
 import { SettingsPage } from "@/features/settings/SettingsPage";
+import { WebViewerPage } from "@/features/viewer/WebViewerPage";
 import { WeChatBridgePage } from "@/features/wechat/WeChatBridgePage";
 import { ConnectWeChatPipelinePage } from "@/features/wechat-kefu/ConnectWeChatPipelinePage";
 import { KnowledgeHubPage } from "@/features/wiki/KnowledgeHubPage";
@@ -119,6 +125,34 @@ export const CLAWWIKI_ROUTES: readonly ClawWikiRoute[] = [
     section: "advanced",
     sprint: "S6",
     render: () => <GraphPage />,
+  },
+  {
+    key: "cleanup",
+    path: "/cleanup",
+    icon: ShieldCheck,
+    label: "清理建议",
+    section: "advanced",
+    sprint: "Phase 4",
+    render: () => <CleanupPage />,
+  },
+  {
+    key: "breakdown",
+    path: "/breakdown",
+    icon: Scissors,
+    label: "页面拆解",
+    section: "advanced",
+    sprint: "Phase 4",
+    render: () => <BreakdownPage />,
+  },
+  {
+    key: "viewer",
+    path: "/viewer",
+    routePath: "/viewer/*",
+    icon: Eye,
+    label: "只读查看",
+    section: "advanced",
+    sprint: "Phase 4",
+    render: () => <WebViewerPage />,
   },
   {
     key: "schema",

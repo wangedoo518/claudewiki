@@ -38,7 +38,8 @@ Current upstream pin:
 - `desktop-server` route assembly is split under `crates/desktop-server/src/routes/`
   (`desktop`, `wiki`, `wechat`, `internal`). Handler bodies are being split by
   domain under `crates/desktop-server/src/handlers/`. Landed slices include
-  `handlers/wiki_reports.rs` for Wiki cleanup/patrol/report/stat endpoints and
+  `handlers/wiki_reports.rs` for Wiki cleanup, breakdown, patrol, absorb-log,
+  backlinks index, stats, patrol report, and schema-template endpoints and
   `handlers/wiki_tasks.rs` for absorb/query task endpoints and absorb progress
   SSE, plus `handlers/provider_runtime.rs` for Codex runtime/auth and
   providers.json CRUD endpoints, plus `handlers/desktop_sessions.rs` for

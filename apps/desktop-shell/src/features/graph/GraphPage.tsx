@@ -84,7 +84,9 @@ export function GraphPage() {
               // sequence that used to live here.
               navigateToWikiPage(slug, slug, "wiki-graph");
             }}
-            onClickRaw={() => navigate("/raw")}
+            onClickRaw={(rawId) =>
+              navigate(rawId ? `/raw?focus=${rawId}` : "/raw")
+            }
           />
         )}
       </div>

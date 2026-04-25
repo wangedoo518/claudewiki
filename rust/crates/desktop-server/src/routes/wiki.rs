@@ -78,6 +78,7 @@ pub(crate) fn install(router: Router<AppState>) -> Router<AppState> {
         .route("/api/wiki/absorb/events", get(stream_absorb_events_handler))
         .route("/api/wiki/query", post(query_wiki_handler))
         .route("/api/wiki/cleanup", post(cleanup_handler))
+        .route("/api/wiki/breakdown", post(breakdown_handler))
         .route("/api/wiki/patrol", post(patrol_handler))
         .route("/api/wiki/absorb-log", get(get_absorb_log_handler))
         .route("/api/wiki/backlinks", get(get_backlinks_index_handler))

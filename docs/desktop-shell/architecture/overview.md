@@ -24,6 +24,10 @@ This document answers: how `desktop-shell` is currently organized.
   HTTP/SSE surfaces. Common Wiki repository access lives under
   `src/api/wiki`; desktop session/settings/provider clients live under
   `src/api/desktop`.
+- Phase 4 power surfaces are mounted through the same route config:
+  `/cleanup` previews/applies patrol-backed Inbox cleanup proposals,
+  `/breakdown` previews/applies deterministic wiki-page split targets, and
+  `/viewer/*` provides read-only wiki and graph entrypoints.
 - Domain services under `apps/desktop-shell/src/domain/` own shared pure
   client-side business logic, such as Wiki target scoring and fallback
   resolution.
@@ -56,8 +60,8 @@ This document answers: how `desktop-shell` is currently organized.
   `desktop`, `wiki`, `wechat`, and `internal`.
 - `rust/crates/desktop-server/src/handlers/` owns migrated handler bodies by
   domain. Landed slices include `handlers/wiki_reports.rs` for Wiki cleanup,
-  patrol, absorb-log, backlinks index, stats, patrol report, and schema template
-  endpoints, plus `handlers/wiki_tasks.rs` for absorb/query task endpoints and
+  breakdown, patrol, absorb-log, backlinks index, stats, patrol report, and
+  schema template endpoints, plus `handlers/wiki_tasks.rs` for absorb/query task endpoints and
   absorb progress SSE, plus `handlers/provider_runtime.rs` for Codex
   runtime/auth and providers.json CRUD endpoints, plus
   `handlers/desktop_sessions.rs` for desktop/ask session lifecycle, source

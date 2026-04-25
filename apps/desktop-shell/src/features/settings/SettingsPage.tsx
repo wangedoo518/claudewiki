@@ -58,6 +58,7 @@ import { MultiProviderSettings } from "./sections/MultiProviderSettings";
 import { SubscriptionCodexPool } from "./sections/private-cloud/SubscriptionCodexPool";
 import { WeChatSettings } from "./sections/WeChatSettings";
 import { McpSettings } from "./sections/McpSettings";
+import { RuntimeHealthSection } from "./sections/RuntimeHealthSection";
 import { PermissionSettings } from "./sections/PermissionSettings";
 import { DataSettings } from "./sections/DataSettings";
 import { StorageSettings } from "./sections/StorageSettings";
@@ -439,6 +440,13 @@ function GroupBody({
     if (isLoading) return <SectionLoading />;
     return (
       <>
+        <SettingsCard
+          title="运行时健康"
+          help="一次检查 provider、存储、微信和本地工具链是否能支撑 Phase 4 流程。"
+          anchorId="runtime-health"
+        >
+          <RuntimeHealthSection />
+        </SettingsCard>
         <SettingsCard
           title="工具插件"
           help="让 ClawWiki 调用外部工具。多数用户不需要配置。技术名称：MCP。"

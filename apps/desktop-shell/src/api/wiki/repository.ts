@@ -11,6 +11,8 @@ import type {
   AbsorbLogResponse,
   AbsorbTaskResponse,
   BacklinksFullResponse,
+  BreakdownResponse,
+  CleanupResponse,
   InboxEntry,
   InboxListResponse,
   InboxResolveAction,
@@ -349,6 +351,28 @@ export async function getSchemaTemplates(): Promise<SchemaTemplate[]> {
 /** POST `/api/wiki/patrol` — run full patrol (§2.4). */
 export async function triggerPatrol(): Promise<PatrolReport> {
   return fetchJson<PatrolReport>("/api/wiki/patrol", { method: "POST" });
+}
+
+/** POST `/api/wiki/cleanup?apply=` - preview/apply patrol-backed cleanup. */
+export async function triggerCleanup(apply = false): Promise<CleanupResponse> {
+  return fetchJson<CleanupResponse>(`/api/wiki/cleanup?apply=${apply}`, {
+    method: "POST",
+  });
+}
+
+/** POST `/api/wiki/breakdown` - preview/apply deterministic page split. */
+export async function breakdownWikiPage(
+  slug: string,
+  options?: { apply?: boolean; maxTargets?: number },
+): Promise<BreakdownResponse> {
+  return fetchJson<BreakdownResponse>("/api/wiki/breakdown", {
+    method: "POST",
+    body: JSON.stringify({
+      slug,
+      apply: options?.apply ?? false,
+      max_targets: options?.maxTargets,
+    }),
+  });
 }
 
 /** GET `/api/wiki/patrol/report` — latest patrol report (§2.8). */

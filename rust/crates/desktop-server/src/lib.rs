@@ -74,7 +74,7 @@ pub(crate) use handlers::wiki_crud::{
     ws_wechat_inbox_handler,
 };
 pub(crate) use handlers::wiki_reports::{
-    cleanup_handler, get_absorb_log_handler, get_backlinks_index_handler,
+    breakdown_handler, cleanup_handler, get_absorb_log_handler, get_backlinks_index_handler,
     get_patrol_report_handler, get_schema_templates_handler, get_stats_handler, patrol_handler,
 };
 pub(crate) use handlers::wiki_tasks::{
@@ -1374,6 +1374,100 @@ mod tests {
             applied_entry.proposal_summary.as_deref(),
             Some("added multi-head update")
         );
+    }
+
+    #[tokio::test]
+    async fn cleanup_preview_returns_patrol_shape_without_writing_inbox() {
+        let _sandbox = WikiNoProviderSandbox::new();
+        let server = TestServer::spawn().await;
+        let client = Client::new();
+
+        let response = client
+            .post(server.url("/api/wiki/cleanup?apply=false"))
+            .send()
+            .await
+            .expect("cleanup preview POST");
+
+        assert_eq!(response.status(), reqwest::StatusCode::OK);
+        let body: serde_json::Value = response.json().await.expect("cleanup body");
+        assert_eq!(body["applied"], false);
+        assert_eq!(body["inbox_created"], 0);
+        assert!(body["issues"].is_array(), "issues array missing: {body}");
+        assert!(
+            body["cleanup_proposals"].is_array(),
+            "cleanup proposal array missing: {body}"
+        );
+        assert!(body["summary"].is_object(), "summary missing: {body}");
+    }
+
+    #[tokio::test]
+    async fn breakdown_preview_and_apply_write_split_targets() {
+        let sandbox = WikiNoProviderSandbox::new();
+        let paths = wiki_store::WikiPaths::resolve(sandbox.root());
+        let section_a = "Alpha planning note ".repeat(35);
+        let section_b = "Beta operations note ".repeat(35);
+        let body = format!(
+            "# Phase 4 Source\n\n## Alpha\n\n{}\n\n## Beta\n\n{}",
+            section_a, section_b
+        );
+        wiki_store::write_wiki_page_in_category(
+            &paths,
+            "concept",
+            "phase4-source",
+            "Phase 4 Source",
+            "A mixed page used by the breakdown HTTP smoke test.",
+            &body,
+            None,
+        )
+        .expect("seed source wiki page");
+
+        let server = TestServer::spawn().await;
+        let client = Client::new();
+        let preview = client
+            .post(server.url("/api/wiki/breakdown"))
+            .json(&serde_json::json!({
+                "slug": "phase4-source",
+                "apply": false,
+                "max_targets": 4
+            }))
+            .send()
+            .await
+            .expect("breakdown preview POST");
+
+        assert_eq!(preview.status(), reqwest::StatusCode::OK);
+        let preview_body: serde_json::Value = preview.json().await.expect("preview body");
+        assert_eq!(preview_body["applied"], false);
+        let preview_targets = preview_body["targets"].as_array().expect("targets array");
+        assert_eq!(
+            preview_targets.len(),
+            2,
+            "unexpected preview: {preview_body}"
+        );
+
+        let apply = client
+            .post(server.url("/api/wiki/breakdown"))
+            .json(&serde_json::json!({
+                "slug": "phase4-source",
+                "apply": true,
+                "max_targets": 4
+            }))
+            .send()
+            .await
+            .expect("breakdown apply POST");
+
+        assert_eq!(apply.status(), reqwest::StatusCode::OK);
+        let apply_body: serde_json::Value = apply.json().await.expect("apply body");
+        assert_eq!(apply_body["applied"], true);
+        let written_paths = apply_body["written_paths"]
+            .as_array()
+            .expect("written paths array");
+        assert_eq!(written_paths.len(), 2, "unexpected apply: {apply_body}");
+        let target_slug = apply_body["targets"][0]["slug"]
+            .as_str()
+            .expect("target slug");
+        let (_summary, target_body) =
+            wiki_store::read_wiki_page(&paths, target_slug).expect("read split target");
+        assert!(target_body.contains("Split from [Phase 4 Source]"));
     }
 
     /// POST /api/wiki/absorb happy path returns 202 plus a canonical task id.

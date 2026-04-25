@@ -46,7 +46,7 @@ export interface ForceGraphProps {
   graphData: WikiGraphResponse;
   rawEntries: RawEntry[];
   onClickConcept: (slug: string) => void;
-  onClickRaw: () => void;
+  onClickRaw: (rawId?: number) => void;
   /**
    * G1 sprint — optional initial value for the internal search query.
    * When set (typically from `?focus=<slug>` on the Graph page URL),
@@ -185,6 +185,7 @@ export function ForceGraph({
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const [zoom, setZoom] = useState(0.6);
   const [hoveredNodeId, setHoveredNodeId] = useState<string | null>(null);
+  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState(initialSearchQuery ?? "");
   const [selectedGroup, setSelectedGroup] = useState<NodeCategory | null>(null);
   const [selectedRelation, setSelectedRelation] = useState<ForceEdge["kind"] | null>(null);
@@ -501,10 +502,7 @@ export function ForceGraph({
     if (d) {
       if (!d.moved) {
         const node = nodes.find((n) => n.id === d.id);
-        if (node) {
-          if (node.kind === "concept") onClickConcept(node.id.replace(/^wiki-/, ""));
-          else onClickRaw();
-        }
+        if (node) setSelectedNodeId(node.id);
       }
       draggingRef.current = null;
     }
@@ -583,6 +581,50 @@ export function ForceGraph({
     return { matches: withConn, directMatches: direct };
   }, [searchQuery, nodes, visibleEdges]);
 
+  const graphNodeById = useMemo(
+    () => new Map(nodes.map((node) => [node.id, node] as const)),
+    [nodes],
+  );
+
+  const rawByNodeId = useMemo(() => {
+    const map = new Map<string, RawEntry>();
+    for (const raw of rawEntries) map.set(`raw-${raw.id}`, raw);
+    return map;
+  }, [rawEntries]);
+
+  const selectedNode = selectedNodeId ? graphNodeById.get(selectedNodeId) ?? null : null;
+  const selectedDrilldown = useMemo(() => {
+    if (!selectedNodeId) return null;
+    const outgoing = edges
+      .filter((edge) => edge.kind === "references" && edge.source === selectedNodeId)
+      .map((edge) => graphNodeById.get(edge.target))
+      .filter((node): node is ForceNode => Boolean(node));
+    const backlinks = edges
+      .filter((edge) => edge.kind === "references" && edge.target === selectedNodeId)
+      .map((edge) => graphNodeById.get(edge.source))
+      .filter((node): node is ForceNode => Boolean(node));
+    const sources = edges
+      .filter((edge) => edge.kind === "derived-from" && edge.source === selectedNodeId)
+      .map((edge) => graphNodeById.get(edge.target))
+      .filter((node): node is ForceNode => Boolean(node));
+    const derivedPages = edges
+      .filter((edge) => edge.kind === "derived-from" && edge.target === selectedNodeId)
+      .map((edge) => graphNodeById.get(edge.source))
+      .filter((node): node is ForceNode => Boolean(node));
+    return { outgoing, backlinks, sources, derivedPages };
+  }, [edges, graphNodeById, selectedNodeId]);
+
+  const openNode = useCallback(
+    (node: ForceNode) => {
+      if (node.kind === "concept") {
+        onClickConcept(node.id.replace(/^wiki-/, ""));
+      } else {
+        onClickRaw(parseRawNodeId(node.id));
+      }
+    },
+    [onClickConcept, onClickRaw],
+  );
+
   // Unique colors for glow filters
   const uniqueColors = useMemo(
     () => Array.from(new Set(nodes.map((n) => n.category))),
@@ -656,6 +698,76 @@ export function ForceGraph({
                 </button>
               );
             })}
+          </div>
+        </div>
+      )}
+
+      {selectedNode && selectedDrilldown && (
+        <div
+          className="absolute bottom-20 right-3 top-28 z-20 flex w-80 flex-col overflow-hidden rounded-xl border border-border/80 bg-background/95 text-xs text-foreground shadow-xl backdrop-blur"
+          onPointerDown={(e) => e.stopPropagation()}
+        >
+          <div className="border-b border-border/70 px-4 py-3">
+            <div className="flex items-start gap-2">
+              <span
+                className="mt-1 inline-flex h-2.5 w-2.5 shrink-0 rounded-full"
+                style={{ backgroundColor: selectedNode.color }}
+              />
+              <div className="min-w-0 flex-1">
+                <div className="truncate text-sm font-semibold">{selectedNode.label}</div>
+                <div className="mt-0.5 text-[11px] text-muted-foreground">
+                  {selectedNode.kind === "concept" ? "Wiki page" : "Raw source"} · degree{" "}
+                  {selectedNode.degree}
+                </div>
+              </div>
+              <button
+                type="button"
+                className="rounded p-1 text-muted-foreground hover:bg-foreground/10 hover:text-foreground"
+                onClick={() => setSelectedNodeId(null)}
+                aria-label="Close drilldown"
+              >
+                <X className="size-3.5" />
+              </button>
+            </div>
+            <button
+              type="button"
+              className="mt-3 w-full rounded-md border border-border px-2 py-1.5 text-left text-[11px] transition-colors hover:bg-foreground/10"
+              onClick={() => openNode(selectedNode)}
+            >
+              Open {selectedNode.kind === "concept" ? "wiki page" : "raw source"}
+            </button>
+          </div>
+          <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-4 py-3">
+            {selectedNode.kind === "concept" ? (
+              <>
+                <DrilldownList
+                  title="Backlinks"
+                  empty="No pages link here yet."
+                  items={selectedDrilldown.backlinks}
+                  onOpen={openNode}
+                />
+                <DrilldownList
+                  title="Outgoing"
+                  empty="This page has no wiki links."
+                  items={selectedDrilldown.outgoing}
+                  onOpen={openNode}
+                />
+                <DrilldownList
+                  title="Sources"
+                  empty="No raw source is attached."
+                  items={selectedDrilldown.sources}
+                  onOpen={openNode}
+                  subtitle={(node) => rawByNodeId.get(node.id)?.source_url ?? rawByNodeId.get(node.id)?.filename}
+                />
+              </>
+            ) : (
+              <DrilldownList
+                title="Pages from this source"
+                empty="No wiki pages derive from this raw source."
+                items={selectedDrilldown.derivedPages}
+                onOpen={openNode}
+              />
+            )}
           </div>
         </div>
       )}
@@ -853,5 +965,56 @@ export function ForceGraph({
         </div>
       </div>
     </div>
+  );
+}
+
+function parseRawNodeId(nodeId: string): number | undefined {
+  const value = Number(nodeId.replace(/^raw-/, ""));
+  return Number.isFinite(value) ? value : undefined;
+}
+
+function DrilldownList({
+  title,
+  empty,
+  items,
+  onOpen,
+  subtitle,
+}: {
+  title: string;
+  empty: string;
+  items: ForceNode[];
+  onOpen: (node: ForceNode) => void;
+  subtitle?: (node: ForceNode) => string | undefined | null;
+}) {
+  return (
+    <section>
+      <div className="mb-2 flex items-center justify-between text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+        <span>{title}</span>
+        <span>{items.length}</span>
+      </div>
+      {items.length === 0 ? (
+        <div className="rounded-md border border-dashed border-border/70 px-3 py-2 text-[11px] text-muted-foreground">
+          {empty}
+        </div>
+      ) : (
+        <div className="space-y-1.5">
+          {items.map((item) => (
+            <button
+              key={item.id}
+              type="button"
+              className="w-full rounded-md border border-border/70 px-3 py-2 text-left transition-colors hover:bg-foreground/10"
+              onClick={() => onOpen(item)}
+            >
+              <div className="truncate text-[12px] font-medium">{item.label}</div>
+              {subtitle?.(item) && (
+                <div className="mt-0.5 truncate text-[10px] text-muted-foreground">
+                  {subtitle(item)}
+                </div>
+              )}
+            </button>
+          ))}
+        </div>
+      )}
+    </section>
   );
 }

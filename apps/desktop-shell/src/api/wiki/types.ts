@@ -454,6 +454,39 @@ export interface PatrolReport {
   checked_at: string;
 }
 
+export interface CleanupProposal {
+  issue_kind: string;
+  page_slug: string;
+  title: string;
+  description: string;
+  suggested_action: string;
+  inbox_action: string;
+}
+
+export interface CleanupResponse extends PatrolReport {
+  cleanup_proposals: CleanupProposal[];
+  inbox_created: number;
+  applied: boolean;
+}
+
+export interface BreakdownTarget {
+  slug: string;
+  title: string;
+  summary: string;
+  body: string;
+  word_count: number;
+}
+
+export interface BreakdownResponse {
+  source_slug: string;
+  source_title: string;
+  source_word_count: number;
+  reason: string;
+  targets: BreakdownTarget[];
+  applied: boolean;
+  written_paths: string[];
+}
+
 /** A single source page referenced in a wiki query answer. */
 export interface QuerySource {
   slug: string;

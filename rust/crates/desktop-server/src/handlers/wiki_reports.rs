@@ -11,7 +11,7 @@ pub(crate) async fn cleanup_handler() -> Result<Json<serde_json::Value>, ApiErro
         max_page_words: 3000,
     };
     let report = wiki_patrol::run_full_patrol(&paths, &config);
-    let _ = wiki_store::save_patrol_report(&paths, &report);
+    persist_patrol_outputs(&paths, &report)?;
     Ok(Json(
         serde_json::to_value(&report).unwrap_or(serde_json::Value::Null),
     ))
@@ -22,10 +22,33 @@ pub(crate) async fn patrol_handler() -> Result<Json<serde_json::Value>, ApiError
     let paths = resolve_wiki_root_for_handler()?;
     let config = wiki_patrol::PatrolConfig::default();
     let report = wiki_patrol::run_full_patrol(&paths, &config);
-    let _ = wiki_store::save_patrol_report(&paths, &report);
+    persist_patrol_outputs(&paths, &report)?;
     Ok(Json(
         serde_json::to_value(&report).unwrap_or(serde_json::Value::Null),
     ))
+}
+
+fn persist_patrol_outputs(
+    paths: &wiki_store::WikiPaths,
+    report: &wiki_store::PatrolReport,
+) -> Result<(), ApiError> {
+    wiki_store::save_patrol_report(paths, report).map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("PATROL_REPORT_SAVE_FAILED: {e}"),
+            }),
+        )
+    })?;
+    wiki_store::append_patrol_issue_inbox_tasks(paths, &report.issues).map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("PATROL_INBOX_TASK_CREATE_FAILED: {e}"),
+            }),
+        )
+    })?;
+    Ok(())
 }
 
 #[derive(Deserialize)]

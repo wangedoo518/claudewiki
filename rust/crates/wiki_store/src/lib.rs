@@ -3248,6 +3248,112 @@ fn append_inbox_pending_locked(
     Ok(entry)
 }
 
+/// Append pending inbox tasks for patrol issues, skipping duplicate
+/// pending tasks for the same issue kind + page slug.
+///
+/// This lets `/api/wiki/patrol` turn quality reports into actionable
+/// review work without spamming the Inbox on every patrol run.
+pub fn append_patrol_issue_inbox_tasks(
+    paths: &WikiPaths,
+    issues: &[PatrolIssue],
+) -> Result<usize> {
+    let _guard = lock_inbox_writes();
+    let mut entries = load_inbox_file(paths)?;
+    let mut created = 0usize;
+
+    for issue in issues {
+        let title = patrol_issue_inbox_title(issue);
+        let already_pending = entries
+            .iter()
+            .any(|entry| entry.status == InboxStatus::Pending && entry.title == title);
+        if already_pending {
+            continue;
+        }
+
+        let next_id = entries.iter().map(|e| e.id).max().unwrap_or(0) + 1;
+        let entry = InboxEntry {
+            id: next_id,
+            kind: patrol_issue_inbox_kind(&issue.kind),
+            status: InboxStatus::Pending,
+            title,
+            description: patrol_issue_inbox_description(issue),
+            source_raw_id: None,
+            created_at: now_iso8601(),
+            resolved_at: None,
+            proposed_wiki_slug: None,
+            target_page_slug: None,
+            maintain_action: None,
+            rejection_reason: None,
+            proposal_status: None,
+            proposed_after_markdown: None,
+            before_markdown_snapshot: None,
+            proposal_summary: None,
+        };
+        entries.push(entry);
+        created += 1;
+    }
+
+    if created > 0 {
+        save_inbox_file(paths, &entries)?;
+    }
+
+    Ok(created)
+}
+
+fn patrol_issue_inbox_title(issue: &PatrolIssue) -> String {
+    format!(
+        "Patrol: {} - {}",
+        patrol_issue_kind_label(&issue.kind),
+        issue.page_slug
+    )
+}
+
+fn patrol_issue_inbox_description(issue: &PatrolIssue) -> String {
+    format!(
+        "Patrol issue: {}\nPage: `{}`\n\n{}\n\nSuggested action: {}",
+        patrol_issue_kind_tag(&issue.kind),
+        issue.page_slug,
+        issue.description,
+        issue.suggested_action
+    )
+}
+
+fn patrol_issue_inbox_kind(kind: &PatrolIssueKind) -> InboxKind {
+    match kind {
+        PatrolIssueKind::Orphan => InboxKind::Deprecate,
+        PatrolIssueKind::Stale
+        | PatrolIssueKind::SchemaViolation
+        | PatrolIssueKind::Oversized
+        | PatrolIssueKind::Stub
+        | PatrolIssueKind::ConfidenceDecay
+        | PatrolIssueKind::Uncrystallized => InboxKind::Stale,
+    }
+}
+
+fn patrol_issue_kind_label(kind: &PatrolIssueKind) -> &'static str {
+    match kind {
+        PatrolIssueKind::Orphan => "Orphan",
+        PatrolIssueKind::Stale => "Stale",
+        PatrolIssueKind::SchemaViolation => "Schema violation",
+        PatrolIssueKind::Oversized => "Oversized",
+        PatrolIssueKind::Stub => "Stub",
+        PatrolIssueKind::ConfidenceDecay => "Confidence decay",
+        PatrolIssueKind::Uncrystallized => "Uncrystallized",
+    }
+}
+
+fn patrol_issue_kind_tag(kind: &PatrolIssueKind) -> &'static str {
+    match kind {
+        PatrolIssueKind::Orphan => "orphan",
+        PatrolIssueKind::Stale => "stale",
+        PatrolIssueKind::SchemaViolation => "schema-violation",
+        PatrolIssueKind::Oversized => "oversized",
+        PatrolIssueKind::Stub => "stub",
+        PatrolIssueKind::ConfidenceDecay => "confidence-decay",
+        PatrolIssueKind::Uncrystallized => "uncrystallized",
+    }
+}
+
 /// List every inbox entry, oldest first. Missing file returns empty.
 pub fn list_inbox_entries(paths: &WikiPaths) -> Result<Vec<InboxEntry>> {
     load_inbox_file(paths)
@@ -7296,6 +7402,45 @@ mod tests {
         let listed = list_inbox_entries(&paths).unwrap();
         assert_eq!(listed.len(), 3);
         assert_eq!(count_pending_inbox(&paths).unwrap(), 3);
+    }
+
+    #[test]
+    fn patrol_issue_inbox_tasks_are_idempotent() {
+        let tmp = tempdir().unwrap();
+        init_wiki(tmp.path()).unwrap();
+        let paths = WikiPaths::resolve(tmp.path());
+        let issues = vec![
+            PatrolIssue {
+                kind: PatrolIssueKind::Orphan,
+                page_slug: "orphan-page".to_string(),
+                description: "No backlinks point to this page.".to_string(),
+                suggested_action: "Add a backlink or deprecate the page.".to_string(),
+            },
+            PatrolIssue {
+                kind: PatrolIssueKind::SchemaViolation,
+                page_slug: "schema-page".to_string(),
+                description: "Missing required frontmatter.".to_string(),
+                suggested_action: "Repair the page frontmatter.".to_string(),
+            },
+        ];
+
+        assert_eq!(append_patrol_issue_inbox_tasks(&paths, &issues).unwrap(), 2);
+        assert_eq!(append_patrol_issue_inbox_tasks(&paths, &issues).unwrap(), 0);
+
+        let entries = list_inbox_entries(&paths).unwrap();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(count_pending_inbox(&paths).unwrap(), 2);
+        assert_eq!(entries[0].kind, InboxKind::Deprecate);
+        assert_eq!(entries[0].title, "Patrol: Orphan - orphan-page");
+        assert!(entries[0].description.contains("Patrol issue: orphan"));
+        assert!(entries[0]
+            .description
+            .contains("Suggested action: Add a backlink or deprecate the page."));
+        assert_eq!(entries[1].kind, InboxKind::Stale);
+        assert_eq!(
+            entries[1].title,
+            "Patrol: Schema violation - schema-page"
+        );
     }
 
     #[test]

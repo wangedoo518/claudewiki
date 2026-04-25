@@ -6,7 +6,7 @@
  * Click page_slug → Wiki mode + open tab.
  */
 
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { AlertTriangle, CheckCircle2, Loader2, RefreshCw } from "lucide-react";
 
 import { getPatrolReport, triggerPatrol } from "@/api/wiki/repository";
@@ -25,6 +25,7 @@ const KIND_LABELS: Record<string, { label: string; color: string }> = {
 };
 
 export function PatrolReportView() {
+  const queryClient = useQueryClient();
   const setAppMode = useSettingsStore((s) => s.setAppMode);
   const openTab = useWikiTabStore((s) => s.openTab);
 
@@ -36,7 +37,10 @@ export function PatrolReportView() {
 
   const handleRunPatrol = async () => {
     await triggerPatrol();
-    refetch();
+    await Promise.all([
+      refetch(),
+      queryClient.invalidateQueries({ queryKey: ["wiki", "inbox", "list"] }),
+    ]);
   };
 
   const handleClickSlug = (slug: string) => {

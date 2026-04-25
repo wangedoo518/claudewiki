@@ -1,0 +1,53 @@
+import { fetchJson } from "@/lib/desktop/transport";
+
+// M5 WeChat bridge: health + group-scope config.
+//
+// Routes:
+//   * GET /api/wechat/bridge/health
+//   * GET /api/wechat/bridge/config
+//   * POST /api/wechat/bridge/config
+
+/** Group-scope config for the WeChat auto-ingest bridge. */
+export interface WeChatIngestConfig {
+  /** "all" passes every event; "whitelist" requires a known group_id. */
+  enabled_mode: "all" | "whitelist";
+  /** WeChat-side group ids allowed under `"whitelist"` mode. */
+  enabled_group_ids: string[];
+}
+
+/** Per-channel health snapshot returned by the bridge health route. */
+export interface WeChatChannelHealth {
+  channel: "ilink" | "kefu";
+  running: boolean;
+  last_poll_unix_ms: number | null;
+  last_inbound_unix_ms: number | null;
+  last_ingest_unix_ms: number | null;
+  consecutive_failures: number;
+  last_error: string | null;
+  processed_msg_count: number;
+  dedupe_hit_count: number;
+}
+
+/** Envelope returned by `GET /api/wechat/bridge/health`. */
+export interface WeChatBridgeHealthResponse {
+  ilink: WeChatChannelHealth;
+  kefu: WeChatChannelHealth;
+  config: WeChatIngestConfig;
+}
+
+export async function fetchWeChatBridgeHealth(): Promise<WeChatBridgeHealthResponse> {
+  return fetchJson<WeChatBridgeHealthResponse>("/api/wechat/bridge/health");
+}
+
+export async function fetchWeChatIngestConfig(): Promise<WeChatIngestConfig> {
+  return fetchJson<WeChatIngestConfig>("/api/wechat/bridge/config");
+}
+
+export async function updateWeChatIngestConfig(
+  config: WeChatIngestConfig,
+): Promise<WeChatIngestConfig> {
+  return fetchJson<WeChatIngestConfig>("/api/wechat/bridge/config", {
+    method: "POST",
+    body: JSON.stringify(config),
+  });
+}

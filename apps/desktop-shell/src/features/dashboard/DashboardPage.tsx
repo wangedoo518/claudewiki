@@ -125,6 +125,10 @@ export function DashboardPage() {
     privateCloudEnabled && brokerQuery.error instanceof Error
       ? brokerQuery.error.message
       : null;
+  const runPatrolAndRefresh = async () => {
+    await triggerPatrol();
+    await Promise.all([patrolQuery.refetch(), inboxQuery.refetch()]);
+  };
 
   // Warm WeChat status sub-copy, derived from real backend state.
   const kefuSub =
@@ -253,7 +257,7 @@ export function DashboardPage() {
           isLoading={patrolQuery.isLoading}
           isRefreshing={patrolQuery.isFetching}
           error={patrolQuery.error instanceof Error ? patrolQuery.error : null}
-          onRun={() => triggerPatrol().then(() => patrolQuery.refetch())}
+          onRun={runPatrolAndRefresh}
         />
 
         <details className="group mx-auto mt-8 max-w-[1040px] px-6">
@@ -275,7 +279,7 @@ export function DashboardPage() {
                 知识质量
               </h3>
               <button
-                onClick={() => triggerPatrol().then(() => patrolQuery.refetch())}
+                onClick={runPatrolAndRefresh}
                 className="rounded px-2 py-0.5 text-[11px] text-primary hover:bg-primary/10 transition-colors"
               >
                 立即巡检

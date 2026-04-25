@@ -31,14 +31,14 @@ import {
   type WeChatBridgeHealthResponse,
   type WeChatChannelHealth,
   type WeChatIngestConfig,
-} from "@/lib/tauri";
+} from "@/api/wechat/bridge";
 
 /** M5-local alias preserved for older call sites; canonical name is
- *  `WeChatChannelHealth` on `@/lib/tauri`. */
+ *  `WeChatChannelHealth` in `@/api/wechat/bridge`. */
 export type ChannelHealthLike = WeChatChannelHealth;
 
 /** M5-local alias preserved for older call sites; canonical name is
- *  `WeChatBridgeHealthResponse` on `@/lib/tauri`. */
+ *  `WeChatBridgeHealthResponse` in `@/api/wechat/bridge`. */
 export type BridgeHealthResponse = WeChatBridgeHealthResponse;
 
 export type { WeChatIngestConfig };

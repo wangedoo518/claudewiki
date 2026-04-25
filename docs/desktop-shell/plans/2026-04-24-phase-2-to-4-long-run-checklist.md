@@ -85,6 +85,10 @@ than an application-code blocker.
   move active settings, WeChat, Ask, Dashboard, and private-cloud imports from
   `features/settings/api/*` to `src/api/desktop/*`; keep old feature paths as
   compatibility re-exports only.
+- [x] WeChat API first slice:
+  move bridge health/config client and DTOs from `src/lib/tauri.ts` to
+  `src/api/wechat/bridge.ts`; keep `src/lib/tauri.ts` as compatibility
+  re-export only for that surface.
 - [x] Wiki repository boundary:
   migrate common Wiki data access from `features/ingest/persist.ts` to
   `src/api/wiki` or `src/domain/wiki/repository`.
@@ -117,10 +121,14 @@ than an application-code blocker.
   workspace skills, MCP debug, and permission-mode handlers into
   `handlers/desktop_utilities.rs` while keeping route names stable through
   crate re-exports.
+- [x] Rust server handler split sixth slice:
+  move WeChat account login, bridge health/config, and Kefu
+  account/monitor/callback/pipeline handlers into `handlers/wechat.rs` while
+  keeping route names stable through crate re-exports.
 - [ ] Rust server handler split follow-up:
   continue moving handler DTOs and implementations out of `lib.rs` by domain;
-  suggested next slices are WeChat account/Kefu handlers, desktop storage
-  utility handlers, then inbox/raw/wiki page CRUD handlers.
+  remaining suggested next slices are desktop storage utility handlers, then
+  inbox/raw/wiki page CRUD handlers.
 - [x] Current-truth docs:
   refresh `docs/desktop-shell/architecture/overview.md` and `rust/README.md`
   whenever a slice lands.
@@ -134,7 +142,10 @@ than an application-code blocker.
 - [x] Add quality sampling candidates for LLM-maintained pages.
 - [x] Connect all patrol summary categories to Dashboard quality cards and
   Patrol detail labels.
-- [ ] Connect patrol results to Inbox actions.
+- [x] Connect patrol results to Inbox actions:
+  `/api/wiki/patrol` and `/api/wiki/cleanup` now persist reports and create
+  idempotent pending Inbox tasks from patrol issues; Dashboard/Patrol detail
+  refresh Inbox state after a patrol run.
 - [x] Add tests that keep `wiki_stats` and `wiki_patrol` orphan semantics in
   sync.
 
@@ -152,13 +163,13 @@ than an application-code blocker.
 
 ## Verification Cadence
 
-- [ ] Frontend minimum: `cd apps/desktop-shell && npm run build`.
-- [ ] Tauri minimum: `cd apps/desktop-shell/src-tauri && cargo check`.
-- [ ] Rust minimum: `cd rust && cargo check --workspace`.
-- [ ] Query tests: `cargo test -p wiki_maintainer query_wiki` and
+- [x] Frontend minimum: `cd apps/desktop-shell && npm run build`.
+- [x] Tauri minimum: `cd apps/desktop-shell/src-tauri && cargo check`.
+- [x] Rust minimum: `cd rust && cargo check --workspace`.
+- [x] Query tests: `cargo test -p wiki_maintainer query_wiki` and
   `cargo test -p desktop-server query_done`.
-- [ ] Kefu tests: `cargo test -p desktop-core wechat_kefu`.
-- [ ] Provider fallback tests: `cargo test -p desktop-core provider_config`.
+- [x] Kefu tests: `cargo test -p desktop-core wechat_kefu`.
+- [x] Provider fallback tests: `cargo test -p desktop-core provider_config`.
 - [ ] Before commit: `git diff --check` and `git status --short`.
 
 ## Current Next Slice
@@ -170,7 +181,9 @@ than an application-code blocker.
 - [x] Then handler-body split first slice for Wiki report/maintenance handlers.
 - [x] Then handler-body split second slice for query/absorb task handlers.
 - [x] Then handler-body split third slice for provider/runtime handlers.
-- [x] Then handler-body split fourth slice for desktop session handlers.
-- [x] Then handler-body split fifth slice for desktop utility handlers.
-- [ ] Next: continue handler-body split with WeChat account/Kefu handlers or
-  desktop storage utilities, after Phase 2 closure remains green.
+- [x] Then handler-body split fourth/fifth/sixth slices for desktop
+  sessions/utilities and WeChat account/Kefu handlers.
+- [ ] Next: continue handler-body split with desktop storage utilities or
+  inbox/raw/wiki page CRUD, after Phase 2/3 closure remains green.
+- [ ] Parallel architecture debt: finish the remaining `src/lib/tauri.ts`
+  contract/API split without reintroducing feature-layer imports.

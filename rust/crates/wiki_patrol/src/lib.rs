@@ -7,7 +7,8 @@
 //! No LLM dependency — all checks are local filesystem operations.
 
 use wiki_store::{
-    BacklinksIndex, PatrolIssue, PatrolIssueKind, PatrolReport, PatrolSummary, WikiPaths,
+    BacklinksIndex, PatrolIssue, PatrolIssueKind, PatrolQualitySample, PatrolReport, PatrolSummary,
+    WikiPaths,
 };
 
 /// Configuration for patrol thresholds.
@@ -234,6 +235,55 @@ pub fn detect_uncrystallized(paths: &WikiPaths, _lookback_days: u32) -> Vec<Patr
     Vec::new()
 }
 
+/// Select maintainer-written pages for quality sampling.
+///
+/// This is intentionally local and deterministic: it does not perform the
+/// future LLM audit itself, but it gives the dashboard and follow-up workers a
+/// stable candidate set. Pages with a raw source or confidence score are treated
+/// as maintainer-written, then prioritized by missing verification and lower
+/// confidence.
+pub fn select_quality_samples(paths: &WikiPaths, limit: usize) -> Vec<PatrolQualitySample> {
+    let mut pages: Vec<_> = wiki_store::list_all_wiki_pages(paths)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|page| page.source_raw_id.is_some() || page.confidence > 0.0)
+        .collect();
+
+    pages.sort_by(|a, b| {
+        let a_missing_verified = a.last_verified.is_none();
+        let b_missing_verified = b.last_verified.is_none();
+        b_missing_verified
+            .cmp(&a_missing_verified)
+            .then_with(|| {
+                a.confidence
+                    .partial_cmp(&b.confidence)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .then_with(|| a.slug.cmp(&b.slug))
+    });
+
+    pages
+        .into_iter()
+        .take(limit)
+        .map(|page| {
+            let reason = if page.last_verified.is_none() {
+                "never verified".to_string()
+            } else if page.confidence < 0.6 {
+                "low confidence".to_string()
+            } else {
+                "routine maintained-page sample".to_string()
+            };
+            PatrolQualitySample {
+                page_slug: page.slug,
+                title: page.title,
+                confidence: page.confidence,
+                last_verified: page.last_verified,
+                reason,
+            }
+        })
+        .collect()
+}
+
 /// Compute days between two ISO-8601 date strings.
 fn days_between(earlier: &str, later: &str) -> i64 {
     let e_date = &earlier[..10.min(earlier.len())];
@@ -263,6 +313,7 @@ pub fn run_full_patrol(paths: &WikiPaths, config: &PatrolConfig) -> PatrolReport
     let stubs = detect_stubs(paths, config.min_page_words);
     let confidence_decay = detect_confidence_decay(paths);
     let uncrystallized = detect_uncrystallized(paths, 30);
+    let quality_samples = select_quality_samples(paths, 5);
 
     let summary = PatrolSummary {
         orphans: orphans.len(),
@@ -286,6 +337,7 @@ pub fn run_full_patrol(paths: &WikiPaths, config: &PatrolConfig) -> PatrolReport
     PatrolReport {
         issues: all_issues,
         summary,
+        quality_samples,
         checked_at: wiki_store::now_iso8601(),
     }
 }
@@ -655,6 +707,42 @@ mod tests {
         let issues = detect_uncrystallized(&paths, 30);
         assert_eq!(issues.len(), 1);
         assert!(matches!(issues[0].kind, PatrolIssueKind::Uncrystallized));
+    }
+
+    #[test]
+    fn quality_samples_prioritize_maintainer_pages_needing_review() {
+        let (_tmp, paths) = init_and_paths();
+        create_page(&paths, "concept", "higher", "Higher", "Enough content for a page.");
+        create_page(&paths, "concept", "lower", "Lower", "Enough content for another page.");
+        wiki_store::update_page_confidence(&paths, "higher", 0.8).unwrap();
+        wiki_store::update_page_confidence(&paths, "lower", 0.2).unwrap();
+        wiki_store::write_wiki_page_in_category(
+            &paths,
+            "concept",
+            "manual",
+            "Manual",
+            "Summary",
+            "Hand-written page with no maintainer source.",
+            None,
+        )
+        .unwrap();
+
+        let samples = select_quality_samples(&paths, 2);
+        assert_eq!(samples.len(), 2);
+        assert_eq!(samples[0].page_slug, "lower");
+        assert!(samples.iter().all(|s| s.page_slug != "manual"));
+        assert_eq!(samples[0].reason, "low confidence");
+    }
+
+    #[test]
+    fn full_patrol_includes_quality_samples() {
+        let (_tmp, paths) = init_and_paths();
+        create_page(&paths, "concept", "sampled", "Sampled", "Enough content for sampling.");
+        wiki_store::update_page_confidence(&paths, "sampled", 0.7).unwrap();
+
+        let report = run_full_patrol(&paths, &PatrolConfig::default());
+        assert_eq!(report.quality_samples.len(), 1);
+        assert_eq!(report.quality_samples[0].page_slug, "sampled");
     }
 
     // ── run_full_patrol includes new detectors ──────────────────

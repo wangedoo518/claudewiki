@@ -131,7 +131,7 @@ than an application-code blocker.
   signal.
 - [x] Add orphan, stale, schema violation, oversized, stub, confidence decay,
   and uncrystallized detectors as explicit patrol categories.
-- [ ] Add quality sampling for LLM-maintained pages.
+- [x] Add quality sampling candidates for LLM-maintained pages.
 - [x] Connect all patrol summary categories to Dashboard quality cards and
   Patrol detail labels.
 - [ ] Connect patrol results to Inbox actions.

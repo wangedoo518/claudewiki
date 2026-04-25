@@ -429,6 +429,14 @@ export interface PatrolIssue {
   suggested_action: string;
 }
 
+export interface PatrolQualitySample {
+  page_slug: string;
+  title: string;
+  confidence: number;
+  last_verified?: string | null;
+  reason: string;
+}
+
 export interface PatrolSummary {
   orphans: number;
   stale: number;
@@ -442,6 +450,7 @@ export interface PatrolSummary {
 export interface PatrolReport {
   issues: PatrolIssue[];
   summary: PatrolSummary;
+  quality_samples?: PatrolQualitySample[];
   checked_at: string;
 }
 

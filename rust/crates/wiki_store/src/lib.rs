@@ -4403,6 +4403,17 @@ pub struct PatrolIssue {
     pub suggested_action: String,
 }
 
+/// Deterministic quality-audit candidate selected from maintainer-written pages.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PatrolQualitySample {
+    pub page_slug: String,
+    pub title: String,
+    pub confidence: f32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_verified: Option<String>,
+    pub reason: String,
+}
+
 /// Category of patrol issue.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
@@ -4423,6 +4434,8 @@ pub enum PatrolIssueKind {
 pub struct PatrolReport {
     pub issues: Vec<PatrolIssue>,
     pub summary: PatrolSummary,
+    #[serde(default)]
+    pub quality_samples: Vec<PatrolQualitySample>,
     pub checked_at: String,
 }
 

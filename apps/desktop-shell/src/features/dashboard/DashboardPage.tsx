@@ -395,6 +395,7 @@ function PatrolQualityPanel({
   const checkedAt = report?.checked_at
     ? report.checked_at.slice(0, 19).replace("T", " ")
     : "not run yet";
+  const qualitySamples = report?.quality_samples ?? [];
   const cards = summary
     ? [
         {
@@ -514,6 +515,28 @@ function PatrolQualityPanel({
                 </p>
               </Link>
             ))}
+          </div>
+        ) : null}
+        {qualitySamples.length > 0 ? (
+          <div className="mt-4 rounded-xl border border-border/40 bg-background/60 p-3">
+            <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground/60">
+              Quality sample
+            </div>
+            <div className="mt-2 flex flex-wrap gap-2">
+              {qualitySamples.map((sample) => (
+                <Link
+                  key={sample.page_slug}
+                  to="/wiki"
+                  className="rounded-full border border-border/50 bg-card px-3 py-1 text-[11px] text-muted-foreground transition-colors hover:border-primary/30 hover:text-foreground"
+                  title={sample.reason}
+                >
+                  {sample.title || sample.page_slug}
+                  <span className="ml-1 text-muted-foreground/60">
+                    {Math.round(sample.confidence * 100)}%
+                  </span>
+                </Link>
+              ))}
+            </div>
           </div>
         ) : null}
       </div>

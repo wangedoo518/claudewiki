@@ -20,6 +20,8 @@ const KIND_LABELS: Record<string, { label: string; color: string }> = {
   "schema-violation": { label: "Schema 违规", color: "var(--color-destructive)" },
   oversized: { label: "超长", color: "var(--deeptutor-warn, #C88B1A)" },
   stub: { label: "残桩", color: "var(--deeptutor-warn, #C88B1A)" },
+  "confidence-decay": { label: "Confidence 衰减", color: "var(--color-muted-foreground)" },
+  uncrystallized: { label: "未结晶", color: "var(--color-muted-foreground)" },
 };
 
 export function PatrolReportView() {

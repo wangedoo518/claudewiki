@@ -425,6 +425,27 @@ function PatrolQualityPanel({
           tone: "warn" as const,
           hint: "split candidates for /breakdown",
         },
+        {
+          label: "Stubs",
+          count: summary.stubs,
+          href: "/wiki",
+          tone: "warn" as const,
+          hint: "thin pages needing expansion",
+        },
+        {
+          label: "Confidence",
+          count: summary.confidence_decay,
+          href: "/wiki",
+          tone: "muted" as const,
+          hint: "trusted pages needing re-check",
+        },
+        {
+          label: "Crystallization",
+          count: summary.uncrystallized,
+          href: "/ask",
+          tone: "muted" as const,
+          hint: "query answers not feeding the wiki",
+        },
       ]
     : [];
 
@@ -464,7 +485,7 @@ function PatrolQualityPanel({
         </div>
 
         {summary ? (
-          <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+          <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-7">
             {cards.map((card) => (
               <Link
                 key={card.label}

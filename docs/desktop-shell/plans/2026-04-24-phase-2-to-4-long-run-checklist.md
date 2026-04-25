@@ -129,11 +129,13 @@ than an application-code blocker.
 
 - [x] Promote `wiki_patrol` from local checks to a user-visible dashboard
   signal.
-- [ ] Add orphan, stale, schema violation, oversized, stub, confidence decay,
+- [x] Add orphan, stale, schema violation, oversized, stub, confidence decay,
   and uncrystallized detectors as explicit patrol categories.
 - [ ] Add quality sampling for LLM-maintained pages.
-- [ ] Connect patrol results to Dashboard cards and Inbox actions.
-- [ ] Add tests that keep `wiki_stats` and `wiki_patrol` orphan semantics in
+- [x] Connect all patrol summary categories to Dashboard quality cards and
+  Patrol detail labels.
+- [ ] Connect patrol results to Inbox actions.
+- [x] Add tests that keep `wiki_stats` and `wiki_patrol` orphan semantics in
   sync.
 
 ## Phase 4: Power Tools And Viewer

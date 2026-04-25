@@ -3,7 +3,7 @@ title: Desktop Shell Architecture Overview
 doc_type: architecture
 status: active
 owner: desktop-shell
-last_verified: 2026-04-24
+last_verified: 2026-04-25
 source_of_truth: true
 related:
   - docs/desktop-shell/README.md
@@ -54,9 +54,10 @@ This document answers: how `desktop-shell` is currently organized.
 - `rust/crates/desktop-server/src/routes/` owns route assembly by domain:
   `desktop`, `wiki`, `wechat`, and `internal`.
 - `rust/crates/desktop-server/src/handlers/` owns migrated handler bodies by
-  domain. The first split slice is `handlers/wiki_reports.rs`, covering Wiki
-  cleanup, patrol, absorb-log, backlinks index, stats, patrol report, and schema
-  template endpoints.
+  domain. Landed slices include `handlers/wiki_reports.rs` for Wiki cleanup,
+  patrol, absorb-log, backlinks index, stats, patrol report, and schema template
+  endpoints, plus `handlers/wiki_tasks.rs` for absorb/query task endpoints and
+  absorb progress SSE.
 - `desktop-server/src/lib.rs` still owns shared `AppState`, common response
   types, and handler bodies that have not yet moved. New handler-body split
   work should add domain modules instead of growing `lib.rs`.

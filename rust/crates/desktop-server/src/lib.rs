@@ -30,6 +30,11 @@ pub(crate) use handlers::wiki_reports::{
     cleanup_handler, get_absorb_log_handler, get_backlinks_index_handler,
     get_patrol_report_handler, get_schema_templates_handler, get_stats_handler, patrol_handler,
 };
+pub(crate) use handlers::wiki_tasks::{
+    absorb_handler, query_wiki_handler, stream_absorb_events_handler,
+};
+#[cfg(test)]
+pub(crate) use handlers::wiki_tasks::{make_query_done_payload, make_query_error_payload};
 
 // S0.4 cut day: `mod code_tools_bridge` is gone along with the
 // `/api/desktop/code-tools/*` routes. ClawWiki canonical §11.1 cut #3
@@ -886,32 +891,6 @@ async fn stream_session_events(
                         yield Ok::<Event, Infallible>(sse_event);
                     }
                 }
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
-                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
-            }
-        }
-    };
-
-    Ok(Sse::new(stream).keep_alive(KeepAlive::new().interval(Duration::from_secs(15))))
-}
-
-async fn stream_absorb_events_handler(
-    State(state): State<AppState>,
-) -> ApiResult<impl IntoResponse> {
-    let mut receiver = state.desktop().subscribe_skill_events();
-
-    let stream = stream! {
-        loop {
-            match receiver.recv().await {
-                Ok(event) => match event {
-                    DesktopSessionEvent::AbsorbProgress(_)
-                    | DesktopSessionEvent::AbsorbComplete { .. } => {
-                        if let Ok(sse_event) = to_sse_event(&event) {
-                            yield Ok::<Event, Infallible>(sse_event);
-                        }
-                    }
-                    _ => {}
-                },
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
             }
@@ -4914,14 +4893,26 @@ mod tests {
 
         assert_eq!(response.status(), reqwest::StatusCode::OK);
         let body = response.text().await.expect("SSE body");
-        assert!(body.contains("event: skill"), "expected skill SSE events: {body}");
-        assert!(body.contains("\"type\":\"query_chunk\""), "missing query chunk: {body}");
+        assert!(
+            body.contains("event: skill"),
+            "expected skill SSE events: {body}"
+        );
+        assert!(
+            body.contains("\"type\":\"query_chunk\""),
+            "missing query chunk: {body}"
+        );
         assert!(
             body.contains("Transformer mock answer"),
             "mock provider answer should stream through: {body}"
         );
-        assert!(body.contains("\"type\":\"query_done\""), "missing query_done: {body}");
-        assert!(body.contains("\"slug\":\"transformer\""), "missing source slug: {body}");
+        assert!(
+            body.contains("\"type\":\"query_done\""),
+            "missing query_done: {body}"
+        );
+        assert!(
+            body.contains("\"slug\":\"transformer\""),
+            "missing source slug: {body}"
+        );
         assert!(
             body.contains("\"title\":\"Transformer Architecture\""),
             "missing source title: {body}"
@@ -4960,8 +4951,8 @@ mod tests {
             &wiki_store::RawFrontmatter::for_paste("paste", None),
         )
         .expect("seed raw entry");
-        let inbox = wiki_store::append_new_raw_task(&paths, &raw, "test")
-            .expect("seed inbox entry");
+        let inbox =
+            wiki_store::append_new_raw_task(&paths, &raw, "test").expect("seed inbox entry");
 
         let server = TestServer::spawn().await;
         let client = Client::new();
@@ -4991,10 +4982,7 @@ mod tests {
         );
 
         let apply_response = client
-            .post(server.url(&format!(
-                "/api/wiki/inbox/{}/proposal/apply",
-                inbox.id
-            )))
+            .post(server.url(&format!("/api/wiki/inbox/{}/proposal/apply", inbox.id)))
             .send()
             .await
             .expect("proposal apply POST");
@@ -5004,8 +4992,8 @@ mod tests {
         assert_eq!(applied["outcome"], "updated");
         assert_eq!(applied["target_page_slug"], "attention");
 
-        let (_summary, body) = wiki_store::read_wiki_page(&paths, "attention")
-            .expect("read updated wiki page");
+        let (_summary, body) =
+            wiki_store::read_wiki_page(&paths, "attention").expect("read updated wiki page");
         assert!(body.contains("## Multi-head update"));
 
         let applied_entry = wiki_store::list_inbox_entries(&paths)
@@ -6383,379 +6371,4 @@ async fn delete_wiki_raw_handler(Path(id): Path<u32>) -> Result<Json<serde_json:
         )
     })?;
     Ok(Json(serde_json::json!({ "ok": true, "deleted": id })))
-}
-
-// ═══════════════════════════════════════════════════════════════════════
-// v2 SKILL engine handlers (technical-design.md §2.1–§2.9, §4.4)
-// ═══════════════════════════════════════════════════════════════════════
-
-// ── §2.1 POST /api/wiki/absorb ─────────────────────────────────────
-
-#[derive(Deserialize)]
-struct AbsorbRequest {
-    entry_ids: Option<Vec<u32>>,
-    date_range: Option<AbsorbDateRange>,
-}
-
-#[derive(Deserialize)]
-struct AbsorbDateRange {
-    from: String, // ISO date YYYY-MM-DD, inclusive
-    to: String,   // ISO date YYYY-MM-DD, inclusive
-}
-
-/// POST /api/wiki/absorb — trigger batch absorb (202 Accepted).
-///
-/// Per technical-design.md §2.1:
-/// - Spawns `absorb_batch` in a background tokio task
-/// - Returns `202 Accepted` + `{task_id, status: "started", total_entries}`
-/// - Progress streams via `DesktopSessionEvent::AbsorbProgress` SSE events
-///   broadcast to every session subscribed at
-///   `/api/desktop/sessions/{id}/events`
-/// - Final `DesktopSessionEvent::AbsorbComplete` on task end
-///
-/// Error code matrix (§2.1 table):
-///   400 `INVALID_DATE_RANGE`    — malformed / from > to
-///   404 `ENTRIES_NOT_FOUND`     — any id in `entry_ids` missing on disk
-///   409 `ABSORB_IN_PROGRESS`    — TaskManager kind slot taken
-///   503 `BROKER_UNAVAILABLE`    — reserved for future broker probe
-async fn absorb_handler(
-    State(state): State<AppState>,
-    Json(body): Json<AbsorbRequest>,
-) -> Result<(StatusCode, Json<serde_json::Value>), ApiError> {
-    let paths = resolve_wiki_root_for_handler()?;
-
-    // ── 400 INVALID_DATE_RANGE (format + ordering checks) ──
-    if let Some(range) = &body.date_range {
-        if !is_valid_iso_date(&range.from) || !is_valid_iso_date(&range.to) {
-            return Err((
-                StatusCode::BAD_REQUEST,
-                Json(ErrorResponse {
-                    error: "INVALID_DATE_RANGE".to_string(),
-                }),
-            ));
-        }
-        // YYYY-MM-DD lexicographic compare == chronological compare.
-        if range.from.as_str() > range.to.as_str() {
-            return Err((
-                StatusCode::BAD_REQUEST,
-                Json(ErrorResponse {
-                    error: "INVALID_DATE_RANGE".to_string(),
-                }),
-            ));
-        }
-    }
-
-    // Load raw entries once — used by both entry_ids existence check
-    // and date-range filtering.
-    let raws = wiki_store::list_raw_entries(&paths).map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ErrorResponse {
-                error: format!("list_raw_entries failed: {e}"),
-            }),
-        )
-    })?;
-
-    // ── Resolve entry_ids ──
-    //
-    // §2.1 spec: `entry_ids` and `date_range` are mutually exclusive
-    // (entry_ids wins when both are provided). Neither → absorb all
-    // un-absorbed raw entries.
-    let entry_ids: Vec<u32> = if let Some(ids) = body.entry_ids {
-        // 404 ENTRIES_NOT_FOUND
-        let existing: std::collections::HashSet<u32> = raws.iter().map(|r| r.id).collect();
-        let missing: Vec<u32> = ids
-            .iter()
-            .copied()
-            .filter(|id| !existing.contains(id))
-            .collect();
-        if !missing.is_empty() {
-            return Err((
-                StatusCode::NOT_FOUND,
-                Json(ErrorResponse {
-                    error: format!("ENTRIES_NOT_FOUND: {missing:?}"),
-                }),
-            ));
-        }
-        ids
-    } else if let Some(range) = &body.date_range {
-        raws.iter()
-            .filter(|r| {
-                r.date.as_str() >= range.from.as_str() && r.date.as_str() <= range.to.as_str()
-            })
-            .filter(|r| !wiki_store::is_entry_absorbed(&paths, r.id))
-            .map(|r| r.id)
-            .collect()
-    } else {
-        raws.iter()
-            .filter(|r| !wiki_store::is_entry_absorbed(&paths, r.id))
-            .map(|r| r.id)
-            .collect()
-    };
-
-    let total = entry_ids.len();
-    if total > 0 {
-        desktop_core::wiki_maintainer_adapter::BrokerAdapter::from_global()
-            .runtime_auth_health()
-            .map_err(|e| {
-                (
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    Json(ErrorResponse {
-                        error: format!("BROKER_UNAVAILABLE: {e}"),
-                    }),
-                )
-            })?;
-    }
-
-    // Build the adapter now that non-empty batches have passed the auth preflight.
-    let adapter = desktop_core::wiki_maintainer_adapter::BrokerAdapter::from_global();
-
-    // ── 409 ABSORB_IN_PROGRESS (TaskManager per-kind gate) ──
-    let desktop_state = state.desktop().clone();
-    let (task_id, cancel_token) = match desktop_state.task_manager().register("absorb").await {
-        Ok(pair) => pair,
-        Err(_) => {
-            return Err((
-                StatusCode::CONFLICT,
-                Json(ErrorResponse {
-                    error: "ABSORB_IN_PROGRESS".to_string(),
-                }),
-            ));
-        }
-    };
-
-    // ── SSE bridge: mpsc → broadcast fan-out ──
-    //
-    // `absorb_batch` takes a `Sender<AbsorbProgressEvent>` for its
-    // per-entry progress channel. This forwarder wraps each received
-    // event as `DesktopSessionEvent::AbsorbProgress(ev)` and fans it
-    // out to every session's broadcast sender via
-    // `DesktopState::broadcast_session_event`. Every SSE client
-    // subscribed to `/api/desktop/sessions/{id}/events` then receives
-    // the event regardless of which session they opened — matching
-    // §2.1 "SSE 事件 (通过 /api/desktop/sessions/{id}/events)".
-    let (tx, mut rx) = tokio::sync::mpsc::channel::<wiki_maintainer::AbsorbProgressEvent>(64);
-    let bridge_state = desktop_state.clone();
-    tokio::spawn(async move {
-        while let Some(ev) = rx.recv().await {
-            bridge_state
-                .broadcast_session_event(DesktopSessionEvent::AbsorbProgress(ev))
-                .await;
-        }
-    });
-
-    // ── Spawn absorb_batch ──
-    //
-    // On task end (success, error, cancel) emit `AbsorbComplete` + call
-    // `task_manager.complete(&task_id)` to free the "absorb" kind slot.
-    let task_id_for_batch = task_id.clone();
-    let task_id_for_complete = task_id.clone();
-    let task_id_for_response = task_id.clone();
-    let complete_state = desktop_state.clone();
-    let paths_for_spawn = paths.clone();
-    tokio::spawn(async move {
-        let result = wiki_maintainer::absorb_batch(
-            &paths_for_spawn,
-            entry_ids,
-            &adapter,
-            tx,
-            task_id_for_batch,
-            cancel_token,
-        )
-        .await;
-
-        match result {
-            Ok(r) => {
-                complete_state
-                    .broadcast_session_event(DesktopSessionEvent::AbsorbComplete {
-                        task_id: task_id_for_complete.clone(),
-                        created: r.created,
-                        updated: r.updated,
-                        skipped: r.skipped,
-                        failed: r.failed,
-                        duration_ms: r.duration_ms,
-                    })
-                    .await;
-                log::info!(
-                    "[absorb] task {} completed (created={} updated={} skipped={} failed={} ms={})",
-                    task_id_for_complete,
-                    r.created,
-                    r.updated,
-                    r.skipped,
-                    r.failed,
-                    r.duration_ms,
-                );
-            }
-            Err(e) => {
-                log::warn!("[absorb] task {} errored: {e}", task_id_for_complete);
-                // Still emit AbsorbComplete so the UI tears down the
-                // progress UI; mark the whole batch as one failed.
-                complete_state
-                    .broadcast_session_event(DesktopSessionEvent::AbsorbComplete {
-                        task_id: task_id_for_complete.clone(),
-                        created: 0,
-                        updated: 0,
-                        skipped: 0,
-                        failed: 1,
-                        duration_ms: 0,
-                    })
-                    .await;
-            }
-        }
-
-        // Free the kind slot for the next /api/wiki/absorb request.
-        complete_state
-            .task_manager()
-            .complete(&task_id_for_complete)
-            .await;
-    });
-
-    // ── 202 Accepted ──
-    Ok((
-        StatusCode::ACCEPTED,
-        Json(serde_json::json!({
-            "task_id": task_id_for_response,
-            "status": "started",
-            "total_entries": total,
-        })),
-    ))
-}
-
-/// Minimal ISO date validator: `YYYY-MM-DD` with ASCII-digit cells.
-/// Returns false for any length / separator / digit-range violation.
-/// Does NOT validate month-specific day caps (§2.1's INVALID_DATE_RANGE
-/// check is intentionally shape-only; semantic validity is the
-/// responsibility of whoever populates `raw entry.date`).
-fn is_valid_iso_date(s: &str) -> bool {
-    let bytes = s.as_bytes();
-    if bytes.len() != 10 {
-        return false;
-    }
-    if bytes[4] != b'-' || bytes[7] != b'-' {
-        return false;
-    }
-    for &b in &bytes[..4] {
-        if !b.is_ascii_digit() {
-            return false;
-        }
-    }
-    for &b in &bytes[5..7] {
-        if !b.is_ascii_digit() {
-            return false;
-        }
-    }
-    for &b in &bytes[8..10] {
-        if !b.is_ascii_digit() {
-            return false;
-        }
-    }
-    true
-}
-
-// ── §2.2 POST /api/wiki/query ───────────────────────────────────────
-
-#[derive(Deserialize)]
-struct QueryWikiRequest {
-    question: String,
-    max_sources: Option<usize>,
-}
-
-/// POST /api/wiki/query — Wiki-grounded Q&A (SSE stream).
-async fn query_wiki_handler(
-    State(_state): State<AppState>,
-    Json(body): Json<QueryWikiRequest>,
-) -> Result<
-    axum::response::sse::Sse<
-        impl futures::stream::Stream<
-            Item = std::result::Result<axum::response::sse::Event, std::convert::Infallible>,
-        >,
-    >,
-    ApiError,
-> {
-    use axum::response::sse::{Event, Sse};
-
-    let question = body.question.trim().to_string();
-    if question.is_empty() {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            Json(ErrorResponse {
-                error: "EMPTY_QUESTION".to_string(),
-            }),
-        ));
-    }
-    if question.len() > 2000 {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            Json(ErrorResponse {
-                error: "QUESTION_TOO_LONG".to_string(),
-            }),
-        ));
-    }
-
-    let paths = resolve_wiki_root_for_handler()?;
-    let max_sources = body.max_sources.unwrap_or(5).min(20).max(1);
-    let adapter = desktop_core::wiki_maintainer_adapter::BrokerAdapter::from_global();
-
-    let (tx, mut rx) = tokio::sync::mpsc::channel(32);
-
-    // Spawn query in background. We MUST retain the JoinHandle so the
-    // SSE stream can await the final result (sources + total_tokens) or
-    // surface the error — discarding it silently dropped those fields
-    // and left the frontend with a sources-less `query_done`.
-    let paths_clone = paths.clone();
-    let question_clone = question.clone();
-    let query_task = tokio::spawn(async move {
-        wiki_maintainer::query_wiki(&paths_clone, &question_clone, max_sources, &adapter, tx).await
-    });
-
-    // SSE stream: forward chunks from rx, then emit exactly one of
-    // query_done / query_error based on the awaited JoinHandle.
-    let sse_stream = async_stream::stream! {
-        // Phase 1: forward query_chunk events until the sender drops
-        // (which happens when query_wiki finishes — Ok or Err).
-        while let Some(chunk) = rx.recv().await {
-            let data = serde_json::json!({
-                "type": "query_chunk",
-                "delta": chunk.delta,
-                "source_refs": chunk.source_refs,
-            });
-            yield Ok(Event::default().event("skill").data(data.to_string()));
-        }
-
-        // Phase 2: join the task to read the final Result.
-        let final_payload = match query_task.await {
-            Ok(Ok(result)) => make_query_done_payload(&result),
-            Ok(Err(maintainer_err)) => {
-                make_query_error_payload(&maintainer_err.to_string())
-            }
-            Err(join_err) => make_query_error_payload(&format!(
-                "query task failed: {join_err}"
-            )),
-        };
-        yield Ok(Event::default().event("skill").data(final_payload.to_string()));
-    };
-
-    Ok(Sse::new(sse_stream))
-}
-
-// ── Query SSE payload builders (pure, unit-tested) ──────────────────
-//
-// Extracted as tiny pure functions so they can be exercised without
-// spinning up a broker + mpsc + axum router (Option B in the task
-// spec). The SSE stream calls them exactly once each, in
-// `query_wiki_handler`.
-
-fn make_query_done_payload(result: &wiki_maintainer::QueryResult) -> serde_json::Value {
-    serde_json::json!({
-        "type": "query_done",
-        "sources": result.sources,
-        "total_tokens": result.total_tokens,
-    })
-}
-
-fn make_query_error_payload(error: &str) -> serde_json::Value {
-    serde_json::json!({
-        "type": "query_error",
-        "error": error,
-    })
 }

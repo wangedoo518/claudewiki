@@ -3,7 +3,7 @@ title: Phase 2-4 Long-Run Execution Checklist
 doc_type: plan
 status: active
 owner: desktop-shell
-last_verified: 2026-04-24
+last_verified: 2026-04-25
 related:
   - docs/desktop-shell/plans/2026-04-24-phase-2-closure.md
   - docs/desktop-shell/plans/2026-04-24-phase-2-readiness-audit.md
@@ -96,10 +96,14 @@ than an application-code blocker.
   `backlinks`, `stats`, `patrol/report`, `schema/templates`) into
   `handlers/wiki_reports.rs` while keeping route names stable through crate
   re-exports.
+- [x] Rust server handler split second slice:
+  move Wiki task handlers (`absorb`, `absorb/events`, `query`) and their DTOs
+  into `handlers/wiki_tasks.rs` while keeping route names stable through crate
+  re-exports.
 - [ ] Rust server handler split follow-up:
-  move handler DTOs and implementations out of `lib.rs` by domain once route
-  assembly is stable; suggested next slices are query/absorb task handlers,
-  provider/runtime handlers, then desktop session handlers.
+  continue moving handler DTOs and implementations out of `lib.rs` by domain;
+  suggested next slices are provider/runtime handlers, desktop session handlers,
+  then inbox/raw/wiki page CRUD handlers.
 - [x] Current-truth docs:
   refresh `docs/desktop-shell/architecture/overview.md` and `rust/README.md`
   whenever a slice lands.
@@ -143,5 +147,6 @@ than an application-code blocker.
 - [x] Then Wiki repository extraction from `features/ingest/persist.ts`.
 - [x] Then Rust route assembly split into domain route modules.
 - [x] Then handler-body split first slice for Wiki report/maintenance handlers.
-- [ ] Next: continue handler-body split with query/absorb task handlers, after
+- [x] Then handler-body split second slice for query/absorb task handlers.
+- [ ] Next: continue handler-body split with provider/runtime handlers, after
   Phase 2 closure remains green.

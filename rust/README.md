@@ -37,9 +37,11 @@ Current upstream pin:
 - Local LLM provider fallback is configured via `.claw/providers.json`; the maintainer adapter searches from the process cwd upward so a repository-root config still works when the desktop server starts from a nested app directory.
 - `desktop-server` route assembly is split under `crates/desktop-server/src/routes/`
   (`desktop`, `wiki`, `wechat`, `internal`). Handler bodies are being split by
-  domain under `crates/desktop-server/src/handlers/`; the first landed slice is
-  `handlers/wiki_reports.rs` for Wiki cleanup/patrol/report/stat endpoints.
-  Remaining handler bodies still live in `lib.rs` until their domain slices move.
+  domain under `crates/desktop-server/src/handlers/`. Landed slices include
+  `handlers/wiki_reports.rs` for Wiki cleanup/patrol/report/stat endpoints and
+  `handlers/wiki_tasks.rs` for absorb/query task endpoints and absorb progress
+  SSE. Remaining handler bodies still live in `lib.rs` until their domain
+  slices move.
 
 ## Build and verify
 
